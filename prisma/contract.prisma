@@ -1,0 +1,57 @@
+model Customer {
+  id         Int      @id @default(autoincrement())
+  telegramId String   @unique
+  username   String?
+  firstName  String?
+  createdAt  DateTime @default(now())
+
+  orders       Order[]
+  subscription Subscription?
+}
+
+model Order {
+  id          Int      @id @default(autoincrement())
+  orderNumber String   @unique
+  plan        String
+  price       Decimal
+  status      String
+  createdAt   DateTime @default(now())
+
+  paymentMethod    String?
+  paymentReference String?
+  paymentProof     String?
+  paidAt           DateTime?
+
+  vpnKey          String?
+  vpnKeyId        String?
+  vpnKeyCreatedAt DateTime?
+  expiresAt       DateTime?
+  revokedAt       DateTime?
+
+  customerId Int
+  customer   Customer @relation(fields: [customerId], references: [id])
+}
+
+model Subscription {
+  id Int @id @default(autoincrement())
+
+  customerId Int @unique
+  customer   Customer @relation(fields: [customerId], references: [id])
+
+  plan       String
+  status     String
+
+  vpnKey          String?
+  vpnKeyId        String?
+  vpnKeyCreatedAt DateTime?
+
+  startedAt DateTime?
+  expiresAt DateTime?
+  revokedAt DateTime?
+
+  dataLimitGb Float?
+  dataUsedGb  Float @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now())
+}
