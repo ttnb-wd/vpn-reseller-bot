@@ -361,6 +361,20 @@ bot.action("connection_link", async (ctx) => {
       const order = await db.public.Order.where({ id: orderId }).first();
       if (!order) {
         await ctx.reply("❌ Order not found.");
+        pendingProofs.delete(userId);
+        return;
+      }
+
+      const cumstomer = await db.public.Customer.where({ id: order.customerId }).first();
+      if(!customer || customer.telegramId !== userId){
+        await ctx.reply("❌ You are not authorized access to this order.");
+        pendingProofs.delete(userId);
+        return;
+      }
+
+      const customer = await db.public.Customer.where({ id: order.customerId }).first();
+      if(!customer || customer.telegramId !== String(ctx.from.id)){
+        await ctx.reply("❌ You are not authorized access to this order.");
         return;
       }
 
