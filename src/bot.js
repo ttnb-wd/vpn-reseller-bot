@@ -47,7 +47,77 @@ function isAdmin(ctx) {
 }
 
 function formatInstant(instant) {
-  return instant ? instant.toString() : "N/A";
+  if (!instant) return "N/A";
+
+  return new Intl.DateTimeFormat("en-GB", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    timeZone: "UTC",
+  }).format(new Date(Number(instant.epochMilliseconds)));
+}
+
+function isSubscriptionActive(subscription, now = Temporal.Now.instant()) {
+  return Boolean(
+    subscription &&
+      subscription.status === "ACTIVE" &&
+      subscription.expiresAt &&
+      Temporal.Instant.compare(subscription.expiresAt, now) > 0
+  );
+}
+
+async function findCustomerSubscription(telegramId) {
+  const customer = await db.public.Customer
+    .where({ telegramId: String(telegramId) })
+    .first();
+
+  if (!customer) return { customer: null, subscription: null };
+
+  const subscription = await db.public.Subscription
+    .where({ customerId: customer.id })
+    .first();
+
+  return { customer, subscription };
+}
+
+function renewBuyKeyboard() {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback("🔄 Renew VPN", "renew_vpn")],
+    [Markup.button.callback("🛒 Buy VPN", "buy_vpn")],
+  ]);
+}
+
+async function sendExistingVpnKey(ctx, actionTitle) {
+  const { customer, subscription } = await findCustomerSubscription(ctx.from.id);
+
+  if (!customer || !subscription) {
+    await ctx.reply(
+      "🔐 My VPN\n\nYou don't have an active VPN subscription yet.",
+      Markup.inlineKeyboard([[Markup.button.callback("🛒 Buy VPN", "buy_vpn")]])
+    );
+    return;
+  }
+
+  if (!isSubscriptionActive(subscription)) {
+    await ctx.reply(
+      "🔴 VPN Subscription Expired\n\nYour VPN package is expired or inactive.",
+      renewBuyKeyboard()
+    );
+    return;
+  }
+
+  if (!subscription.vpnKeyId || !subscription.vpnKey) {
+    await ctx.reply(
+      "Your VPN key is not available yet. Please contact support or renew your VPN.",
+      renewBuyKeyboard()
+    );
+    return;
+  }
+
+  await ctx.reply(
+    `${actionTitle}\n\nCopy this existing key into the Outline app:\n\n\`${subscription.vpnKey}\`\n\nKeep this key private.`,
+    { parse_mode: "Markdown" }
+  );
 }
 
 function formatNumber(value) {
@@ -412,112 +482,47 @@ async function startBot() {
     await ctx.answerCbQuery();
 
     try {
-      const customer =
-        await db.public.Customer
-          .where({
-            telegramId: String(
-              ctx.from.id
-            ),
-          })
-          .first();
+      const { customer, subscription } = await findCustomerSubscription(ctx.from.id);
 
-      if (!customer) {
+      if (!customer || !subscription) {
         return await ctx.reply(
-          "❌ Customer account not found."
+          "🔐 My VPN\n\nYou don't have an active VPN subscription yet.",
+          Markup.inlineKeyboard([[Markup.button.callback("🛒 Buy VPN", "buy_vpn")]])
         );
       }
 
-      const subscription =
-        await db.public.Subscription
-          .where({
-            customerId: customer.id,
-          })
-          .first();
-
-      if (!subscription) {
+      if (!isSubscriptionActive(subscription)) {
         return await ctx.reply(
-          "🔐 You don't have a VPN subscription yet.",
-
-          Markup.inlineKeyboard([
-            [
-              Markup.button.callback(
-                "🛒 Buy VPN",
-                "buy_vpn"
-              ),
-            ],
-          ])
+          "🔴 VPN Subscription Expired\n\nYour VPN package has expired or is inactive.",
+          renewBuyKeyboard()
         );
       }
 
-      const now =
-        Temporal.Now.instant();
-
-      let remainingDays = 0;
-
-      if (subscription.expiresAt) {
-        remainingDays =
-          Math.max(
-            0,
-            Math.ceil(
-              Number(
-                subscription.expiresAt
-                  .epochSeconds -
-                  now.epochSeconds
-              ) / 86400
-            )
-          );
-      }
-
-      const isActive =
-        subscription.status ===
-          "ACTIVE" &&
-        remainingDays > 0;
-
-      const status = isActive
-        ? "🟢 ACTIVE"
-        : "🔴 EXPIRED";
+      const pkg = subscription.packageId
+        ? await db.public.Package.where({ id: subscription.packageId }).first()
+        : null;
+      const remainingDays = Math.max(
+        0,
+        Math.ceil(Number(subscription.expiresAt.epochSeconds - Temporal.Now.instant().epochSeconds) / 86400)
+      );
+      const packageLabel = pkg?.name || subscription.plan || "VPN package";
+      const keyLine = subscription.vpnKeyId && subscription.vpnKey
+        ? `\n\n🔑 VPN Key\n\`${subscription.vpnKey}\``
+        : "\n\n🔑 VPN key is not available yet. Please contact support.";
 
       await ctx.reply(
         `🔐 My VPN\n\n` +
-          `Status: ${status}\n\n` +
-          `📦 Plan: ${subscription.plan}\n` +
-          `⏳ Remaining: ${remainingDays} Days\n\n` +
-          `📅 Expires:\n${formatInstant(
-            subscription.expiresAt
-          )}\n\n` +
-          `📊 Data Usage:\n` +
-          `${subscription.dataUsedGb || 0} GB / ${
-            subscription.dataLimitGb || 0
-          } GB`,
-
+          `📦 Package: ${packageLabel}\n` +
+          `📊 Usage: ${formatNumber(subscription.dataUsedGb || 0)} GB / ${formatNumber(subscription.dataLimitGb || 0)} GB\n` +
+          `⏱ Duration: ${getDurationLabel(subscription.durationMonths || 1)}\n` +
+          `📅 Expires: ${formatInstant(subscription.expiresAt)}\n` +
+          `⏳ Remaining: ${remainingDays} days\n` +
+          `🟢 Status: Active${keyLine}`,
         Markup.inlineKeyboard([
-          [
-            Markup.button.callback(
-              "📱 Add to Device",
-              "add_device"
-            ),
-          ],
-
-          [
-            Markup.button.callback(
-              "🔗 Connection Link",
-              "connection_link"
-            ),
-          ],
-
-          [
-            Markup.button.callback(
-              "🔄 Renew",
-              "renew_vpn"
-            ),
-          ],
-
-          [
-            Markup.button.callback(
-              "🔄 Refresh",
-              "my_vpn"
-            ),
-          ],
+          [Markup.button.callback("📋 Copy VPN Key", "copy_vpn_key")],
+          [Markup.button.callback("➕ Add to this device", "add_device")],
+          [Markup.button.callback("🔄 Renew VPN", "renew_vpn")],
+          [Markup.button.callback("📦 My Orders", "my_orders")],
         ])
       );
     } catch (error) {
@@ -529,6 +534,29 @@ async function startBot() {
       await ctx.reply(
         "❌ Failed to load VPN information."
       );
+    }
+  });
+
+  bot.action("copy_vpn_key", async (ctx) => {
+    await ctx.answerCbQuery();
+    try {
+      await sendExistingVpnKey(ctx, "📋 Copy VPN Key");
+    } catch (error) {
+      console.error("Copy VPN key error:", error.message);
+      await ctx.reply("Failed to load your VPN key.");
+    }
+  });
+
+  bot.action("add_device", async (ctx) => {
+    await ctx.answerCbQuery();
+    try {
+      await sendExistingVpnKey(
+        ctx,
+        "➕ Add to this device\n\nOpen Outline Client, choose Add server, then paste the key below. This works as the safe manual import flow across Android, iPhone/iPad, Windows, and macOS."
+      );
+    } catch (error) {
+      console.error("Add device error:", error.message);
+      await ctx.reply("Failed to load your VPN key.");
     }
   });
 
@@ -566,29 +594,22 @@ async function startBot() {
 
         if (!subscription) {
           return await ctx.reply(
-            "❌ You don't have a VPN subscription yet."
+            "🔐 My VPN\n\nYou don't have an active VPN subscription yet.",
+            Markup.inlineKeyboard([[Markup.button.callback("🛒 Buy VPN", "buy_vpn")]])
           );
         }
 
-        if (!subscription.vpnKey) {
+        if (!isSubscriptionActive(subscription)) {
           return await ctx.reply(
-            "❌ VPN connection key is not available yet."
+            "🔴 VPN Subscription Expired\n\nYour VPN package has expired or is inactive.",
+            renewBuyKeyboard()
           );
         }
 
-        const now =
-          Temporal.Now.instant();
-
-        if (
-          subscription.status !==
-            "ACTIVE" ||
-          !subscription.expiresAt ||
-          subscription.expiresAt
-            .epochSeconds <=
-            now.epochSeconds
-        ) {
+        if (!subscription.vpnKeyId || !subscription.vpnKey) {
           return await ctx.reply(
-            "🔴 Your VPN subscription has expired."
+            "VPN connection key is not available yet. Please contact support.",
+            renewBuyKeyboard()
           );
         }
 
@@ -603,8 +624,14 @@ async function startBot() {
           Markup.inlineKeyboard([
             [
               Markup.button.callback(
-                "📱 Add to Device",
+                "➕ Add to this device",
                 "add_device"
+              ),
+            ],
+            [
+              Markup.button.callback(
+                "📋 Copy VPN Key",
+                "copy_vpn_key"
               ),
             ],
 
