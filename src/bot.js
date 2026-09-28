@@ -535,9 +535,30 @@ function compactButtonRows(buttons) {
   return rows;
 }
 
+function packageSelectionLabel(pkg) {
+  const icon = {
+    basic: "🛡️",
+    standard: "🔷",
+    premium: "💎",
+  }[pkg.name.trim().toLowerCase()] || "🛡️";
+  return `${icon} ${pkg.name}`;
+}
+
+function formatPackageSelection(packages) {
+  const nameWidth = Math.max(...packages.map((pkg) => Array.from(pkg.name).length));
+  const summary = packages.map((pkg) => {
+    const padding = " ".repeat(nameWidth - Array.from(pkg.name).length + 1);
+    return `${packageSelectionLabel(pkg)}${padding}• ${formatNumber(pkg.dataLimitGb)} GB` +
+      ` • ${pkg.durationDays} Days • ${formatMmk(pkg.priceMmk)}`;
+  }).join("\n");
+  return `💎 Choose Your VPN Package\n\nသင့်အတွက် package ကိုရွေးပါ 👇\n\n${summary}`;
+}
+
 function buildPackageKeyboard(packages, isRenewal = false) {
   const buttons = packages.map((pkg) => Markup.button.callback(
-    /premium/i.test(pkg.name) ? `💎 ${pkg.name}` : pkg.name,
+    isRenewal
+      ? (/premium/i.test(pkg.name) ? `💎 ${pkg.name}` : pkg.name)
+      : packageSelectionLabel(pkg),
     `${isRenewal ? "renew_package" : "package"}_${pkg.id}`
   ));
   return Markup.inlineKeyboard([
@@ -1236,7 +1257,7 @@ async function startBot() {
         }
 
         await ctx.reply(
-          "💎 Choose Your VPN Package\n\nသင့်အတွက်သင့်တော်တဲ့ package ကိုရွေးပါ 👇",
+          formatPackageSelection(packages),
           buildPackageKeyboard(packages)
         );
       } catch (error) {
