@@ -1,299 +1,171 @@
 const axios = require("axios");
 const https = require("https");
+const tls = require("tls");
+const net = require("net");
 const crypto = require("crypto");
 
-const OUTLINE_MODE =
-  process.env.OUTLINE_MODE || "mock";
+function validateOutlineConfig() {
+  const apiUrl = process.env.OUTLINE_API_URL;
+  const rawFingerprint = process.env.OUTLINE_API_CERT_SHA256;
 
-const OUTLINE_API_URL =
-  process.env.OUTLINE_API_URL || "";
-
-const OUTLINE_API_CERT_SHA256 =
-  process.env.OUTLINE_API_CERT_SHA256 || "";
-
-/**
- * Create HTTPS agent for Outline Management API.
- *
- * Outline uses a self-signed certificate.
- * We verify the certificate using its SHA-256 fingerprint.
- */
-function createOutlineHttpsAgent() {
-  if (!OUTLINE_API_CERT_SHA256) {
-    throw new Error(
-      "OUTLINE_API_CERT_SHA256 is not configured."
-    );
+  if (!apiUrl) {
+    throw new Error("OUTLINE_API_URL is required in production.");
+  }
+  if (!rawFingerprint) {
+    throw new Error("OUTLINE_API_CERT_SHA256 is required in production.");
   }
 
-  const expectedFingerprint =
-    OUTLINE_API_CERT_SHA256
-      .replace(/:/g, "")
-      .replace(/\s/g, "")
-      .toUpperCase();
+  let parsedUrl;
+  try {
+    parsedUrl = new URL(apiUrl);
+  } catch {
+    throw new Error("OUTLINE_API_URL must be a valid HTTPS URL.");
+  }
+  if (parsedUrl.protocol !== "https:") {
+    throw new Error("OUTLINE_API_URL must use HTTPS.");
+  }
 
-  return new https.Agent({
-    rejectUnauthorized: false,
+  const fingerprint = rawFingerprint.replace(/[:\s]/g, "").toUpperCase();
+  if (!/^[0-9A-F]{64}$/.test(fingerprint)) {
+    throw new Error("OUTLINE_API_CERT_SHA256 must be a SHA-256 fingerprint.");
+  }
 
-    checkServerIdentity: (hostname, cert) => {
+  return { apiUrl, hostname: parsedUrl.hostname.replace(/^\[|\]$/g, ""), fingerprint };
+}
+
+// Validate before either the HTTP health server or Telegram polling starts.
+const outlineConfig = validateOutlineConfig();
+
+function createOutlineHttpsAgent() {
+  const agent = new https.Agent({ maxCachedSessions: 0 });
+
+  // Outline normally uses a self-signed certificate. Node does not call
+  // checkServerIdentity for a certificate that fails CA validation, so hold
+  // the socket until its certificate has matched the configured fingerprint.
+  agent.createConnection = (options, callback) => {
+    const servername = options.servername ??
+      (net.isIP(outlineConfig.hostname) ? "" : outlineConfig.hostname);
+    const socket = tls.connect({
+      ...options,
+      servername,
+      rejectUnauthorized: false,
+    });
+    let completed = false;
+
+    const finish = (error) => {
+      if (completed) return;
+      completed = true;
+      if (error) {
+        socket.destroy();
+        callback(error);
+      } else {
+        callback(null, socket);
+      }
+    };
+
+    socket.once("secureConnect", () => {
+      const certificate = socket.getPeerCertificate();
+      if (!certificate?.raw) {
+        finish(new Error("Outline API certificate is unavailable."));
+        return;
+      }
+
       const actualFingerprint = crypto
         .createHash("sha256")
-        .update(cert.raw)
+        .update(certificate.raw)
         .digest("hex")
         .toUpperCase();
 
-      if (actualFingerprint !== expectedFingerprint) {
-        throw new Error(
-          [
-            "Outline API certificate fingerprint mismatch.",
-            `Expected: ${expectedFingerprint}`,
-            `Actual:   ${actualFingerprint}`,
-          ].join("\n")
-        );
+      if (actualFingerprint !== outlineConfig.fingerprint) {
+        finish(new Error("Outline API certificate fingerprint mismatch."));
+        return;
       }
 
-      return undefined;
-    },
-  });
+      finish();
+    });
+    socket.once("error", finish);
+  };
+
+  return agent;
 }
 
-/**
- * Create Axios client for Outline Management API.
- */
 function getOutlineClient() {
-  if (!OUTLINE_API_URL) {
-    throw new Error(
-      "OUTLINE_API_URL is not configured."
-    );
-  }
-
   return axios.create({
-    baseURL: OUTLINE_API_URL,
+    baseURL: outlineConfig.apiUrl,
     timeout: 10000,
+    maxRedirects: 0,
     httpsAgent: createOutlineHttpsAgent(),
-    headers: {
-      "Content-Type": "application/json",
-    },
+    headers: { "Content-Type": "application/json" },
   });
 }
 
-/**
- * Test connection to Outline Server.
- *
- * GET /server
- */
+function assertRealKeyId(keyId) {
+  if (!keyId || String(keyId).startsWith("mock-")) {
+    throw new Error("A real Outline access key ID is required.");
+  }
+}
+
+function isAccessKeyNotFoundError(error) {
+  const status = error?.response?.status;
+  const code = error?.response?.data?.code;
+  const message = error?.response?.data?.message;
+
+  return status === 404 &&
+    (code === "NotFound" || code === "NotFoundError") &&
+    typeof message === "string" &&
+    /(?:no access key found|access key.*(?:not found|does not exist))/i.test(message);
+}
+
 async function testOutlineConnection() {
-  const client = getOutlineClient();
-
-  const response = await client.get("/server");
-
+  const response = await getOutlineClient().get("/server");
   return response.data;
 }
 
-/**
- * Create a mock VPN key.
- */
-function createMockAccessKey(order) {
-  const keyId = `mock-${order.id}-${Date.now()}`;
-
-  const accessKey =
-    `ss://mock-outline-key-${order.id}-${Date.now()}`;
-
-  console.log(
-    `Mock Outline key created: ${keyId}`
-  );
-
-  return {
-    id: keyId,
-    accessUrl: accessKey,
-  };
-}
-
-/**
- * Create a real Outline VPN access key.
- *
- * POST /access-keys
- */
-async function createRealAccessKey(order) {
-  const client = getOutlineClient();
-
-  const response = await client.post(
-    "/access-keys"
-  );
-
+async function createAccessKey() {
+  const response = await getOutlineClient().post("/access-keys");
   const accessKey = response.data;
 
-  console.log(
-    `Real Outline key created: ${accessKey.id}`
-  );
+  if (!accessKey?.id || !accessKey?.accessUrl ||
+      !String(accessKey.accessUrl).startsWith("ss://")) {
+    throw new Error("Outline API returned an invalid access key.");
+  }
 
-  return {
-    id: accessKey.id,
-    accessUrl: accessKey.accessUrl,
-  };
+  console.log("Real Outline access key created.");
+  return { id: accessKey.id, accessUrl: accessKey.accessUrl };
 }
 
-/**
- * Set data limit for a real Outline VPN key.
- *
- * Outline expects:
- *
- * {
- *   "limit": {
- *     "bytes": 123456789
- *   }
- * }
- *
- * PUT /access-keys/:id/data-limit
- */
-async function setRealAccessKeyDataLimit(
-  keyId,
-  limitBytes
-) {
+async function setAccessKeyDataLimit(keyId, limitBytes) {
+  assertRealKeyId(keyId);
+  if (!Number.isSafeInteger(limitBytes) || limitBytes < 0) {
+    throw new Error("limitBytes must be a non-negative safe integer.");
+  }
+
   try {
-    const client = getOutlineClient();
-
-    if (!Number.isFinite(limitBytes)) {
-      throw new Error("limitBytes must be a valid number.");
-    }
-
-    if (!Number.isInteger(limitBytes)) {
-      throw new Error("limitBytes must be an integer.");
-    }
-
-    if (limitBytes < 0) {
-      throw new Error("limitBytes must be non-negative.");
-    }
-
-    const response = await client.put(
+    const response = await getOutlineClient().put(
       `/access-keys/${encodeURIComponent(keyId)}/data-limit`,
-      {
-        limit: {
-          bytes: limitBytes,
-        },
-      }
+      { limit: { bytes: limitBytes } }
     );
-
     console.log("Outline data limit updated successfully.");
     return response.data;
   } catch (error) {
-    const safeText = (value) => {
-      if (typeof value !== "string" && typeof value !== "number") {
-        return undefined;
-      }
-
-      return String(value)
-        .replace(/https?:\/\/[^\s"'<>]+/gi, "[redacted-url]")
-        .replace(/ss:\/\/[^\s"'<>]+/gi, "[redacted-key]")
-        .slice(0, 300);
-    };
-
-    const providerData = error.response?.data;
-    const keyIdExists = keyId !== undefined && keyId !== null && String(keyId).length > 0;
-
+    const rawCode = error?.response?.data?.code;
+    const code = typeof rawCode === "string" && /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(rawCode)
+      ? rawCode
+      : undefined;
     console.error("Outline data-limit update failed:", {
-      status: error.response?.status,
-      code: safeText(providerData?.code),
-      message: safeText(providerData?.message),
-      keyIdExists,
-      keyType: keyIdExists
-        ? String(keyId).startsWith("mock-")
-          ? "mock"
-          : "real"
-        : "missing",
+      status: error?.response?.status,
+      code,
+      keyIdExists: Boolean(keyId),
+      keyType: "real",
     });
-
     throw error;
   }
 }
 
-/**
- * Set data limit for a mock VPN key.
- */
-async function setMockAccessKeyDataLimit(
-  keyId,
-  limitBytes
-) {
-  console.log(
-    `Mock data limit set for ${keyId}: ${limitBytes} bytes`
-  );
-
-  return {
-    keyId,
-    limit: {
-      bytes: limitBytes,
-    },
-  };
-}
-
-/**
- * Set data limit.
- */
-async function setAccessKeyDataLimit(
-  keyId,
-  limitBytes
-) {
-  if (OUTLINE_MODE === "real") {
-    return setRealAccessKeyDataLimit(
-      keyId,
-      limitBytes
-    );
-  }
-
-  return setMockAccessKeyDataLimit(
-    keyId,
-    limitBytes
-  );
-}
-
-/**
- * Delete a mock VPN key.
- */
-async function deleteMockAccessKey(keyId) {
-  console.log(
-    `Mock Outline key revoked: ${keyId}`
-  );
-}
-
-/**
- * Delete a real Outline VPN access key.
- *
- * DELETE /access-keys/:id
- */
-async function deleteRealAccessKey(keyId) {
-  const client = getOutlineClient();
-
-  await client.delete(
-    `/access-keys/${encodeURIComponent(keyId)}`
-  );
-
-  console.log(
-    `Real Outline key revoked: ${keyId}`
-  );
-}
-
-/**
- * Create VPN access key.
- */
-async function createAccessKey(order) {
-  if (OUTLINE_MODE === "real") {
-    return createRealAccessKey(order);
-  }
-
-  return createMockAccessKey(order);
-}
-
-/**
- * Delete VPN access key.
- */
 async function deleteAccessKey(keyId) {
-  if (OUTLINE_MODE === "real") {
-    return deleteRealAccessKey(keyId);
-  }
-
-  return deleteMockAccessKey(keyId);
-}
-
-function isRealOutlineMode() {
-  return OUTLINE_MODE === "real";
+  assertRealKeyId(keyId);
+  await getOutlineClient().delete(`/access-keys/${encodeURIComponent(keyId)}`);
+  console.log("Real Outline access key deleted.");
 }
 
 module.exports = {
@@ -301,5 +173,5 @@ module.exports = {
   createAccessKey,
   setAccessKeyDataLimit,
   deleteAccessKey,
-  isRealOutlineMode,
+  isAccessKeyNotFoundError,
 };

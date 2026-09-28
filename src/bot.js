@@ -12,7 +12,8 @@ const { PAYMENT_METHODS } = require("./payment-config");
 const {
   createAccessKey,
   setAccessKeyDataLimit,
-  isRealOutlineMode,
+  testOutlineConnection,
+  isAccessKeyNotFoundError,
 } = require("./outline");
 
 const app = express();
@@ -23,9 +24,7 @@ app.get("/", (req, res) => {
   res.send("VPN Bot is running!");
 });
 
-const server = app.listen(PORT, () => {
-  console.log(`Server listening on port ${PORT}`);
-});
+let server;
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
 
@@ -232,16 +231,40 @@ function gbToBytes(gb) {
 }
 
 function isReusableAccessKey(keyId, vpnKey) {
-  if (!keyId || !vpnKey) return false;
+  return Boolean(
+    keyId &&
+    !String(keyId).startsWith("mock-") &&
+    isValidOutlineAccessKey(vpnKey)
+  );
+}
 
-  if (
-    isRealOutlineMode() &&
-    String(keyId).startsWith("mock-")
-  ) {
-    return false;
+async function persistReplacementAccessKey(order, subscription, accessKey, createdAt) {
+  // The order is the retry checkpoint if the subscription write fails.
+  await db.public.Order
+    .where({ id: order.id, status: "PROCESSING" })
+    .update({
+      vpnKey: accessKey.accessUrl,
+      vpnKeyId: accessKey.id,
+      vpnKeyCreatedAt: createdAt,
+    });
+
+  order.vpnKey = accessKey.accessUrl;
+  order.vpnKeyId = accessKey.id;
+  order.vpnKeyCreatedAt = createdAt;
+
+  if (subscription) {
+    await db.public.Subscription
+      .where({ id: subscription.id })
+      .update({
+        vpnKey: accessKey.accessUrl,
+        vpnKeyId: accessKey.id,
+        vpnKeyCreatedAt: createdAt,
+      });
+
+    subscription.vpnKey = accessKey.accessUrl;
+    subscription.vpnKeyId = accessKey.id;
+    subscription.vpnKeyCreatedAt = createdAt;
   }
-
-  return true;
 }
 
 /**
@@ -278,11 +301,19 @@ async function recoverStuckProcessingOrders() {
         continue;
       }
 
-      const ageMinutes =
-        Number(
-          now.epochSeconds -
-            order.processingAt.epochSeconds
-        ) / 60;
+      let ageMinutes;
+      try {
+        const processingAt = Temporal.Instant.from(order.processingAt);
+        ageMinutes = Number(now.epochMilliseconds - processingAt.epochMilliseconds) / 60000;
+      } catch {
+        console.warn(`Processing order ${order.orderNumber} has an invalid processingAt timestamp. Skipping recovery.`);
+        continue;
+      }
+
+      if (!Number.isFinite(ageMinutes) || ageMinutes < 0) {
+        console.warn(`Processing order ${order.orderNumber} has an invalid processingAt timestamp. Skipping recovery.`);
+        continue;
+      }
 
       if (
         ageMinutes <
@@ -310,11 +341,8 @@ async function recoverStuckProcessingOrders() {
         );
       }
     }
-  } catch (error) {
-    console.error(
-      "PROCESSING recovery error:",
-      error
-    );
+  } catch {
+    console.error("PROCESSING recovery failed.");
   }
 }
 
@@ -508,10 +536,7 @@ async function createPackageOrder(
 
     return order;
   } catch (error) {
-    console.error(
-      "Create package order error:",
-      error
-    );
+    console.error("Create package order failed.");
 
     await ctx.reply(
       "❌ Failed to create order."
@@ -521,6 +546,14 @@ async function createPackageOrder(
 
 async function startBot() {
   console.log("Starting VPN Bot...");
+
+  try {
+    await testOutlineConnection();
+  } catch {
+    throw new Error("Outline API connection or certificate verification failed.");
+  }
+
+  console.log("Outline API connected with verified certificate.");
 
   const database =
     await createDatabase();
@@ -721,10 +754,7 @@ async function startBot() {
           )
         );
       } catch (error) {
-        console.error(
-          "Renew package error:",
-          error
-        );
+        console.error("Renew package failed.");
 
         await ctx.reply(
           "❌ Failed to load renewal packages."
@@ -793,10 +823,7 @@ async function startBot() {
           ])
         );
       } catch (error) {
-        console.error(
-          "Renew package selection error:",
-          error
-        );
+        console.error("Renew package selection failed.");
 
         await ctx.reply(
           "❌ Failed to load renewal package."
@@ -869,10 +896,7 @@ async function startBot() {
           ])
         );
       } catch (error) {
-        console.error(
-          "Renew duration error:",
-          error
-        );
+        console.error("Renew duration selection failed.");
 
         await ctx.reply(
           "❌ Failed to calculate renewal."
@@ -944,10 +968,7 @@ async function startBot() {
           )
         );
       } catch (error) {
-        console.error(
-          "Load packages error:",
-          error
-        );
+        console.error("Could not load packages.");
 
         await ctx.reply(
           "❌ Failed to load VPN packages."
@@ -1019,10 +1040,7 @@ async function startBot() {
           ])
         );
       } catch (error) {
-        console.error(
-          "Package selection error:",
-          error
-        );
+        console.error("Package selection failed.");
 
         await ctx.reply(
           "❌ Failed to load package."
@@ -1106,10 +1124,7 @@ async function startBot() {
           ])
         );
       } catch (error) {
-        console.error(
-          "Duration selection error:",
-          error
-        );
+        console.error("Duration selection failed.");
 
         await ctx.reply(
           "❌ Failed to calculate package price."
@@ -1264,10 +1279,7 @@ async function startBot() {
         "📸 Please send your payment screenshot."
       );
     } catch (error) {
-      console.error(
-        "Payment method error:",
-        error
-      );
+      console.error("Payment method selection failed.");
 
       await ctx.reply(
         "❌ Something went wrong."
@@ -1408,10 +1420,7 @@ async function startBot() {
         }
       );
     } catch (error) {
-      console.error(
-        "Payment proof error:",
-        error
-      );
+      console.error("Payment proof handling failed.");
 
       await ctx.reply(
         "❌ Failed to submit payment proof."
@@ -1808,13 +1817,15 @@ async function startBot() {
           //     have a VPN key
           // ---------------------------------
 
-          const subscriptionHasMockKey =
-            isRealOutlineMode() &&
+          const subscriptionHasLegacyKey =
             String(subscription.vpnKeyId || "").startsWith("mock-");
+          const orderHasPersistedRealKey =
+            isReusableAccessKey(order.vpnKeyId, order.vpnKey);
 
           if (
-            (!subscription.vpnKeyId || !subscription.vpnKey) &&
-            !subscriptionHasMockKey
+            !isReusableAccessKey(subscription.vpnKeyId, subscription.vpnKey) &&
+            !subscriptionHasLegacyKey &&
+            !orderHasPersistedRealKey
           ) {
             throw new Error(
               "Existing subscription does not have a valid VPN key."
@@ -1823,35 +1834,28 @@ async function startBot() {
 
           let renewalAccessKey = null;
 
-          if (
-            isReusableAccessKey(
-              subscription.vpnKeyId,
-              subscription.vpnKey
-            )
-          ) {
-            renewalAccessKey = {
-              id: subscription.vpnKeyId,
-              accessUrl: subscription.vpnKey,
-              createdAt: subscription.vpnKeyCreatedAt,
-            };
-          } else if (
-            isReusableAccessKey(order.vpnKeyId, order.vpnKey)
-          ) {
-            // A prior attempt may have persisted the replacement on the
-            // order before it could update the subscription. Reuse it.
+          if (orderHasPersistedRealKey) {
+            // A previous attempt may have saved a replacement to the order
+            // before the subscription write or data-limit update failed.
             renewalAccessKey = {
               id: order.vpnKeyId,
               accessUrl: order.vpnKey,
               createdAt: order.vpnKeyCreatedAt || now,
             };
-          } else if (subscriptionHasMockKey) {
+          } else if (isReusableAccessKey(subscription.vpnKeyId, subscription.vpnKey)) {
+            renewalAccessKey = {
+              id: subscription.vpnKeyId,
+              accessUrl: subscription.vpnKey,
+              createdAt: subscription.vpnKeyCreatedAt,
+            };
+          } else if (subscriptionHasLegacyKey) {
             renewalAccessKey = await createAccessKey(order);
 
             if (
               !renewalAccessKey ||
               !renewalAccessKey.id ||
               !renewalAccessKey.accessUrl ||
-              String(renewalAccessKey.id).startsWith("mock-")
+              !isReusableAccessKey(renewalAccessKey.id, renewalAccessKey.accessUrl)
             ) {
               throw new Error(
                 "Outline API did not return a valid real access key."
@@ -1859,6 +1863,7 @@ async function startBot() {
             }
 
             renewalAccessKey.createdAt = now;
+            await persistReplacementAccessKey(order, subscription, renewalAccessKey, now);
           }
 
           if (!renewalAccessKey) {
@@ -1867,40 +1872,12 @@ async function startBot() {
             );
           }
 
-          const replacingLegacyMockKey =
-            !isReusableAccessKey(
-              subscription.vpnKeyId,
-              subscription.vpnKey
+          if (orderHasPersistedRealKey &&
+              (subscription.vpnKeyId !== renewalAccessKey.id ||
+               subscription.vpnKey !== renewalAccessKey.accessUrl)) {
+            await persistReplacementAccessKey(
+              order, subscription, renewalAccessKey, renewalAccessKey.createdAt
             );
-
-          if (replacingLegacyMockKey) {
-            // Save to the order first so an interrupted retry can recover
-            // this same key even if the subscription update has not landed.
-            await db.public.Order
-              .where({
-                id: order.id,
-                status: "PROCESSING",
-              })
-              .update({
-                vpnKey: renewalAccessKey.accessUrl,
-                vpnKeyId: renewalAccessKey.id,
-                vpnKeyCreatedAt: renewalAccessKey.createdAt,
-              });
-
-            await db.public.Subscription
-              .where({ id: subscription.id })
-              .update({
-                vpnKey: renewalAccessKey.accessUrl,
-                vpnKeyId: renewalAccessKey.id,
-                vpnKeyCreatedAt: renewalAccessKey.createdAt,
-              });
-
-            subscription.vpnKey = renewalAccessKey.accessUrl;
-            subscription.vpnKeyId = renewalAccessKey.id;
-            subscription.vpnKeyCreatedAt = renewalAccessKey.createdAt;
-            order.vpnKey = renewalAccessKey.accessUrl;
-            order.vpnKeyId = renewalAccessKey.id;
-            order.vpnKeyCreatedAt = renewalAccessKey.createdAt;
           }
 
           const isFuture =
@@ -1949,10 +1926,29 @@ async function startBot() {
             `New total data limit: ${newTotalDataGb} GB`
           );
 
-          await setAccessKeyDataLimit(
-            renewalAccessKey.id,
-            newDataLimitBytes
-          );
+          try {
+            await setAccessKeyDataLimit(renewalAccessKey.id, newDataLimitBytes);
+          } catch (error) {
+            if (orderHasPersistedRealKey || subscriptionHasLegacyKey ||
+                !isAccessKeyNotFoundError(error)) {
+              throw error;
+            }
+
+            // Only a confirmed missing access key can be replaced. Save the
+            // replacement before retrying the data limit, so a later approval
+            // attempt cannot create another key.
+            console.warn(`Outline access key missing for order ${order.orderNumber}. Creating one replacement.`);
+            const replacement = await createAccessKey(order);
+            if (!replacement ||
+                !isReusableAccessKey(replacement.id, replacement.accessUrl)) {
+              throw new Error("Outline API returned an invalid replacement key.");
+            }
+
+            replacement.createdAt = now;
+            await persistReplacementAccessKey(order, subscription, replacement, now);
+            renewalAccessKey = replacement;
+            await setAccessKeyDataLimit(renewalAccessKey.id, newDataLimitBytes);
+          }
 
           console.log(
             `Existing Outline key data limit updated to ${newTotalDataGb} GB`
@@ -2082,10 +2078,7 @@ async function startBot() {
               `🔐 Subscription activated`
           );
         } catch (editError) {
-          console.error(
-            "Failed to edit admin payment message:",
-            editError
-          );
+          console.error("Failed to edit admin payment message.");
         }
       } catch (error) {
         // Do not log provider errors: HTTP client errors can include
@@ -2186,20 +2179,14 @@ async function startBot() {
               `❌ PAYMENT REJECTED`
           );
         } catch (editError) {
-          console.error(
-            "Failed to edit rejected payment message:",
-            editError
-          );
+          console.error("Failed to edit rejected payment message.");
         }
 
         console.log(
           `Order ${order.orderNumber} rejected.`
         );
       } catch (error) {
-        console.error(
-          "Reject payment error:",
-          error
-        );
+        console.error("Reject payment failed.");
 
         await ctx.reply(
           "❌ Failed to reject payment."
@@ -2276,10 +2263,7 @@ async function startBot() {
           `❌ Order cancelled.\n\nOrder: ${order.orderNumber}`
         );
       } catch (error) {
-        console.error(
-          "Cancel order error:",
-          error
-        );
+        console.error("Cancel order failed.");
 
         await ctx.reply(
           "❌ Failed to cancel order."
@@ -2376,10 +2360,7 @@ async function startBot() {
           message
         );
       } catch (error) {
-        console.error(
-          "My orders error:",
-          error
-        );
+        console.error("Could not load orders.");
 
         await ctx.reply(
           "❌ Failed to load orders."
@@ -2392,11 +2373,8 @@ async function startBot() {
   // TELEGRAM ERROR HANDLER
   // =========================
 
-  bot.catch((error) => {
-    console.error(
-      "Telegram bot error:",
-      error
-    );
+  bot.catch(() => {
+    console.error("Telegram bot handler failed.");
   });
 
   // =========================
@@ -2406,6 +2384,10 @@ async function startBot() {
   console.log(
     "Starting Telegram bot..."
   );
+
+  server = app.listen(PORT, () => {
+    console.log(`Server listening on port ${PORT}`);
+  });
 
   await bot.launch();
 
@@ -2444,11 +2426,8 @@ async function startBot() {
   );
 }
 
-startBot().catch((error) => {
-  console.error(
-    "Failed to start VPN Bot:",
-    error
-  );
+startBot().catch(() => {
+  console.error("Failed to start VPN Bot. Check production configuration and service availability.");
 
   process.exit(1);
 });
