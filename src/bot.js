@@ -19,6 +19,10 @@ const {
 
 const app = express();
 
+// HTTPS terminates at the reverse proxy. Only trust forwarded headers from
+// local/private proxy addresses; keep the Express port private in production.
+app.set("trust proxy", "loopback, linklocal, uniquelocal");
+
 const PORT = process.env.PORT || 3000;
 
 app.get("/", (req, res) => {
@@ -42,23 +46,239 @@ const PROCESSING_TIMEOUT_MINUTES = 15;
 const RECOVERY_INTERVAL_MS = 5 * 60 * 1000;
 
 const GB_IN_BYTES = 1024 * 1024 * 1024;
-const OUTLINE_CLIENT_LINKS = Object.freeze({
-  android: {
-    title: "\u{1F4F1} Android Setup",
-    url: "https://play.google.com/store/apps/details?id=org.outline.android.client",
-  },
-  ios: {
-    title: "\u{1F34E} iPhone / iPad Setup",
-    url: "https://itunes.apple.com/us/app/outline-app/id1356177741",
-  },
-  windows: {
-    title: "\u{1FA9F} Windows Setup",
-    url: "https://s3.amazonaws.com/outline-releases/client/windows/stable/Outline-Client.exe",
-  },
-  macos: {
-    title: "\u{1F34E} macOS Setup",
-    url: "https://itunes.apple.com/us/app/outline-app/id1356178125",
-  },
+const CONNECT_TOKEN_TTL_MS = 10 * 60 * 1000;
+const CONNECT_TOKEN_AAD = Buffer.from("vpn-connect:v1");
+
+function getConnectConfig() {
+  let baseUrl;
+  try {
+    baseUrl = new URL(process.env.PUBLIC_BASE_URL);
+  } catch {
+    throw new Error("PUBLIC_BASE_URL must be the public HTTPS URL of this Express server.");
+  }
+  if (baseUrl.protocol !== "https:" || baseUrl.username || baseUrl.password ||
+      baseUrl.search || baseUrl.hash) {
+    throw new Error("PUBLIC_BASE_URL must use HTTPS without credentials, query, or fragment.");
+  }
+  const secret = process.env.CONNECT_TOKEN_SECRET;
+  if (!secret || Buffer.byteLength(secret, "utf8") < 32) {
+    throw new Error("CONNECT_TOKEN_SECRET must contain at least 32 bytes of random secret material.");
+  }
+  return {
+    baseUrl: baseUrl.href.replace(/\/+$/, ""),
+    tokenKey: crypto.createHash("sha256").update(secret).digest(),
+  };
+}
+
+function createVpnConnectUrl(subscription) {
+  if (!isSubscriptionActive(subscription) ||
+      !isReusableAccessKey(subscription.vpnKeyId, subscription.vpnKey) ||
+      !Number.isSafeInteger(subscription.id) || subscription.id <= 0) {
+    throw new Error("VPN setup requires an active subscription with an existing key.");
+  }
+  const { baseUrl, tokenKey } = getConnectConfig();
+  const expiresAt = Math.min(
+    Date.now() + CONNECT_TOKEN_TTL_MS,
+    Number(Temporal.Instant.from(subscription.expiresAt).epochMilliseconds)
+  );
+  // Authenticated encryption hides the database ID. Neither the Telegram ID
+  // nor the VPN key is included. Random IVs make every link different.
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", tokenKey, iv);
+  cipher.setAAD(CONNECT_TOKEN_AAD);
+  const encrypted = Buffer.concat([
+    cipher.update(JSON.stringify({ subscriptionId: subscription.id, expiresAt }), "utf8"),
+    cipher.final(),
+  ]);
+  const token = Buffer.concat([iv, cipher.getAuthTag(), encrypted]).toString("base64url");
+  return `${baseUrl}/connect/v1.${token}`;
+}
+
+function readConnectToken(token) {
+  if (typeof token !== "string" || !/^v1\.[A-Za-z0-9_-]{40,240}$/.test(token)) return null;
+  try {
+    const encoded = token.slice(3);
+    const bytes = Buffer.from(encoded, "base64url");
+    if (bytes.toString("base64url") !== encoded) return null;
+    const { tokenKey } = getConnectConfig();
+    const decipher = crypto.createDecipheriv("aes-256-gcm", tokenKey, bytes.subarray(0, 12));
+    decipher.setAAD(CONNECT_TOKEN_AAD);
+    decipher.setAuthTag(bytes.subarray(12, 28));
+    const payload = JSON.parse(Buffer.concat([
+      decipher.update(bytes.subarray(28)), decipher.final(),
+    ]).toString("utf8"));
+    if (!Number.isSafeInteger(payload.subscriptionId) || payload.subscriptionId <= 0 ||
+        !Number.isSafeInteger(payload.expiresAt) || payload.expiresAt <= Date.now() ||
+        payload.expiresAt > Date.now() + CONNECT_TOKEN_TTL_MS) return null;
+    return payload;
+  } catch {
+    // Never log bearer tokens, decrypted payloads, keys, or crypto errors.
+    return null;
+  }
+}
+
+function scriptJson(value) {
+  return JSON.stringify(value).replace(/[<>&\u2028\u2029]/g, (character) =>
+    "\\u" + character.charCodeAt(0).toString(16).padStart(4, "0"));
+}
+
+function renderVpnConnectPage(vpnKey, nonce, remainingMs) {
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>VPN Setup</title>
+  <style nonce="${nonce}">
+    body { font-family: system-ui, sans-serif; margin: 0; background: #f4f7fa; color: #172b3a; }
+    main { box-sizing: border-box; max-width: 440px; margin: 8vh auto; padding: 28px; }
+    h1 { font-size: 2rem; }
+    p { line-height: 1.55; }
+    button { display: block; width: 100%; padding: 16px; margin: 12px 0; border: 0;
+      border-radius: 12px; font: inherit; font-weight: 600; cursor: pointer;
+      background: #087e8b; color: white; }
+    button.secondary { background: #dfe9ef; color: #172b3a; }
+    button:focus-visible { outline: 3px solid #172b3a; outline-offset: 3px; }
+    button:disabled { opacity: .5; cursor: default; }
+    .hint { font-size: .9rem; color: #425969; }
+    .clipboard-buffer { position: fixed; top: 0; left: 0; width: 1px; height: 1px;
+      opacity: 0; font-size: 16px; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>VPN Setup</h1>
+    <p id="status" role="status" aria-live="polite">Opening Outline...</p>
+    <p>If Outline does not open:</p>
+    <button id="open-outline" type="button">🚀 Open Outline</button>
+    <button id="copy-key" class="secondary" type="button">📋 Copy VPN Key</button>
+    <p id="platform-help" class="hint">Allow your browser to open Outline, then tap Add / Connect.</p>
+    <p class="hint">If Telegram's browser blocks opening Outline, open this page in Safari or Chrome,
+      or copy the key and paste it into Outline. Keep this setup link private. It expires within 10 minutes.</p>
+    <noscript>Enable JavaScript to open Outline or copy your key. You can also use Copy VPN Key in Telegram.</noscript>
+  </main>
+  <script nonce="${nonce}">
+    (() => {
+      let vpnKey = ${scriptJson(vpnKey)};
+      const deadline = performance.now() + ${Math.max(0, remainingMs)};
+      const status = document.getElementById("status");
+      const openButton = document.getElementById("open-outline");
+      const copyButton = document.getElementById("copy-key");
+      let useLegacyCopy = false;
+      let hintTimer;
+      function isUsable() {
+        if (vpnKey && performance.now() < deadline) return true;
+        vpnKey = "";
+        openButton.disabled = true;
+        copyButton.disabled = true;
+        status.textContent = "This setup link has expired. Return to My VPN in Telegram for a new link.";
+        return false;
+      }
+      function openOutline() {
+        if (!isUsable()) return;
+        clearTimeout(hintTimer);
+        status.textContent = "Opening Outline...";
+        // Keep this synchronous inside the real click. No fetch, await, timer,
+        // iframe, invented scheme, or Android intent/store fallback.
+        try { window.location.href = vpnKey; } catch {
+          status.textContent = "Your browser blocked opening Outline. Copy the key and open Outline manually.";
+        }
+        // Browsers cannot reliably report whether a custom-scheme app opened.
+        hintTimer = setTimeout(() => {
+          if (isUsable()) status.textContent = "If Outline did not open, tap Open Outline or copy your VPN key.";
+        }, 1800);
+      }
+      function legacyCopy() {
+        const field = document.createElement("textarea");
+        field.value = vpnKey;
+        field.readOnly = true;
+        field.className = "clipboard-buffer";
+        field.setAttribute("aria-hidden", "true");
+        document.body.appendChild(field);
+        try {
+          field.focus({ preventScroll: true });
+          field.select();
+          field.setSelectionRange(0, field.value.length);
+          return document.execCommand("copy");
+        } finally {
+          field.remove();
+          copyButton.focus({ preventScroll: true });
+        }
+      }
+      openButton.addEventListener("click", openOutline);
+      copyButton.addEventListener("click", async () => {
+        if (!isUsable()) return;
+        clearTimeout(hintTimer);
+        try {
+          if (!useLegacyCopy && navigator.clipboard && window.isSecureContext) {
+            await navigator.clipboard.writeText(vpnKey);
+          } else if (!legacyCopy()) {
+            throw new Error("Copy unavailable");
+          }
+          if (isUsable()) status.textContent = "VPN key copied. Open Outline, add the copied key, then connect.";
+        } catch {
+          if (!isUsable()) return;
+          // A rejected async clipboard call may consume user activation. The
+          // next click performs the legacy copy synchronously with a new gesture.
+          useLegacyCopy = true;
+          status.textContent = "Copy was blocked. Tap Copy VPN Key again, or use Copy VPN Key in Telegram.";
+        }
+      });
+      const ua = navigator.userAgent;
+      const isAppleMobile = /iPhone|iPad|iPod/.test(ua) ||
+        (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+      const help = document.getElementById("platform-help");
+      if (isAppleMobile) {
+        help.textContent = "In Safari, tap Open if asked. If nothing opens, tap Open Outline. Then tap Add / Connect.";
+      } else if (/Android/.test(ua)) {
+        help.textContent = "Chrome may require a tap on Open Outline. Choose Outline if asked, then tap Add / Connect.";
+      } else if (/Windows/.test(ua)) {
+        help.textContent = "Allow the browser to open Outline. If Windows asks for an app, choose Outline. Then add the key and connect.";
+      } else if (/Mac/.test(ua)) {
+        help.textContent = "Allow your browser to open Outline on your Mac, then add the key and connect.";
+      }
+      setTimeout(isUsable, Math.max(0, deadline - performance.now()));
+      window.addEventListener("pageshow", isUsable);
+      document.addEventListener("visibilitychange", isUsable);
+      openOutline();
+    })();
+  </script>
+</body>
+</html>`;
+}
+
+app.get("/connect/:token", async (req, res) => {
+  const nonce = crypto.randomBytes(18).toString("base64");
+  res.set({
+    "Cache-Control": "private, no-store, max-age=0",
+    "Pragma": "no-cache",
+    "Expires": "0",
+    "Referrer-Policy": "no-referrer",
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "X-Robots-Tag": "noindex, nofollow, noarchive",
+    "Content-Security-Policy": `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'`,
+  });
+  // Never redirect an HTTP request with a bearer token or send it a VPN key.
+  if (!req.secure) return res.status(400).type("text").send("Open the HTTPS setup link from My VPN in Telegram.");
+  const invalidLink = () => res.status(410).type("text").send(
+    "This setup link is invalid, expired, or unavailable. Return to My VPN in Telegram for a new link."
+  );
+  const payload = readConnectToken(req.params.token);
+  if (!payload) return invalidLink();
+  try {
+    const subscription = await db.public.Subscription.where({ id: payload.subscriptionId }).first();
+    if (payload.expiresAt <= Date.now() || !isSubscriptionActive(subscription) ||
+        !isReusableAccessKey(subscription.vpnKeyId, subscription.vpnKey)) return invalidLink();
+    const remainingMs = Math.min(payload.expiresAt,
+      Number(Temporal.Instant.from(subscription.expiresAt).epochMilliseconds)) - Date.now();
+    if (remainingMs <= 0) return invalidLink();
+    return res.type("html").send(renderVpnConnectPage(subscription.vpnKey, nonce, remainingMs));
+  } catch {
+    console.error("VPN setup page could not be loaded.");
+    return res.status(503).type("text").send("VPN setup is temporarily unavailable. Please try again from My VPN in Telegram.");
+  }
 });
 
 let startupStage = "production config validation";
@@ -85,6 +305,7 @@ function sanitizeDiagnosticMessage(value) {
     process.env.OUTLINE_API_CERT_SHA256,
     process.env.BOT_TOKEN,
     process.env.DATABASE_URL,
+    process.env.CONNECT_TOKEN_SECRET,
   ];
 
   try {
@@ -222,37 +443,17 @@ async function getUsableVpnSubscription(ctx) {
 }
 
 async function sendVpnSetup(ctx) {
-  if (!await getUsableVpnSubscription(ctx)) return;
-
-  await ctx.reply(
-    "\u26A1 Setup VPN\n\nChoose your device:",
-    Markup.inlineKeyboard([
-      [Markup.button.callback("\u{1F4F1} Android", "setup_platform_android")],
-      [Markup.button.callback("\u{1F34E} iPhone / iPad", "setup_platform_ios")],
-      [Markup.button.callback("\u{1FA9F} Windows", "setup_platform_windows")],
-      [Markup.button.callback("\u{1F34E} macOS", "setup_platform_macos")],
-      [Markup.button.callback("\u{1F519} Back to My VPN", "my_vpn")],
-    ])
-  );
-}
-
-async function sendPlatformVpnSetup(ctx, platform) {
-  const client = OUTLINE_CLIENT_LINKS[platform];
-  if (!client) return;
-
   const subscription = await getUsableVpnSubscription(ctx);
   if (!subscription) return;
 
   await ctx.reply(
-    client.title + "\n\n" +
-      "1. Tap Copy VPN Key.\n" +
-      "2. Tap Open Outline to install it, or open your installed app.\n" +
-      "3. In Outline, tap Add and import the copied key. Paste it if needed.\n" +
-      "4. Tap Connect.",
+    "⚡ Setup VPN\n\nTap Setup VPN to open your existing key in Outline, then tap Add / Connect.\n\n" +
+      "If your browser blocks opening the app, tap Open Outline on the setup page or copy your key.\n\n" +
+      "The private setup link expires within 10 minutes. Return to My VPN for a new link.",
     Markup.inlineKeyboard([
+      [Markup.button.url("⚡ Setup VPN", createVpnConnectUrl(subscription))],
       [copyVpnKeyButton(subscription.vpnKey)],
-      [Markup.button.url("\u{1F680} Open Outline", client.url)],
-      [Markup.button.callback("\u{1F519} Choose Device", "setup_vpn")],
+      [Markup.button.callback("\u{1F519} Back to My VPN", "my_vpn")],
     ])
   );
 }
@@ -661,6 +862,7 @@ async function startBot() {
 
   startupStage = "production config validation";
   validateOutlineConfig();
+  getConnectConfig();
 
   startupStage = "Outline API connection";
   await testOutlineConnection();
@@ -741,7 +943,7 @@ async function startBot() {
             ? [
                 [copyVpnKeyButton(subscription.vpnKey)],
 
-                [Markup.button.callback("⚡ Setup VPN", "setup_vpn")],
+                [Markup.button.url("⚡ Setup VPN", createVpnConnectUrl(subscription))],
               ]
             : [[Markup.button.callback("\u{1F6D2} Buy VPN", "buy_vpn")]]),
           [Markup.button.callback("🔄 Renew VPN", "renew_vpn")],
@@ -780,7 +982,8 @@ async function startBot() {
   bot.action(/^setup_platform_(android|ios|windows|macos)$/, async (ctx) => {
     await ctx.answerCbQuery();
     try {
-      await sendPlatformVpnSetup(ctx, ctx.match[1]);
+      // Old device-picker messages now issue the same direct helper link.
+      await sendVpnSetup(ctx);
     } catch {
       console.error("Could not load platform VPN setup.");
       await ctx.reply("Failed to load VPN setup. Please try again from My VPN.");
