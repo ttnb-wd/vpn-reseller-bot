@@ -148,42 +148,61 @@ async function setRealAccessKeyDataLimit(
   keyId,
   limitBytes
 ) {
-  const client = getOutlineClient();
+  try {
+    const client = getOutlineClient();
 
-  if (!Number.isFinite(limitBytes)) {
-    throw new Error(
-      "limitBytes must be a valid number."
-    );
-  }
-
-  if (!Number.isInteger(limitBytes)) {
-    throw new Error(
-      "limitBytes must be an integer."
-    );
-  }
-
-  if (limitBytes < 0) {
-    throw new Error(
-      "limitBytes must be non-negative."
-    );
-  }
-
-  const response = await client.put(
-    `/access-keys/${encodeURIComponent(
-      keyId
-    )}/data-limit`,
-    {
-      limit: {
-        bytes: limitBytes,
-      },
+    if (!Number.isFinite(limitBytes)) {
+      throw new Error("limitBytes must be a valid number.");
     }
-  );
 
-  console.log(
-    `Data limit set for Outline key ${keyId}: ${limitBytes} bytes`
-  );
+    if (!Number.isInteger(limitBytes)) {
+      throw new Error("limitBytes must be an integer.");
+    }
 
-  return response.data;
+    if (limitBytes < 0) {
+      throw new Error("limitBytes must be non-negative.");
+    }
+
+    const response = await client.put(
+      `/access-keys/${encodeURIComponent(keyId)}/data-limit`,
+      {
+        limit: {
+          bytes: limitBytes,
+        },
+      }
+    );
+
+    console.log("Outline data limit updated successfully.");
+    return response.data;
+  } catch (error) {
+    const safeText = (value) => {
+      if (typeof value !== "string" && typeof value !== "number") {
+        return undefined;
+      }
+
+      return String(value)
+        .replace(/https?:\/\/[^\s"'<>]+/gi, "[redacted-url]")
+        .replace(/ss:\/\/[^\s"'<>]+/gi, "[redacted-key]")
+        .slice(0, 300);
+    };
+
+    const providerData = error.response?.data;
+    const keyIdExists = keyId !== undefined && keyId !== null && String(keyId).length > 0;
+
+    console.error("Outline data-limit update failed:", {
+      status: error.response?.status,
+      code: safeText(providerData?.code),
+      message: safeText(providerData?.message),
+      keyIdExists,
+      keyType: keyIdExists
+        ? String(keyId).startsWith("mock-")
+          ? "mock"
+          : "real"
+        : "missing",
+    });
+
+    throw error;
+  }
 }
 
 /**

@@ -42,6 +42,7 @@ const PROCESSING_TIMEOUT_MINUTES = 15;
 const RECOVERY_INTERVAL_MS = 5 * 60 * 1000;
 
 const GB_IN_BYTES = 1024 * 1024 * 1024;
+const OUTLINE_CLIENT_URL = "https://getoutline.org/get-started/";
 
 function isAdmin(ctx) {
   return String(ctx.from?.id) === ADMIN_TELEGRAM_ID;
@@ -62,9 +63,14 @@ function isSubscriptionActive(subscription, now = Temporal.Now.instant()) {
   return Boolean(
     subscription &&
       subscription.status === "ACTIVE" &&
+      !subscription.revokedAt &&
       subscription.expiresAt &&
       Temporal.Instant.compare(subscription.expiresAt, now) > 0
   );
+}
+
+function isValidOutlineAccessKey(value) {
+  return typeof value === "string" && /^ss:\/\/\S+$/.test(value);
 }
 
 async function findCustomerSubscription(telegramId) {
@@ -88,6 +94,58 @@ function renewBuyKeyboard() {
   ]);
 }
 
+function copyVpnKeyButton(vpnKey) {
+  // Telegram CopyTextButton accepts at most 256 characters. Telegraf 4.16
+  // passes this Bot API button through without a dedicated builder method.
+  if (Array.from(vpnKey).length <= 256) {
+    return {
+      text: "📋 Copy VPN Key",
+      copy_text: { text: vpnKey },
+    };
+  }
+
+  return Markup.button.callback("📋 Copy VPN Key", "copy_vpn_key");
+}
+
+async function sendVpnSetup(ctx) {
+  const { customer, subscription } = await findCustomerSubscription(ctx.from.id);
+
+  if (!customer || !subscription) {
+    return await ctx.reply(
+      "🔐 My VPN\n\nYou don't have an active VPN subscription yet.",
+      Markup.inlineKeyboard([[Markup.button.callback("🛒 Buy VPN", "buy_vpn")]])
+    );
+  }
+
+  if (!isSubscriptionActive(subscription)) {
+    return await ctx.reply(
+      "🔴 VPN Subscription Expired\n\nYour VPN package is expired or inactive.",
+      renewBuyKeyboard()
+    );
+  }
+
+  if (
+    !subscription.vpnKeyId ||
+    !isReusableAccessKey(subscription.vpnKeyId, subscription.vpnKey) ||
+    !isValidOutlineAccessKey(subscription.vpnKey)
+  ) {
+    return await ctx.reply("Your VPN key is not available. Please contact support.");
+  }
+
+  await ctx.reply(
+    "⚡ Setup VPN\n\n" +
+      "1. Tap 📋 Copy VPN Key.\n" +
+      "2. Tap 🚀 Open Outline, or open the installed app.\n" +
+      "3. In Outline, tap Add. If the key is not detected, paste it.\n" +
+      "4. Tap Connect.",
+    Markup.inlineKeyboard([
+      [copyVpnKeyButton(subscription.vpnKey)],
+      [Markup.button.url("🚀 Open Outline", OUTLINE_CLIENT_URL)],
+      [Markup.button.callback("🔙 Back to My VPN", "my_vpn")],
+    ])
+  );
+}
+
 async function sendExistingVpnKey(ctx, actionTitle) {
   const { customer, subscription } = await findCustomerSubscription(ctx.from.id);
 
@@ -107,7 +165,11 @@ async function sendExistingVpnKey(ctx, actionTitle) {
     return;
   }
 
-  if (!subscription.vpnKeyId || !subscription.vpnKey) {
+  if (
+    !subscription.vpnKeyId ||
+    !isReusableAccessKey(subscription.vpnKeyId, subscription.vpnKey) ||
+    !isValidOutlineAccessKey(subscription.vpnKey)
+  ) {
     await ctx.reply(
       "Your VPN key is not available yet. Please contact support or renew your VPN.",
       renewBuyKeyboard()
@@ -116,8 +178,7 @@ async function sendExistingVpnKey(ctx, actionTitle) {
   }
 
   await ctx.reply(
-    `${actionTitle}\n\nCopy this existing key into the Outline app:\n\n\`${subscription.vpnKey}\`\n\nKeep this key private.`,
-    { parse_mode: "Markdown" }
+    `${actionTitle}\n\nCopy this existing key into the Outline app:\n\n${subscription.vpnKey}\n\nKeep this key private.`
   );
 }
 
@@ -520,30 +581,32 @@ async function startBot() {
         Math.ceil(Number(subscription.expiresAt.epochSeconds - Temporal.Now.instant().epochSeconds) / 86400)
       );
       const packageLabel = pkg?.name || subscription.plan || "VPN package";
-      const keyLine = subscription.vpnKeyId && subscription.vpnKey
-        ? `\n\n🔑 VPN Key\n\`${subscription.vpnKey}\``
-        : "\n\n🔑 VPN key is not available yet. Please contact support.";
+      const hasReusableKey = Boolean(subscription.vpnKeyId &&
+        isReusableAccessKey(subscription.vpnKeyId, subscription.vpnKey) &&
+        isValidOutlineAccessKey(subscription.vpnKey));
 
       await ctx.reply(
         `🔐 My VPN\n\n` +
           `📦 Package: ${packageLabel}\n` +
-          `📊 Usage: ${formatNumber(subscription.dataUsedGb || 0)} GB / ${formatNumber(subscription.dataLimitGb || 0)} GB\n` +
+          `📊 Data: ${formatNumber(subscription.dataLimitGb || 0)} GB (${formatNumber(subscription.dataUsedGb || 0)} GB used)\n` +
           `⏱ Duration: ${getDurationLabel(subscription.durationMonths || 1)}\n` +
           `📅 Expires: ${formatInstant(subscription.expiresAt)}\n` +
           `⏳ Remaining: ${remainingDays} days\n` +
-          `🟢 Status: Active${keyLine}`,
+          `🟢 Status: Active${hasReusableKey ? "" : "\n\n🔑 VPN key is not available yet. Please contact support."}`,
         Markup.inlineKeyboard([
-          [Markup.button.callback("📋 Copy VPN Key", "copy_vpn_key")],
-          [Markup.button.callback("➕ Add to this device", "add_device")],
+          ...(hasReusableKey
+            ? [
+                [copyVpnKeyButton(subscription.vpnKey)],
+                [Markup.button.url("🚀 Open Outline", OUTLINE_CLIENT_URL)],
+                [Markup.button.callback("⚡ Setup VPN", "setup_vpn")],
+              ]
+            : []),
           [Markup.button.callback("🔄 Renew VPN", "renew_vpn")],
           [Markup.button.callback("📦 My Orders", "my_orders")],
         ])
       );
-    } catch (error) {
-      console.error(
-        "My VPN error:",
-        error
-      );
+    } catch {
+      console.error("Could not load My VPN.");
 
       await ctx.reply(
         "❌ Failed to load VPN information."
@@ -555,22 +618,19 @@ async function startBot() {
     await ctx.answerCbQuery();
     try {
       await sendExistingVpnKey(ctx, "📋 Copy VPN Key");
-    } catch (error) {
-      console.error("Copy VPN key error:", error.message);
+    } catch {
+      console.error("Could not load VPN key for copying.");
       await ctx.reply("Failed to load your VPN key.");
     }
   });
 
-  bot.action("add_device", async (ctx) => {
+  bot.action(/^(?:setup_vpn|add_device)$/, async (ctx) => {
     await ctx.answerCbQuery();
     try {
-      await sendExistingVpnKey(
-        ctx,
-        "➕ Add to this device\n\nOpen Outline Client, choose Add server, then paste the key below. This works as the safe manual import flow across Android, iPhone/iPad, Windows, and macOS."
-      );
-    } catch (error) {
-      console.error("Add device error:", error.message);
-      await ctx.reply("Failed to load your VPN key.");
+      await sendVpnSetup(ctx);
+    } catch {
+      console.error("Could not load VPN setup.");
+      await ctx.reply("Failed to load VPN setup. Please try again from My VPN.");
     }
   });
 
@@ -584,88 +644,10 @@ async function startBot() {
       await ctx.answerCbQuery();
 
       try {
-        const customer =
-          await db.public.Customer
-            .where({
-              telegramId: String(
-                ctx.from.id
-              ),
-            })
-            .first();
-
-        if (!customer) {
-          return await ctx.reply(
-            "❌ Customer account not found."
-          );
-        }
-
-        const subscription =
-          await db.public.Subscription
-            .where({
-              customerId: customer.id,
-            })
-            .first();
-
-        if (!subscription) {
-          return await ctx.reply(
-            "🔐 My VPN\n\nYou don't have an active VPN subscription yet.",
-            Markup.inlineKeyboard([[Markup.button.callback("🛒 Buy VPN", "buy_vpn")]])
-          );
-        }
-
-        if (!isSubscriptionActive(subscription)) {
-          return await ctx.reply(
-            "🔴 VPN Subscription Expired\n\nYour VPN package has expired or is inactive.",
-            renewBuyKeyboard()
-          );
-        }
-
-        if (!subscription.vpnKeyId || !subscription.vpnKey) {
-          return await ctx.reply(
-            "VPN connection key is not available yet. Please contact support.",
-            renewBuyKeyboard()
-          );
-        }
-
-        await ctx.reply(
-          `🔗 VPN Connection Link\n\n` +
-            `${subscription.vpnKey}\n\n` +
-            `📅 Expires:\n${formatInstant(
-              subscription.expiresAt
-            )}\n\n` +
-            `⚠️ Keep this connection link private.`,
-
-          Markup.inlineKeyboard([
-            [
-              Markup.button.callback(
-                "➕ Add to this device",
-                "add_device"
-              ),
-            ],
-            [
-              Markup.button.callback(
-                "📋 Copy VPN Key",
-                "copy_vpn_key"
-              ),
-            ],
-
-            [
-              Markup.button.callback(
-                "⬅️ Back to My VPN",
-                "my_vpn"
-              ),
-            ],
-          ])
-        );
-      } catch (error) {
-        console.error(
-          "Connection link error:",
-          error
-        );
-
-        await ctx.reply(
-          "❌ Failed to load VPN connection link."
-        );
+        await sendVpnSetup(ctx);
+      } catch {
+        console.error("Could not load VPN setup from the connection link.");
+        await ctx.reply("Failed to load VPN setup. Please try again from My VPN.");
       }
     }
   );
