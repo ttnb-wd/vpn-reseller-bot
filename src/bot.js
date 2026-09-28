@@ -151,8 +151,8 @@ function renderVpnConnectPage(vpnKey, nonce, remainingMs) {
     <h1>VPN Setup</h1>
     <p id="status" role="status" aria-live="polite">Opening Outline...</p>
     <p>If Outline does not open:</p>
-    <button id="open-outline" type="button">🚀 Open Outline</button>
-    <button id="copy-key" class="secondary" type="button">📋 Copy VPN Key</button>
+    <button id="open-outline" type="button">🧭 Open Outline</button>
+    <button id="copy-key" class="secondary" type="button">Copy VPN Key</button>
     <p id="platform-help" class="hint">Allow your browser to open Outline, then tap Add / Connect.</p>
     <p class="hint">If Telegram's browser blocks opening Outline, open this page in Safari or Chrome,
       or copy the key and paste it into Outline. Keep this setup link private. It expires within 10 minutes.</p>
@@ -394,8 +394,8 @@ async function findCustomerSubscription(telegramId) {
 
 function renewBuyKeyboard() {
   return Markup.inlineKeyboard([
-    [Markup.button.callback("🔄 Renew VPN", "renew_vpn")],
-    [Markup.button.callback("🛒 Buy VPN", "buy_vpn")],
+    [Markup.button.callback("♻️ Renew", "renew_vpn"), Markup.button.callback("🛡️ Buy VPN", "buy_vpn")],
+    [Markup.button.callback("🎧 Help", "help")],
   ]);
 }
 
@@ -404,12 +404,12 @@ function copyVpnKeyButton(vpnKey) {
   // passes this Bot API button through without a dedicated builder method.
   if (Array.from(vpnKey).length <= 256) {
     return {
-      text: "📋 Copy VPN Key",
+      text: "Copy VPN Key",
       copy_text: { text: vpnKey },
     };
   }
 
-  return Markup.button.callback("📋 Copy VPN Key", "copy_vpn_key");
+  return Markup.button.callback("Copy VPN Key", "copy_vpn_key");
 }
 
 async function getUsableVpnSubscription(ctx) {
@@ -417,15 +417,15 @@ async function getUsableVpnSubscription(ctx) {
 
   if (!customer || !subscription) {
     await ctx.reply(
-      "\u{1F510} My VPN\n\nYou don't have an active VPN subscription yet.",
-      Markup.inlineKeyboard([[Markup.button.callback("\u{1F6D2} Buy VPN", "buy_vpn")]])
+      "🌐 My VPN\n\nYou don't have an active VPN subscription yet.",
+      buildMainMenu()
     );
     return null;
   }
 
   if (!isSubscriptionActive(subscription)) {
     await ctx.reply(
-      "\u{1F534} VPN Subscription Expired\n\nYour VPN package is expired or inactive.",
+      "⏳ VPN Subscription Expired\n\nYour VPN package is expired or inactive.",
       renewBuyKeyboard()
     );
     return null;
@@ -447,13 +447,13 @@ async function sendVpnSetup(ctx) {
   if (!subscription) return;
 
   await ctx.reply(
-    "⚡ Setup VPN\n\nTap Setup VPN to open your existing key in Outline, then tap Add / Connect.\n\n" +
-      "If your browser blocks opening the app, tap Open Outline on the setup page or copy your key.\n\n" +
-      "The private setup link expires within 10 minutes. Return to My VPN for a new link.",
+    "🛰️ Setup VPN\n\n" +
+      "1️⃣ Copy your VPN key\n2️⃣ Open Outline\n3️⃣ Add the VPN\n4️⃣ Tap Connect\n\n" +
+      "If Outline does not open, use Safari or Chrome, or paste your key into Outline.\n" +
+      "Keep your key private. The setup link expires within 10 minutes; My VPN gives you a new link.",
     Markup.inlineKeyboard([
-      [Markup.button.url("⚡ Setup VPN", createVpnConnectUrl(subscription))],
-      [copyVpnKeyButton(subscription.vpnKey)],
-      [Markup.button.callback("\u{1F519} Back to My VPN", "my_vpn")],
+      [copyVpnKeyButton(subscription.vpnKey), Markup.button.url("🧭 Open Outline", createVpnConnectUrl(subscription))],
+      [Markup.button.callback("← Back to My VPN", "my_vpn")],
     ])
   );
 }
@@ -463,15 +463,15 @@ async function sendExistingVpnKey(ctx, actionTitle) {
 
   if (!customer || !subscription) {
     await ctx.reply(
-      "🔐 My VPN\n\nYou don't have an active VPN subscription yet.",
-      Markup.inlineKeyboard([[Markup.button.callback("🛒 Buy VPN", "buy_vpn")]])
+      "🌐 My VPN\n\nYou don't have an active VPN subscription yet.",
+      buildMainMenu()
     );
     return;
   }
 
   if (!isSubscriptionActive(subscription)) {
     await ctx.reply(
-      "🔴 VPN Subscription Expired\n\nYour VPN package is expired or inactive.",
+      "⏳ VPN Subscription Expired\n\nYour VPN package is expired or inactive.",
       renewBuyKeyboard()
     );
     return;
@@ -496,6 +496,134 @@ async function sendExistingVpnKey(ctx, actionTitle) {
 
 function formatNumber(value) {
   return Number(value).toLocaleString("en-US");
+}
+
+function formatMmk(value) {
+  return `${formatNumber(value)} MMK`;
+}
+
+function formatOrderStatus(status) {
+  return {
+    PENDING_PAYMENT: "Awaiting payment review",
+    PROCESSING: "Activating VPN",
+    PAID: "Paid",
+    PAYMENT_REJECTED: "Payment rejected",
+    CANCELLED: "Cancelled",
+  }[status] || status;
+}
+
+// Keep text and keyboards separate so these screens can later use photo captions.
+function buildMainMenu() {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback("🛡️ Buy VPN", "buy_vpn"), Markup.button.callback("🌐 My VPN", "my_vpn")],
+    [Markup.button.callback("🗂️ My Orders", "my_orders"), Markup.button.callback("🛰️ Setup VPN", "setup_vpn")],
+    [Markup.button.callback("🎧 Help", "help")],
+  ]);
+}
+
+function compactButtonRows(buttons) {
+  const rows = [];
+  for (const button of buttons) {
+    const last = rows[rows.length - 1];
+    if (last?.length === 1 && Array.from(last[0].text).length <= 20 &&
+        Array.from(button.text).length <= 20) {
+      last.push(button);
+    } else {
+      rows.push([button]);
+    }
+  }
+  return rows;
+}
+
+function buildPackageKeyboard(packages, isRenewal = false) {
+  const buttons = packages.map((pkg) => Markup.button.callback(
+    /premium/i.test(pkg.name) ? `💎 ${pkg.name}` : pkg.name,
+    `${isRenewal ? "renew_package" : "package"}_${pkg.id}`
+  ));
+  return Markup.inlineKeyboard([
+    ...compactButtonRows(buttons),
+    [Markup.button.callback("← Back", isRenewal ? "my_vpn" : "back_to_start")],
+  ]);
+}
+
+function formatPackageDetails(pkg) {
+  const title = /\bplan$/i.test(pkg.name) ? pkg.name : `${pkg.name} Plan`;
+  return `💎 ${title.toUpperCase()}\n\n` +
+    `📡 Data: ${formatNumber(pkg.dataLimitGb)} GB\n` +
+    `⏳ Duration: ${pkg.durationDays} Days\n` +
+    `🧾 Price: ${formatMmk(pkg.priceMmk)}\n\n` +
+    "Network:\n• Outline VPN\n• Android / iPhone / iPad\n• Windows / macOS\n" +
+    "• Secure personal access key\n• Renewal uses the same VPN key";
+}
+
+function buildPackageDetailKeyboard(pkg, isRenewal = false) {
+  const prefix = isRenewal ? "renew_duration" : "duration";
+  return Markup.inlineKeyboard([
+    [Markup.button.callback(isRenewal ? "♻️ Renew This Plan" : "🧾 Buy This Plan", `${prefix}_${pkg.id}_1`)],
+    // Retain the existing multi-month purchases with database-derived day counts.
+    [3, 6].map((months) => Markup.button.callback(
+      `⏳ ${Number(pkg.durationDays) * months} Days`, `${prefix}_${pkg.id}_${months}`
+    )),
+    [Markup.button.callback("← Back to Packages", isRenewal ? "renew_vpn" : "buy_vpn")],
+  ]);
+}
+
+function formatPurchaseConfirmation(pkg, durationMonths, isRenewal = false) {
+  const { totalDataGb, totalPriceMmk, durationDays } = calculatePackage(pkg, durationMonths);
+  return `🧾 Confirm Your ${isRenewal ? "Renewal" : "Order"}\n\n` +
+    `Plan: ${pkg.name}\n📡 Data: ${formatNumber(totalDataGb)} GB\n` +
+    `⏳ Duration: ${durationDays} Days\n🧾 Price: ${formatMmk(totalPriceMmk)}\n\n` +
+    "Please confirm before continuing.";
+}
+
+function buildConfirmationKeyboard(pkg, durationMonths, isRenewal = false) {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback(isRenewal ? "Confirm Renewal" : "Confirm Purchase",
+      `${isRenewal ? "confirm_renewal" : "confirm_package"}_${pkg.id}_${durationMonths}`)],
+    [Markup.button.callback("← Back", `${isRenewal ? "renew_package" : "package"}_${pkg.id}`)],
+  ]);
+}
+
+function buildMyVpnKeyboard(subscription, activated = false) {
+  const hasKey = isReusableAccessKey(subscription.vpnKeyId, subscription.vpnKey);
+  return Markup.inlineKeyboard([
+    hasKey
+      ? [Markup.button.callback("🛰️ Setup VPN", "setup_vpn"), copyVpnKeyButton(subscription.vpnKey)]
+      : [Markup.button.callback("🎧 Help", "help")],
+    [activated ? Markup.button.callback("🌐 My VPN", "my_vpn") : Markup.button.callback("♻️ Renew", "renew_vpn"),
+      Markup.button.callback("🗂️ My Orders", "my_orders")],
+  ]);
+}
+
+function formatActivation(pkg, dataLimitGb, expiresAt, isRenewal = false) {
+  return `VPN ${isRenewal ? "RENEWED" : "ACTIVATED"}\n\nYour VPN is ready.\n\n` +
+    `Plan: ${pkg.name}\n📡 Data: ${formatNumber(dataLimitGb)} GB\n` +
+    `⏳ Expiry: ${formatInstant(expiresAt)}\nStatus: Active\n\nNext step 👇`;
+}
+
+function buildHelpKeyboard() {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback("🛰️ VPN Setup", "setup_vpn"), Markup.button.callback("🧾 Payment Help", "payment_help")],
+    [Markup.button.callback("🌐 My VPN", "my_vpn"),
+      Markup.button.url("Contact Support", `tg://user?id=${ADMIN_TELEGRAM_ID}`)],
+    [Markup.button.callback("← Main Menu", "back_to_start")],
+  ]);
+}
+
+function buildPaymentKeyboard(order) {
+  const callbacks = { bank_transfer: "bank", mobile_wallet: "wallet" };
+  return Markup.inlineKeyboard([
+    ...compactButtonRows(Object.entries(PAYMENT_METHODS)
+      .filter(([method]) => callbacks[method])
+      .map(([method, payment]) => Markup.button.callback(payment.name, `payment_${callbacks[method]}_${order.id}`))),
+    [Markup.button.callback("Cancel Order", `cancel_order_${order.id}`), Markup.button.callback("🎧 Help", "payment_help")],
+  ]);
+}
+
+function formatPayment(order) {
+  return `🧾 Payment\n\nOrder: ${order.orderNumber}\nPlan: ${order.plan}\n` +
+    `Amount: ${formatMmk(order.price)}\n\n` +
+    "1️⃣ Choose a payment method\n2️⃣ Send the exact amount\n3️⃣ Upload the payment screenshot";
 }
 
 function getDurationLabel(months) {
@@ -672,27 +800,11 @@ function startProcessingRecovery() {
 
 async function sendMainMenu(ctx) {
   await ctx.reply(
-    "🔐 Welcome to VPN Reseller Bot\n\nChoose an option below.",
-    Markup.inlineKeyboard([
-      [
-        Markup.button.callback(
-          "🛒 Buy VPN",
-          "buy_vpn"
-        ),
-      ],
-      [
-        Markup.button.callback(
-          "📱 My VPN",
-          "my_vpn"
-        ),
-      ],
-      [
-        Markup.button.callback(
-          "📦 My Orders",
-          "my_orders"
-        ),
-      ],
-    ])
+    "👋 Welcome to Metro VPN\n\nFast • Secure • Simple\n\n" +
+      "VPN စသုံးဖို့ 3 steps ပဲလိုပါတယ်:\n\n" +
+      "1️⃣ VPN Package ရွေးပါ\n2️⃣ Payment ပြုလုပ်ပါ\n3️⃣ VPN Setup လုပ်ပြီး Connect လုပ်ပါ\n\n" +
+      "အောက်က menu ကနေ စတင်နိုင်ပါတယ် 👇",
+    buildMainMenu()
   );
 }
 
@@ -735,7 +847,6 @@ async function createPackageOrder(
     const {
       totalDataGb,
       totalPriceMmk,
-      durationDays,
     } = calculatePackage(
       pkg,
       durationMonths
@@ -783,70 +894,35 @@ async function createPackageOrder(
         durationMonths
       )}`;
 
-    const order =
-      await db.public.Order.create({
-        orderNumber:
-          `VPN-${crypto.randomUUID()}`,
+    // One confirmation message identifies one order, including after a restart.
+    // The existing unique orderNumber constraint makes concurrent presses atomic.
+    const confirmation = ctx.callbackQuery?.message;
+    if (!confirmation?.chat?.id || !confirmation.message_id) {
+      return await ctx.reply("Please choose your package again from Buy VPN.", buildMainMenu());
+    }
+    const purchaseId = crypto.createHash("sha256").update(JSON.stringify([
+      String(ctx.from.id), confirmation.chat.id, confirmation.message_id,
+      pkg.id, durationMonths, isRenewal,
+    ])).digest("hex").slice(0, 32);
+    const orderNumber = `VPN-${purchaseId}`;
+    const order = await db.public.Order.upsert({
+      conflictOn: { orderNumber: true },
+      create: {
+        orderNumber, plan, packageId: pkg.id, durationMonths,
+        totalDataGb, price: totalPriceMmk, status: "PENDING_PAYMENT", customerId: customer.id,
+      },
+      update: { orderNumber },
+    });
 
-        plan,
+    if (order.status !== "PENDING_PAYMENT") {
+      await ctx.reply(
+        `🗂️ Order: ${order.orderNumber}\nStatus: ${formatOrderStatus(order.status)}\n\nOpen My Orders for details.`,
+        buildMainMenu()
+      );
+      return order;
+    }
 
-        packageId: pkg.id,
-
-        durationMonths,
-
-        totalDataGb,
-
-        price: totalPriceMmk,
-
-        status: "PENDING_PAYMENT",
-
-        customerId: customer.id,
-      });
-
-    const orderType = isRenewal
-      ? "🔄 Renewal Order Created"
-      : "🧾 Order Created";
-
-    await ctx.reply(
-      `${orderType}\n\n` +
-        `🧾 Order: ${order.orderNumber}\n` +
-        `📦 Package: ${pkg.name}\n` +
-        `📊 Total Data: ${formatNumber(
-          totalDataGb
-        )} GB\n` +
-        `📅 Duration: ${getDurationLabel(
-          durationMonths
-        )}\n` +
-        `⏳ Days: ${durationDays}\n` +
-        `💰 Total Price: ${formatNumber(
-          totalPriceMmk
-        )} MMK\n\n` +
-        `Choose payment method:`,
-
-      Markup.inlineKeyboard([
-        [
-          Markup.button.callback(
-            "🏦 Bank Transfer",
-            `payment_bank_${order.id}`
-          ),
-        ],
-
-        [
-          Markup.button.callback(
-            "📱 Mobile Wallet",
-            `payment_wallet_${order.id}`
-          ),
-        ],
-
-        [
-          Markup.button.callback(
-            "❌ Cancel Order",
-            `cancel_order_${order.id}`
-          ),
-        ],
-      ])
-    );
-
+    await ctx.reply(formatPayment(order), buildPaymentKeyboard(order));
     return order;
   } catch (error) {
     console.error("Create package order failed.");
@@ -906,14 +982,14 @@ async function startBot() {
 
       if (!customer || !subscription) {
         return await ctx.reply(
-          "🔐 My VPN\n\nYou don't have an active VPN subscription yet.",
-          Markup.inlineKeyboard([[Markup.button.callback("🛒 Buy VPN", "buy_vpn")]])
+          "🌐 My VPN\n\nYou don't have an active VPN subscription yet.",
+          buildMainMenu()
         );
       }
 
       if (!isSubscriptionActive(subscription)) {
         return await ctx.reply(
-          "🔴 VPN Subscription Expired\n\nYour VPN package has expired or is inactive.",
+          "⏳ VPN Subscription Expired\n\nYour VPN package has expired or is inactive.",
           renewBuyKeyboard()
         );
       }
@@ -921,34 +997,17 @@ async function startBot() {
       const pkg = subscription.packageId
         ? await db.public.Package.where({ id: subscription.packageId }).first()
         : null;
-      const remainingDays = Math.max(
-        0,
-        Math.ceil(Number(subscription.expiresAt.epochSeconds - Temporal.Now.instant().epochSeconds) / 86400)
-      );
       const packageLabel = pkg?.name || subscription.plan || "VPN package";
       const hasReusableKey = Boolean(subscription.vpnKeyId &&
         isReusableAccessKey(subscription.vpnKeyId, subscription.vpnKey) &&
         isValidOutlineAccessKey(subscription.vpnKey));
 
       await ctx.reply(
-        `🔐 My VPN\n\n` +
-          `📦 Package: ${packageLabel}\n` +
-          `📊 Data: ${formatNumber(subscription.dataLimitGb || 0)} GB (${formatNumber(subscription.dataUsedGb || 0)} GB used)\n` +
-          `⏱ Duration: ${getDurationLabel(subscription.durationMonths || 1)}\n` +
-          `📅 Expires: ${formatInstant(subscription.expiresAt)}\n` +
-          `⏳ Remaining: ${remainingDays} days\n` +
-          `🟢 Status: Active${hasReusableKey ? "" : "\n\n🔑 VPN key is not available yet. Please contact support."}`,
-        Markup.inlineKeyboard([
-          ...(hasReusableKey
-            ? [
-                [copyVpnKeyButton(subscription.vpnKey)],
-
-                [Markup.button.url("⚡ Setup VPN", createVpnConnectUrl(subscription))],
-              ]
-            : [[Markup.button.callback("\u{1F6D2} Buy VPN", "buy_vpn")]]),
-          [Markup.button.callback("🔄 Renew VPN", "renew_vpn")],
-          [Markup.button.callback("📦 My Orders", "my_orders")],
-        ])
+        `🌐 My VPN\n\nPlan: ${packageLabel}\n` +
+          `📡 Usage: ${formatNumber(subscription.dataUsedGb || 0)} GB / ${formatNumber(subscription.dataLimitGb || 0)} GB\n` +
+          `⏳ Expiry: ${formatInstant(subscription.expiresAt)}\nStatus: Active` +
+          (hasReusableKey ? "" : "\n\nYour VPN key is unavailable. Please contact support."),
+        buildMyVpnKeyboard(subscription)
       );
     } catch {
       console.error("Could not load My VPN.");
@@ -962,7 +1021,7 @@ async function startBot() {
   bot.action("copy_vpn_key", async (ctx) => {
     await ctx.answerCbQuery();
     try {
-      await sendExistingVpnKey(ctx, "📋 Copy VPN Key");
+      await sendExistingVpnKey(ctx, "Copy VPN Key");
     } catch {
       console.error("Could not load VPN key for copying.");
       await ctx.reply("Failed to load your VPN key.");
@@ -1055,26 +1114,9 @@ async function startBot() {
           );
         }
 
-        const buttons =
-          packages.map((pkg) => [
-            Markup.button.callback(
-              `📦 ${pkg.name}`,
-              `renew_package_${pkg.id}`
-            ),
-          ]);
-
-        buttons.push([
-          Markup.button.callback(
-            "⬅️ Back",
-            "my_vpn"
-          ),
-        ]);
-
         await ctx.reply(
-          "🔄 Choose your renewal package:",
-          Markup.inlineKeyboard(
-            buttons
-          )
+          "♻️ Choose Your Renewal Package\n\nသင့်အတွက်သင့်တော်တဲ့ package ကိုရွေးပါ 👇",
+          buildPackageKeyboard(packages, true)
         );
       } catch (error) {
         console.error("Renew package failed.");
@@ -1106,45 +1148,7 @@ async function startBot() {
           );
         }
 
-        await ctx.reply(
-          `🔄 Renewal Package\n\n` +
-            `📦 ${pkg.name}\n` +
-            `📊 ${pkg.dataLimitGb} GB / Month\n` +
-            `💰 ${formatNumber(
-              pkg.priceMmk
-            )} MMK / Month\n\n` +
-            `Choose renewal duration:`,
-
-          Markup.inlineKeyboard([
-            [
-              Markup.button.callback(
-                "📅 1 Month",
-                `renew_duration_${pkg.id}_1`
-              ),
-            ],
-
-            [
-              Markup.button.callback(
-                "📅 3 Months",
-                `renew_duration_${pkg.id}_3`
-              ),
-            ],
-
-            [
-              Markup.button.callback(
-                "📅 6 Months",
-                `renew_duration_${pkg.id}_6`
-              ),
-            ],
-
-            [
-              Markup.button.callback(
-                "⬅️ Back",
-                "renew_vpn"
-              ),
-            ],
-          ])
-        );
+        await ctx.reply(formatPackageDetails(pkg), buildPackageDetailKeyboard(pkg, true));
       } catch (error) {
         console.error("Renew package selection failed.");
 
@@ -1178,45 +1182,9 @@ async function startBot() {
           );
         }
 
-        const {
-          totalDataGb,
-          totalPriceMmk,
-          durationDays,
-        } = calculatePackage(
-          pkg,
-          durationMonths
-        );
-
         await ctx.reply(
-          `🧾 Renewal Summary\n\n` +
-            `📦 Package: ${pkg.name}\n` +
-            `📊 Total Data: ${formatNumber(
-              totalDataGb
-            )} GB\n` +
-            `📅 Duration: ${getDurationLabel(
-              durationMonths
-            )}\n` +
-            `⏳ Days: ${durationDays}\n` +
-            `💰 Total Price: ${formatNumber(
-              totalPriceMmk
-            )} MMK\n\n` +
-            `Confirm renewal:`,
-
-          Markup.inlineKeyboard([
-            [
-              Markup.button.callback(
-                "✅ Continue",
-                `confirm_renewal_${pkg.id}_${durationMonths}`
-              ),
-            ],
-
-            [
-              Markup.button.callback(
-                "⬅️ Change Duration",
-                `renew_package_${pkg.id}`
-              ),
-            ],
-          ])
+          formatPurchaseConfirmation(pkg, durationMonths, true),
+          buildConfirmationKeyboard(pkg, durationMonths, true)
         );
       } catch (error) {
         console.error("Renew duration selection failed.");
@@ -1267,28 +1235,9 @@ async function startBot() {
           );
         }
 
-        const buttons =
-          packages.map((pkg) => [
-            Markup.button.callback(
-              `📦 ${pkg.name} - ${pkg.dataLimitGb} GB / ${formatNumber(
-                pkg.priceMmk
-              )} MMK`,
-              `package_${pkg.id}`
-            ),
-          ]);
-
-        buttons.push([
-          Markup.button.callback(
-            "⬅️ Back",
-            "back_to_start"
-          ),
-        ]);
-
         await ctx.reply(
-          "📦 Choose your VPN package:",
-          Markup.inlineKeyboard(
-            buttons
-          )
+          "💎 Choose Your VPN Package\n\nသင့်အတွက်သင့်တော်တဲ့ package ကိုရွေးပါ 👇",
+          buildPackageKeyboard(packages)
         );
       } catch (error) {
         console.error("Could not load packages.");
@@ -1324,44 +1273,7 @@ async function startBot() {
           );
         }
 
-        await ctx.reply(
-          `📦 ${pkg.name}\n\n` +
-            `📊 Data: ${pkg.dataLimitGb} GB / Month\n` +
-            `💰 Monthly Price: ${formatNumber(
-              pkg.priceMmk
-            )} MMK\n\n` +
-            `Choose your duration:`,
-
-          Markup.inlineKeyboard([
-            [
-              Markup.button.callback(
-                "📅 1 Month",
-                `duration_${pkg.id}_1`
-              ),
-            ],
-
-            [
-              Markup.button.callback(
-                "📅 3 Months",
-                `duration_${pkg.id}_3`
-              ),
-            ],
-
-            [
-              Markup.button.callback(
-                "📅 6 Months",
-                `duration_${pkg.id}_6`
-              ),
-            ],
-
-            [
-              Markup.button.callback(
-                "⬅️ Back to Packages",
-                "buy_vpn"
-              ),
-            ],
-          ])
-        );
+        await ctx.reply(formatPackageDetails(pkg), buildPackageDetailKeyboard(pkg));
       } catch (error) {
         console.error("Package selection failed.");
 
@@ -1399,52 +1311,9 @@ async function startBot() {
           );
         }
 
-        const {
-          totalDataGb,
-          totalPriceMmk,
-          durationDays,
-        } = calculatePackage(
-          pkg,
-          durationMonths
-        );
-
         await ctx.reply(
-          `🧾 VPN Package Summary\n\n` +
-            `📦 Package: ${pkg.name}\n` +
-            `📊 Total Data: ${formatNumber(
-              totalDataGb
-            )} GB\n` +
-            `📅 Duration: ${getDurationLabel(
-              durationMonths
-            )}\n` +
-            `⏳ Days: ${durationDays}\n` +
-            `💰 Total Price: ${formatNumber(
-              totalPriceMmk
-            )} MMK\n\n` +
-            `Please confirm your package:`,
-
-          Markup.inlineKeyboard([
-            [
-              Markup.button.callback(
-                "✅ Continue",
-                `confirm_package_${pkg.id}_${durationMonths}`
-              ),
-            ],
-
-            [
-              Markup.button.callback(
-                "⬅️ Change Duration",
-                `package_${pkg.id}`
-              ),
-            ],
-
-            [
-              Markup.button.callback(
-                "❌ Cancel",
-                "buy_vpn"
-              ),
-            ],
-          ])
+          formatPurchaseConfirmation(pkg, durationMonths),
+          buildConfirmationKeyboard(pkg, durationMonths)
         );
       } catch (error) {
         console.error("Duration selection failed.");
@@ -1492,6 +1361,28 @@ async function startBot() {
       await sendMainMenu(ctx);
     }
   );
+
+  // =========================
+  // HELP
+  // =========================
+
+  bot.action("help", async (ctx) => {
+    await ctx.answerCbQuery();
+    await ctx.reply(
+      "🎧 Metro VPN Help\n\nHaving trouble?\nChoose what you need help with:",
+      buildHelpKeyboard()
+    );
+  });
+
+  bot.action("payment_help", async (ctx) => {
+    await ctx.answerCbQuery();
+    await ctx.reply(
+      "🧾 Payment Help\n\n1️⃣ Choose a method on your order's Payment screen\n" +
+        "2️⃣ Send the exact amount to the displayed account\n3️⃣ Upload a clear screenshot in this chat\n\n" +
+        "After uploading, wait for admin approval. For payment questions, contact support with your order number.",
+      buildHelpKeyboard()
+    );
+  });
 
   // =========================
   // PAYMENT METHOD
@@ -1584,22 +1475,16 @@ async function startBot() {
         });
 
       await ctx.reply(
-        `💳 ${payment.name}\n\n` +
-          `Account Name: ${payment.accountName}\n` +
-          `Account Number: ${payment.accountNumber}\n\n` +
-          `Amount: ${formatNumber(
-            order.price
-          )} MMK\n\n` +
-          `After payment, send your payment screenshot here.`
+        `🧾 Payment — ${payment.name}\n\n` +
+          `Order: ${order.orderNumber}\nPlan: ${order.plan}\nAmount: ${formatMmk(order.price)}\n\n` +
+          `Account Name: ${payment.accountName}\nAccount Number: ${payment.accountNumber}\n\n` +
+          "Send the exact amount, then upload your payment screenshot in this chat.",
+        buildPaymentKeyboard(order)
       );
 
       pendingProofs.set(
         String(ctx.from.id),
         orderId
-      );
-
-      await ctx.reply(
-        "📸 Please send your payment screenshot."
       );
     } catch (error) {
       console.error("Payment method selection failed.");
@@ -1675,7 +1560,10 @@ async function startBot() {
       );
 
       await ctx.reply(
-        "✅ Payment Screenshot Received\n\n⏳ Admin will verify your payment."
+        "🧾 Payment Screenshot Received\n\nYour payment is awaiting admin review. We'll notify you when your VPN is ready.",
+        Markup.inlineKeyboard([
+          [Markup.button.callback("🗂️ My Orders", "my_orders"), Markup.button.callback("🎧 Help", "payment_help")],
+        ])
       );
 
       const customer =
@@ -2098,31 +1986,8 @@ async function startBot() {
 
           await bot.telegram.sendMessage(
             customer.telegramId,
-
-            `🎉 Payment Approved!\n\n` +
-              `Order: ${order.orderNumber}\n` +
-              `📦 Package: ${pkg.name}\n` +
-              `📊 Data Limit: ${formatNumber(
-                totalDataGb
-              )} GB\n` +
-              `📅 Duration: ${getDurationLabel(
-                durationMonths
-              )}\n\n` +
-              `🔐 VPN Subscription Created\n\n` +
-              `⏰ Expires:\n${formatInstant(
-                expiresAt
-              )}\n\n` +
-              `📊 Data Used: 0 GB\n\n` +
-              `🔗 Your VPN connection link is available from My VPN.`,
-
-            Markup.inlineKeyboard([
-              [
-                Markup.button.callback(
-                  "📱 My VPN",
-                  "my_vpn"
-                ),
-              ],
-            ])
+            formatActivation(pkg, totalDataGb, expiresAt),
+            buildMyVpnKeyboard(subscription, true)
           );
 
           console.log(
@@ -2351,33 +2216,8 @@ async function startBot() {
 
           await bot.telegram.sendMessage(
             customer.telegramId,
-
-            `🎉 Payment Approved!\n\n` +
-              `Order: ${order.orderNumber}\n` +
-              `📦 Package: ${pkg.name}\n` +
-              `📊 Added Data: ${formatNumber(
-                totalDataGb
-              )} GB\n` +
-              `📅 Added Duration: ${getDurationLabel(
-                durationMonths
-              )}\n\n` +
-              `🔄 Your existing VPN subscription has been extended.\n\n` +
-              `⏰ New Expiry:\n${formatInstant(
-                newExpiresAt
-              )}\n\n` +
-              `📊 Total Data Limit: ${formatNumber(
-                newTotalDataGb
-              )} GB\n\n` +
-              `🔐 Your existing VPN key remains active.`,
-
-            Markup.inlineKeyboard([
-              [
-                Markup.button.callback(
-                  "📱 My VPN",
-                  "my_vpn"
-                ),
-              ],
-            ])
+            formatActivation(pkg, newTotalDataGb, newExpiresAt, true),
+            buildMyVpnKeyboard({ vpnKeyId: renewalAccessKey.id, vpnKey: renewalAccessKey.accessUrl }, true)
           );
 
           console.log(
@@ -2485,9 +2325,10 @@ async function startBot() {
           await bot.telegram.sendMessage(
             customer.telegramId,
 
-            `❌ Payment Rejected\n\n` +
+            `🧾 Payment Rejected\n\n` +
               `Order: ${order.orderNumber}\n\n` +
-              `Please contact admin or submit a valid payment screenshot.`
+              `Please contact support with your order number for help.`,
+            buildHelpKeyboard()
           );
         }
 
@@ -2583,7 +2424,8 @@ async function startBot() {
         );
 
         await ctx.reply(
-          `❌ Order cancelled.\n\nOrder: ${order.orderNumber}`
+          `🗂️ Order cancelled.\n\nOrder: ${order.orderNumber}`,
+          buildMainMenu()
         );
       } catch (error) {
         console.error("Cancel order failed.");
@@ -2616,7 +2458,7 @@ async function startBot() {
 
         if (!customer) {
           return await ctx.reply(
-            "📦 You don't have any orders yet."
+            "🗂️ My Orders\n\nYou don't have any orders yet.", buildMainMenu()
           );
         }
 
@@ -2633,12 +2475,12 @@ async function startBot() {
 
         if (!orders.length) {
           return await ctx.reply(
-            "📦 You don't have any orders yet."
+            "🗂️ My Orders\n\nYou don't have any orders yet.", buildMainMenu()
           );
         }
 
         let message =
-          "📦 Your Orders\n\n";
+          "🗂️ My Orders\n\n";
 
         for (const order of orders) {
           const pkg =
@@ -2652,26 +2494,26 @@ async function startBot() {
 
           message +=
             `🧾 ${order.orderNumber}\n` +
-            `📦 Package: ${
+            `Plan: ${
               pkg?.name ||
               order.plan
             }\n` +
-            `📊 Data: ${
+            `📡 Data: ${
               order.totalDataGb ||
               0
             } GB\n` +
-            `📅 Duration: ${getDurationLabel(
+            `⏳ Duration: ${getDurationLabel(
               order.durationMonths ||
                 1
             )}\n` +
-            `💰 Price: ${formatNumber(
+            `🧾 Price: ${formatNumber(
               order.price
             )} MMK\n` +
-            `Status: ${order.status}\n`;
+            `Status: ${formatOrderStatus(order.status)}\n`;
 
           if (order.expiresAt) {
             message +=
-              `Expires: ${formatInstant(
+              `⏳ Expiry: ${formatInstant(
                 order.expiresAt
               )}\n`;
           }
@@ -2680,7 +2522,8 @@ async function startBot() {
         }
 
         await ctx.reply(
-          message
+          message,
+          buildMainMenu()
         );
       } catch (error) {
         console.error("Could not load orders.");

@@ -272,8 +272,9 @@ test("existing-key HTTPS setup", async (t) => {
     const replies = [];
     await bot.sendVpnSetup({ from: { id: 999888777 }, reply: async (...args) => replies.push(args) });
     const keyboard = replies[0][1].reply_markup.inline_keyboard;
-    assert.match(keyboard[0][0].url, /^https:\/\/vpn\.example\.test\/connect\/v1\./);
-    assert.equal(keyboard[1][0].copy_text.text, subscription.vpnKey);
+    assert.equal(keyboard[0][0].copy_text.text, subscription.vpnKey);
+    assert.match(keyboard[0][1].url, /^https:\/\/vpn\.example\.test\/connect\/v1\./);
+    assert.equal(keyboard[1][0].callback_data, "my_vpn");
     assert.equal(bot.createKeyCalls, 0);
   });
 
