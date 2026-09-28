@@ -12,6 +12,7 @@ const { PAYMENT_METHODS } = require("./payment-config");
 const {
   createAccessKey,
   setAccessKeyDataLimit,
+  isRealOutlineMode,
 } = require("./outline");
 
 const app = express();
@@ -167,6 +168,19 @@ function gbToBytes(gb) {
   }
 
   return bytes;
+}
+
+function isReusableAccessKey(keyId, vpnKey) {
+  if (!keyId || !vpnKey) return false;
+
+  if (
+    isRealOutlineMode() &&
+    String(keyId).startsWith("mock-")
+  ) {
+    return false;
+  }
+
+  return true;
 }
 
 /**
@@ -1589,8 +1603,10 @@ async function startBot() {
           // ---------------------------------
 
           if (
-            order.vpnKeyId &&
-            order.vpnKey
+            isReusableAccessKey(
+              order.vpnKeyId,
+              order.vpnKey
+            )
           ) {
             accessKey = {
               id: order.vpnKeyId,
@@ -1613,7 +1629,11 @@ async function startBot() {
             if (
               !accessKey ||
               !accessKey.id ||
-              !accessKey.accessUrl
+              !accessKey.accessUrl ||
+              !isReusableAccessKey(
+                accessKey.id,
+                accessKey.accessUrl
+              )
             ) {
               throw new Error(
                 "Outline API returned an invalid access key."
@@ -1806,13 +1826,99 @@ async function startBot() {
           //     have a VPN key
           // ---------------------------------
 
+          const subscriptionHasMockKey =
+            isRealOutlineMode() &&
+            String(subscription.vpnKeyId || "").startsWith("mock-");
+
           if (
-            !subscription.vpnKeyId ||
-            !subscription.vpnKey
+            (!subscription.vpnKeyId || !subscription.vpnKey) &&
+            !subscriptionHasMockKey
           ) {
             throw new Error(
               "Existing subscription does not have a valid VPN key."
             );
+          }
+
+          let renewalAccessKey = null;
+
+          if (
+            isReusableAccessKey(
+              subscription.vpnKeyId,
+              subscription.vpnKey
+            )
+          ) {
+            renewalAccessKey = {
+              id: subscription.vpnKeyId,
+              accessUrl: subscription.vpnKey,
+              createdAt: subscription.vpnKeyCreatedAt,
+            };
+          } else if (
+            isReusableAccessKey(order.vpnKeyId, order.vpnKey)
+          ) {
+            // A prior attempt may have persisted the replacement on the
+            // order before it could update the subscription. Reuse it.
+            renewalAccessKey = {
+              id: order.vpnKeyId,
+              accessUrl: order.vpnKey,
+              createdAt: order.vpnKeyCreatedAt || now,
+            };
+          } else if (subscriptionHasMockKey) {
+            renewalAccessKey = await createAccessKey(order);
+
+            if (
+              !renewalAccessKey ||
+              !renewalAccessKey.id ||
+              !renewalAccessKey.accessUrl ||
+              String(renewalAccessKey.id).startsWith("mock-")
+            ) {
+              throw new Error(
+                "Outline API did not return a valid real access key."
+              );
+            }
+
+            renewalAccessKey.createdAt = now;
+          }
+
+          if (!renewalAccessKey) {
+            throw new Error(
+              "Existing subscription does not have a valid VPN key."
+            );
+          }
+
+          const replacingLegacyMockKey =
+            !isReusableAccessKey(
+              subscription.vpnKeyId,
+              subscription.vpnKey
+            );
+
+          if (replacingLegacyMockKey) {
+            // Save to the order first so an interrupted retry can recover
+            // this same key even if the subscription update has not landed.
+            await db.public.Order
+              .where({
+                id: order.id,
+                status: "PROCESSING",
+              })
+              .update({
+                vpnKey: renewalAccessKey.accessUrl,
+                vpnKeyId: renewalAccessKey.id,
+                vpnKeyCreatedAt: renewalAccessKey.createdAt,
+              });
+
+            await db.public.Subscription
+              .where({ id: subscription.id })
+              .update({
+                vpnKey: renewalAccessKey.accessUrl,
+                vpnKeyId: renewalAccessKey.id,
+                vpnKeyCreatedAt: renewalAccessKey.createdAt,
+              });
+
+            subscription.vpnKey = renewalAccessKey.accessUrl;
+            subscription.vpnKeyId = renewalAccessKey.id;
+            subscription.vpnKeyCreatedAt = renewalAccessKey.createdAt;
+            order.vpnKey = renewalAccessKey.accessUrl;
+            order.vpnKeyId = renewalAccessKey.id;
+            order.vpnKeyCreatedAt = renewalAccessKey.createdAt;
           }
 
           const isFuture =
@@ -1854,7 +1960,7 @@ async function startBot() {
           // ---------------------------------
 
           console.log(
-            `Updating existing Outline key ${subscription.vpnKeyId}`
+            "Updating existing Outline key for renewal."
           );
 
           console.log(
@@ -1862,7 +1968,7 @@ async function startBot() {
           );
 
           await setAccessKeyDataLimit(
-            subscription.vpnKeyId,
+            renewalAccessKey.id,
             newDataLimitBytes
           );
 
@@ -1920,13 +2026,13 @@ async function startBot() {
                 now,
 
               vpnKey:
-                subscription.vpnKey,
+                renewalAccessKey.accessUrl,
 
               vpnKeyId:
-                subscription.vpnKeyId,
+                renewalAccessKey.id,
 
               vpnKeyCreatedAt:
-                subscription.vpnKeyCreatedAt,
+                renewalAccessKey.createdAt,
 
               startedAt:
                 subscription.startedAt,
@@ -2000,10 +2106,9 @@ async function startBot() {
           );
         }
       } catch (error) {
-        console.error(
-          "Approve payment error:",
-          error
-        );
+        // Do not log provider errors: HTTP client errors can include
+        // management URLs, request headers, or other sensitive details.
+        console.error("Approve payment failed.");
 
         await ctx.reply(
           "❌ Failed to approve payment.\n\n" +

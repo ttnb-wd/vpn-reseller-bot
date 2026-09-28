@@ -273,9 +273,14 @@ async function deleteAccessKey(keyId) {
   return deleteMockAccessKey(keyId);
 }
 
+function isRealOutlineMode() {
+  return OUTLINE_MODE === "real";
+}
+
 module.exports = {
   testOutlineConnection,
   createAccessKey,
   setAccessKeyDataLimit,
   deleteAccessKey,
+  isRealOutlineMode,
 };
