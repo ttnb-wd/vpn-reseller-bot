@@ -12,6 +12,7 @@ const { PAYMENT_METHODS } = require("./payment-config");
 const {
   createAccessKey,
   setAccessKeyDataLimit,
+  validateOutlineConfig,
   testOutlineConnection,
   isAccessKeyNotFoundError,
 } = require("./outline");
@@ -26,7 +27,7 @@ app.get("/", (req, res) => {
 
 let server;
 
-const bot = new Telegraf(process.env.BOT_TOKEN);
+let bot;
 
 const ADMIN_TELEGRAM_ID = String(
   process.env.ADMIN_TELEGRAM_ID
@@ -42,6 +43,73 @@ const RECOVERY_INTERVAL_MS = 5 * 60 * 1000;
 
 const GB_IN_BYTES = 1024 * 1024 * 1024;
 const OUTLINE_CLIENT_URL = "https://getoutline.org/get-started/";
+
+let startupStage = "production config validation";
+
+function safeDiagnosticCode(value) {
+  return typeof value === "string" && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(value)
+    ? value
+    : undefined;
+}
+
+function safeHttpStatus(value) {
+  const status = Number(value);
+  return Number.isInteger(status) && status >= 100 && status <= 599
+    ? status
+    : undefined;
+}
+
+function sanitizeDiagnosticMessage(value) {
+  if (typeof value !== "string") return undefined;
+
+  let message = value;
+  const secrets = [
+    process.env.OUTLINE_API_URL,
+    process.env.OUTLINE_API_CERT_SHA256,
+    process.env.BOT_TOKEN,
+    process.env.DATABASE_URL,
+  ];
+
+  try {
+    const managementPath = new URL(process.env.OUTLINE_API_URL).pathname;
+    if (managementPath.length > 1) secrets.push(managementPath);
+  } catch {
+    // Configuration validation reports malformed URLs separately.
+  }
+
+  for (const secret of secrets) {
+    if (secret) message = message.split(secret).join("[redacted]");
+  }
+
+  return message
+    .replace(/(?:https?|ss|postgres(?:ql)?):\/\/[^\s"'<>)]*/gi, "[redacted URL]")
+    .replace(/\b\d{5,}:[A-Za-z0-9_-]{20,}\b/g, "[redacted token]")
+    .replace(/(?:password|token|secret)\s*[:=]\s*[^\s,;]+/gi, "[redacted credential]")
+    .replace(/[\r\n\t]+/g, " ")
+    .slice(0, 240);
+}
+
+function logStartupFailure(error) {
+  const code = safeDiagnosticCode(error?.code) ||
+    safeDiagnosticCode(error?.cause?.code);
+  const certificateFailure = startupStage === "Outline API connection" &&
+    (code?.startsWith("OUTLINE_CERT_") ||
+      /^Outline API certificate (?:fingerprint mismatch|is unavailable)\.$/.test(error?.message || ""));
+  const response = error?.response;
+  const providerData = response?.data;
+
+  console.error("VPN Bot startup failed:", {
+    stage: certificateFailure ? "certificate fingerprint verification" : startupStage,
+    name: safeDiagnosticCode(error?.name),
+    message: sanitizeDiagnosticMessage(error?.message),
+    code,
+    status: safeHttpStatus(response?.status ?? response?.error_code ?? error?.status),
+    outlineCode: safeDiagnosticCode(providerData?.code),
+    outlineMessage: sanitizeDiagnosticMessage(providerData?.message),
+    outlineApiUrlPresent: Boolean(process.env.OUTLINE_API_URL),
+    outlineCertSha256Present: Boolean(process.env.OUTLINE_API_CERT_SHA256),
+  });
+}
 
 function isAdmin(ctx) {
   return String(ctx.from?.id) === ADMIN_TELEGRAM_ID;
@@ -547,26 +615,24 @@ async function createPackageOrder(
 async function startBot() {
   console.log("Starting VPN Bot...");
 
-  try {
-    await testOutlineConnection();
-  } catch {
-    throw new Error("Outline API connection or certificate verification failed.");
-  }
+  startupStage = "production config validation";
+  validateOutlineConfig();
 
+  startupStage = "Outline API connection";
+  await testOutlineConnection();
   console.log("Outline API connected with verified certificate.");
 
-  const database =
-    await createDatabase();
-
+  startupStage = "PostgreSQL connection";
+  const database = await createDatabase();
   db = database.client;
+  console.log("PostgreSQL connected.");
 
-  console.log(
-    "PostgreSQL connected."
-  );
-
+  startupStage = "PROCESSING recovery";
   await recoverStuckProcessingOrders();
-
   startProcessingRecovery();
+
+  startupStage = "Telegram launch";
+  bot = new Telegraf(process.env.BOT_TOKEN);
 
   // =========================
   // START
@@ -2385,10 +2451,15 @@ async function startBot() {
     "Starting Telegram bot..."
   );
 
-  server = app.listen(PORT, () => {
-    console.log(`Server listening on port ${PORT}`);
+  startupStage = "Express health server";
+  await new Promise((resolve, reject) => {
+    server = app.listen(PORT);
+    server.once("listening", resolve);
+    server.once("error", reject);
   });
+  console.log("Server listening on port " + PORT);
 
+  startupStage = "Telegram launch";
   await bot.launch();
 
   console.log(
@@ -2426,8 +2497,7 @@ async function startBot() {
   );
 }
 
-startBot().catch(() => {
-  console.error("Failed to start VPN Bot. Check production configuration and service availability.");
-
+startBot().catch((error) => {
+  logStartupFailure(error);
   process.exit(1);
 });

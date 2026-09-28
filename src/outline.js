@@ -33,10 +33,21 @@ function validateOutlineConfig() {
   return { apiUrl, hostname: parsedUrl.hostname.replace(/^\[|\]$/g, ""), fingerprint };
 }
 
-// Validate before either the HTTP health server or Telegram polling starts.
-const outlineConfig = validateOutlineConfig();
+let outlineConfig;
+
+function getOutlineConfig() {
+  if (!outlineConfig) outlineConfig = validateOutlineConfig();
+  return outlineConfig;
+}
+
+function certificateError(message, code) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
 
 function createOutlineHttpsAgent() {
+  const config = getOutlineConfig();
   const agent = new https.Agent({ maxCachedSessions: 0 });
 
   // Outline normally uses a self-signed certificate. Node does not call
@@ -44,7 +55,7 @@ function createOutlineHttpsAgent() {
   // the socket until its certificate has matched the configured fingerprint.
   agent.createConnection = (options, callback) => {
     const servername = options.servername ??
-      (net.isIP(outlineConfig.hostname) ? "" : outlineConfig.hostname);
+      (net.isIP(config.hostname) ? "" : config.hostname);
     const socket = tls.connect({
       ...options,
       servername,
@@ -66,7 +77,10 @@ function createOutlineHttpsAgent() {
     socket.once("secureConnect", () => {
       const certificate = socket.getPeerCertificate();
       if (!certificate?.raw) {
-        finish(new Error("Outline API certificate is unavailable."));
+        finish(certificateError(
+          "Outline API certificate is unavailable.",
+          "OUTLINE_CERT_UNAVAILABLE"
+        ));
         return;
       }
 
@@ -76,8 +90,11 @@ function createOutlineHttpsAgent() {
         .digest("hex")
         .toUpperCase();
 
-      if (actualFingerprint !== outlineConfig.fingerprint) {
-        finish(new Error("Outline API certificate fingerprint mismatch."));
+      if (actualFingerprint !== config.fingerprint) {
+        finish(certificateError(
+          "Outline API certificate fingerprint mismatch.",
+          "OUTLINE_CERT_MISMATCH"
+        ));
         return;
       }
 
@@ -90,8 +107,9 @@ function createOutlineHttpsAgent() {
 }
 
 function getOutlineClient() {
+  const config = getOutlineConfig();
   return axios.create({
-    baseURL: outlineConfig.apiUrl,
+    baseURL: config.apiUrl,
     timeout: 10000,
     maxRedirects: 0,
     httpsAgent: createOutlineHttpsAgent(),
@@ -169,6 +187,7 @@ async function deleteAccessKey(keyId) {
 }
 
 module.exports = {
+  validateOutlineConfig,
   testOutlineConnection,
   createAccessKey,
   setAccessKeyDataLimit,
