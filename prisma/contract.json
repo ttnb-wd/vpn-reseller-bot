@@ -12,6 +12,10 @@
       "model": "Order",
       "namespace": "public"
     },
+    "package": {
+      "model": "Package",
+      "namespace": "public"
+    },
     "subscription": {
       "model": "Subscription",
       "namespace": "public"
@@ -130,6 +134,13 @@
                   "kind": "scalar"
                 }
               },
+              "durationMonths": {
+                "nullable": false,
+                "type": {
+                  "codecId": "pg/int4@1",
+                  "kind": "scalar"
+                }
+              },
               "expiresAt": {
                 "nullable": true,
                 "type": {
@@ -148,6 +159,13 @@
                 "nullable": false,
                 "type": {
                   "codecId": "pg/text@1",
+                  "kind": "scalar"
+                }
+              },
+              "packageId": {
+                "nullable": true,
+                "type": {
+                  "codecId": "pg/int4@1",
                   "kind": "scalar"
                 }
               },
@@ -193,7 +211,21 @@
                   "kind": "scalar"
                 }
               },
+              "processingAt": {
+                "nullable": true,
+                "type": {
+                  "codecId": "pg/timestamptz-temporal@1",
+                  "kind": "scalar"
+                }
+              },
               "revokedAt": {
+                "nullable": true,
+                "type": {
+                  "codecId": "pg/timestamptz-temporal@1",
+                  "kind": "scalar"
+                }
+              },
+              "startedAt": {
                 "nullable": true,
                 "type": {
                   "codecId": "pg/timestamptz-temporal@1",
@@ -204,6 +236,13 @@
                 "nullable": false,
                 "type": {
                   "codecId": "pg/text@1",
+                  "kind": "scalar"
+                }
+              },
+              "totalDataGb": {
+                "nullable": true,
+                "type": {
+                  "codecId": "pg/float8@1",
                   "kind": "scalar"
                 }
               },
@@ -245,6 +284,22 @@
                   "model": "Customer",
                   "namespace": "public"
                 }
+              },
+              "package": {
+                "cardinality": "N:1",
+                "nullable": true,
+                "on": {
+                  "localFields": [
+                    "packageId"
+                  ],
+                  "targetFields": [
+                    "id"
+                  ]
+                },
+                "to": {
+                  "model": "Package",
+                  "namespace": "public"
+                }
               }
             },
             "storage": {
@@ -255,6 +310,9 @@
                 "customerId": {
                   "column": "customerId"
                 },
+                "durationMonths": {
+                  "column": "durationMonths"
+                },
                 "expiresAt": {
                   "column": "expiresAt"
                 },
@@ -263,6 +321,9 @@
                 },
                 "orderNumber": {
                   "column": "orderNumber"
+                },
+                "packageId": {
+                  "column": "packageId"
                 },
                 "paidAt": {
                   "column": "paidAt"
@@ -282,11 +343,20 @@
                 "price": {
                   "column": "price"
                 },
+                "processingAt": {
+                  "column": "processingAt"
+                },
                 "revokedAt": {
                   "column": "revokedAt"
                 },
+                "startedAt": {
+                  "column": "startedAt"
+                },
                 "status": {
                   "column": "status"
+                },
+                "totalDataGb": {
+                  "column": "totalDataGb"
                 },
                 "vpnKey": {
                   "column": "vpnKey"
@@ -300,6 +370,138 @@
               },
               "namespaceId": "public",
               "table": "order"
+            }
+          },
+          "Package": {
+            "fields": {
+              "active": {
+                "nullable": false,
+                "type": {
+                  "codecId": "pg/bool@1",
+                  "kind": "scalar"
+                }
+              },
+              "createdAt": {
+                "nullable": false,
+                "type": {
+                  "codecId": "pg/timestamptz-temporal@1",
+                  "kind": "scalar"
+                }
+              },
+              "dataLimitGb": {
+                "nullable": false,
+                "type": {
+                  "codecId": "pg/float8@1",
+                  "kind": "scalar"
+                }
+              },
+              "durationDays": {
+                "nullable": false,
+                "type": {
+                  "codecId": "pg/int4@1",
+                  "kind": "scalar"
+                }
+              },
+              "id": {
+                "nullable": false,
+                "type": {
+                  "codecId": "pg/int4@1",
+                  "kind": "scalar"
+                }
+              },
+              "name": {
+                "nullable": false,
+                "type": {
+                  "codecId": "pg/text@1",
+                  "kind": "scalar"
+                }
+              },
+              "priceMmk": {
+                "nullable": false,
+                "type": {
+                  "codecId": "pg/numeric@1",
+                  "kind": "scalar"
+                }
+              },
+              "sortOrder": {
+                "nullable": false,
+                "type": {
+                  "codecId": "pg/int4@1",
+                  "kind": "scalar"
+                }
+              },
+              "updatedAt": {
+                "nullable": false,
+                "type": {
+                  "codecId": "pg/timestamptz-temporal@1",
+                  "kind": "scalar"
+                }
+              }
+            },
+            "relations": {
+              "orders": {
+                "cardinality": "1:N",
+                "on": {
+                  "localFields": [
+                    "id"
+                  ],
+                  "targetFields": [
+                    "packageId"
+                  ]
+                },
+                "to": {
+                  "model": "Order",
+                  "namespace": "public"
+                }
+              },
+              "subscriptions": {
+                "cardinality": "1:N",
+                "on": {
+                  "localFields": [
+                    "id"
+                  ],
+                  "targetFields": [
+                    "packageId"
+                  ]
+                },
+                "to": {
+                  "model": "Subscription",
+                  "namespace": "public"
+                }
+              }
+            },
+            "storage": {
+              "fields": {
+                "active": {
+                  "column": "active"
+                },
+                "createdAt": {
+                  "column": "createdAt"
+                },
+                "dataLimitGb": {
+                  "column": "dataLimitGb"
+                },
+                "durationDays": {
+                  "column": "durationDays"
+                },
+                "id": {
+                  "column": "id"
+                },
+                "name": {
+                  "column": "name"
+                },
+                "priceMmk": {
+                  "column": "priceMmk"
+                },
+                "sortOrder": {
+                  "column": "sortOrder"
+                },
+                "updatedAt": {
+                  "column": "updatedAt"
+                }
+              },
+              "namespaceId": "public",
+              "table": "package"
             }
           },
           "Subscription": {
@@ -332,6 +534,13 @@
                   "kind": "scalar"
                 }
               },
+              "durationMonths": {
+                "nullable": false,
+                "type": {
+                  "codecId": "pg/int4@1",
+                  "kind": "scalar"
+                }
+              },
               "expiresAt": {
                 "nullable": true,
                 "type": {
@@ -341,6 +550,13 @@
               },
               "id": {
                 "nullable": false,
+                "type": {
+                  "codecId": "pg/int4@1",
+                  "kind": "scalar"
+                }
+              },
+              "packageId": {
+                "nullable": true,
                 "type": {
                   "codecId": "pg/int4@1",
                   "kind": "scalar"
@@ -419,6 +635,22 @@
                   "model": "Customer",
                   "namespace": "public"
                 }
+              },
+              "package": {
+                "cardinality": "N:1",
+                "nullable": true,
+                "on": {
+                  "localFields": [
+                    "packageId"
+                  ],
+                  "targetFields": [
+                    "id"
+                  ]
+                },
+                "to": {
+                  "model": "Package",
+                  "namespace": "public"
+                }
               }
             },
             "storage": {
@@ -435,11 +667,17 @@
                 "dataUsedGb": {
                   "column": "dataUsedGb"
                 },
+                "durationMonths": {
+                  "column": "durationMonths"
+                },
                 "expiresAt": {
                   "column": "expiresAt"
                 },
                 "id": {
                   "column": "id"
+                },
+                "packageId": {
+                  "column": "packageId"
                 },
                 "plan": {
                   "column": "plan"
@@ -546,6 +784,15 @@
                   "nativeType": "int4",
                   "nullable": false
                 },
+                "durationMonths": {
+                  "codecId": "pg/int4@1",
+                  "default": {
+                    "kind": "literal",
+                    "value": 1
+                  },
+                  "nativeType": "int4",
+                  "nullable": false
+                },
                 "expiresAt": {
                   "codecId": "pg/timestamptz-temporal@1",
                   "nativeType": "timestamptz",
@@ -564,6 +811,11 @@
                   "codecId": "pg/text@1",
                   "nativeType": "text",
                   "nullable": false
+                },
+                "packageId": {
+                  "codecId": "pg/int4@1",
+                  "nativeType": "int4",
+                  "nullable": true
                 },
                 "paidAt": {
                   "codecId": "pg/timestamptz-temporal@1",
@@ -595,7 +847,17 @@
                   "nativeType": "numeric",
                   "nullable": false
                 },
+                "processingAt": {
+                  "codecId": "pg/timestamptz-temporal@1",
+                  "nativeType": "timestamptz",
+                  "nullable": true
+                },
                 "revokedAt": {
+                  "codecId": "pg/timestamptz-temporal@1",
+                  "nativeType": "timestamptz",
+                  "nullable": true
+                },
+                "startedAt": {
                   "codecId": "pg/timestamptz-temporal@1",
                   "nativeType": "timestamptz",
                   "nullable": true
@@ -604,6 +866,11 @@
                   "codecId": "pg/text@1",
                   "nativeType": "text",
                   "nullable": false
+                },
+                "totalDataGb": {
+                  "codecId": "pg/float8@1",
+                  "nativeType": "float8",
+                  "nullable": true
                 },
                 "vpnKey": {
                   "codecId": "pg/text@1",
@@ -622,6 +889,22 @@
                 }
               },
               "foreignKeys": [
+                {
+                  "source": {
+                    "columns": [
+                      "packageId"
+                    ],
+                    "namespaceId": "public",
+                    "tableName": "order"
+                  },
+                  "target": {
+                    "columns": [
+                      "id"
+                    ],
+                    "namespaceId": "public",
+                    "tableName": "package"
+                  }
+                },
                 {
                   "source": {
                     "columns": [
@@ -647,6 +930,14 @@
                   "name": "order_customerId_idx_b2a8a46c",
                   "prefix": "order_customerId_idx",
                   "unique": false
+                },
+                {
+                  "columns": [
+                    "packageId"
+                  ],
+                  "name": "order_packageId_idx_51f866f4",
+                  "prefix": "order_packageId_idx",
+                  "unique": false
                 }
               ],
               "primaryKey": {
@@ -661,6 +952,83 @@
                   ]
                 }
               ]
+            },
+            "package": {
+              "columns": {
+                "active": {
+                  "codecId": "pg/bool@1",
+                  "default": {
+                    "kind": "literal",
+                    "value": true
+                  },
+                  "nativeType": "bool",
+                  "nullable": false
+                },
+                "createdAt": {
+                  "codecId": "pg/timestamptz-temporal@1",
+                  "default": {
+                    "expression": "now()",
+                    "kind": "function"
+                  },
+                  "nativeType": "timestamptz",
+                  "nullable": false
+                },
+                "dataLimitGb": {
+                  "codecId": "pg/float8@1",
+                  "nativeType": "float8",
+                  "nullable": false
+                },
+                "durationDays": {
+                  "codecId": "pg/int4@1",
+                  "nativeType": "int4",
+                  "nullable": false
+                },
+                "id": {
+                  "codecId": "pg/int4@1",
+                  "default": {
+                    "expression": "autoincrement()",
+                    "kind": "function"
+                  },
+                  "nativeType": "int4",
+                  "nullable": false
+                },
+                "name": {
+                  "codecId": "pg/text@1",
+                  "nativeType": "text",
+                  "nullable": false
+                },
+                "priceMmk": {
+                  "codecId": "pg/numeric@1",
+                  "nativeType": "numeric",
+                  "nullable": false
+                },
+                "sortOrder": {
+                  "codecId": "pg/int4@1",
+                  "default": {
+                    "kind": "literal",
+                    "value": 0
+                  },
+                  "nativeType": "int4",
+                  "nullable": false
+                },
+                "updatedAt": {
+                  "codecId": "pg/timestamptz-temporal@1",
+                  "default": {
+                    "expression": "now()",
+                    "kind": "function"
+                  },
+                  "nativeType": "timestamptz",
+                  "nullable": false
+                }
+              },
+              "foreignKeys": [],
+              "indexes": [],
+              "primaryKey": {
+                "columns": [
+                  "id"
+                ]
+              },
+              "uniques": []
             },
             "subscription": {
               "columns": {
@@ -692,6 +1060,15 @@
                   "nativeType": "float8",
                   "nullable": false
                 },
+                "durationMonths": {
+                  "codecId": "pg/int4@1",
+                  "default": {
+                    "kind": "literal",
+                    "value": 1
+                  },
+                  "nativeType": "int4",
+                  "nullable": false
+                },
                 "expiresAt": {
                   "codecId": "pg/timestamptz-temporal@1",
                   "nativeType": "timestamptz",
@@ -705,6 +1082,11 @@
                   },
                   "nativeType": "int4",
                   "nullable": false
+                },
+                "packageId": {
+                  "codecId": "pg/int4@1",
+                  "nativeType": "int4",
+                  "nullable": true
                 },
                 "plan": {
                   "codecId": "pg/text@1",
@@ -767,9 +1149,34 @@
                     "namespaceId": "public",
                     "tableName": "customer"
                   }
+                },
+                {
+                  "source": {
+                    "columns": [
+                      "packageId"
+                    ],
+                    "namespaceId": "public",
+                    "tableName": "subscription"
+                  },
+                  "target": {
+                    "columns": [
+                      "id"
+                    ],
+                    "namespaceId": "public",
+                    "tableName": "package"
+                  }
                 }
               ],
-              "indexes": [],
+              "indexes": [
+                {
+                  "columns": [
+                    "packageId"
+                  ],
+                  "name": "subscription_packageId_idx_51f866f4",
+                  "prefix": "subscription_packageId_idx",
+                  "unique": false
+                }
+              ],
               "primaryKey": {
                 "columns": [
                   "id"
@@ -789,7 +1196,7 @@
         "kind": "postgres-schema"
       }
     },
-    "storageHash": "3f1ffece907ccd1f21999f0bb760de6252a93e67733c9b77e0fe6cb83282f9cd"
+    "storageHash": "e845d12fcc970a5077692856d30144300333bfe888c31b9ad963655f5a5e4186"
   },
   "capabilities": {
     "postgres": {

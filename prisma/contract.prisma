@@ -9,13 +9,39 @@ model Customer {
   subscription Subscription?
 }
 
+model Package {
+  id           Int      @id @default(autoincrement())
+  name         String
+  dataLimitGb  Float
+  durationDays Int
+  priceMmk     Decimal
+
+  active    Boolean @default(true)
+  sortOrder Int     @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now())
+
+  orders       Order[]
+  subscriptions Subscription[]
+}
+
 model Order {
   id          Int      @id @default(autoincrement())
   orderNumber String   @unique
-  plan        String
+
+  plan      String
+  packageId Int?
+  package   Package? @relation(fields: [packageId], references: [id])
+
+  durationMonths Int @default(1)
+
+  totalDataGb Float?
   price       Decimal
-  status      String
-  createdAt   DateTime @default(now())
+
+  status       String
+  createdAt    DateTime  @default(now())
+  processingAt DateTime?
 
   paymentMethod    String?
   paymentReference String?
@@ -25,8 +51,10 @@ model Order {
   vpnKey          String?
   vpnKeyId        String?
   vpnKeyCreatedAt DateTime?
-  expiresAt       DateTime?
-  revokedAt       DateTime?
+
+  startedAt DateTime?
+  expiresAt DateTime?
+  revokedAt DateTime?
 
   customerId Int
   customer   Customer @relation(fields: [customerId], references: [id])
@@ -35,11 +63,15 @@ model Order {
 model Subscription {
   id Int @id @default(autoincrement())
 
-  customerId Int @unique
+  customerId Int      @unique
   customer   Customer @relation(fields: [customerId], references: [id])
 
-  plan       String
-  status     String
+  packageId Int?
+  package   Package? @relation(fields: [packageId], references: [id])
+
+  plan           String
+  status         String
+  durationMonths Int @default(1)
 
   vpnKey          String?
   vpnKeyId        String?
