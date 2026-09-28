@@ -1,4 +1,6 @@
 const axios = require("axios");
+const https = require("https");
+const crypto = require("crypto");
 
 const OUTLINE_MODE =
   process.env.OUTLINE_MODE || "mock";
@@ -6,14 +8,91 @@ const OUTLINE_MODE =
 const OUTLINE_API_URL =
   process.env.OUTLINE_API_URL || "";
 
+const OUTLINE_API_CERT_SHA256 =
+  process.env.OUTLINE_API_CERT_SHA256 || "";
 
-// ============================================
-// MOCK OUTLINE
-// ============================================
+/**
+ * Create HTTPS agent for Outline Management API.
+ *
+ * Outline uses a self-signed certificate.
+ * We verify the certificate using its SHA-256 fingerprint.
+ */
+function createOutlineHttpsAgent() {
+  if (!OUTLINE_API_CERT_SHA256) {
+    throw new Error(
+      "OUTLINE_API_CERT_SHA256 is not configured."
+    );
+  }
 
+  const expectedFingerprint =
+    OUTLINE_API_CERT_SHA256
+      .replace(/:/g, "")
+      .replace(/\s/g, "")
+      .toUpperCase();
+
+  return new https.Agent({
+    rejectUnauthorized: false,
+
+    checkServerIdentity: (hostname, cert) => {
+      const actualFingerprint = crypto
+        .createHash("sha256")
+        .update(cert.raw)
+        .digest("hex")
+        .toUpperCase();
+
+      if (actualFingerprint !== expectedFingerprint) {
+        throw new Error(
+          [
+            "Outline API certificate fingerprint mismatch.",
+            `Expected: ${expectedFingerprint}`,
+            `Actual:   ${actualFingerprint}`,
+          ].join("\n")
+        );
+      }
+
+      return undefined;
+    },
+  });
+}
+
+/**
+ * Create Axios client for Outline Management API.
+ */
+function getOutlineClient() {
+  if (!OUTLINE_API_URL) {
+    throw new Error(
+      "OUTLINE_API_URL is not configured."
+    );
+  }
+
+  return axios.create({
+    baseURL: OUTLINE_API_URL,
+    timeout: 10000,
+    httpsAgent: createOutlineHttpsAgent(),
+    headers: {
+      "Content-Type": "application/json",
+    },
+  });
+}
+
+/**
+ * Test connection to Outline Server.
+ *
+ * GET /server
+ */
+async function testOutlineConnection() {
+  const client = getOutlineClient();
+
+  const response = await client.get("/server");
+
+  return response.data;
+}
+
+/**
+ * Create a mock VPN key.
+ */
 function createMockAccessKey(order) {
-  const keyId =
-    `mock-${order.id}-${Date.now()}`;
+  const keyId = `mock-${order.id}-${Date.now()}`;
 
   const accessKey =
     `ss://mock-outline-key-${order.id}-${Date.now()}`;
@@ -28,32 +107,19 @@ function createMockAccessKey(order) {
   };
 }
 
-
-function deleteAccessKey(keyId) {
-  console.log(
-    `Mock Outline key revoked: ${keyId}`
-  );
-}
-
-
-// ============================================
-// REAL OUTLINE
-// ============================================
-
+/**
+ * Create a real Outline VPN access key.
+ *
+ * POST /access-keys
+ */
 async function createRealAccessKey(order) {
-  if (!OUTLINE_API_URL) {
-    throw new Error(
-      "OUTLINE_API_URL is not configured."
-    );
-  }
+  const client = getOutlineClient();
 
-  const response =
-    await axios.post(
-      `${OUTLINE_API_URL}/access-keys`
-    );
+  const response = await client.post(
+    "/access-keys"
+  );
 
-  const accessKey =
-    response.data;
+  const accessKey = response.data;
 
   console.log(
     `Real Outline key created: ${accessKey.id}`
@@ -65,16 +131,119 @@ async function createRealAccessKey(order) {
   };
 }
 
+/**
+ * Set data limit for a real Outline VPN key.
+ *
+ * Outline expects:
+ *
+ * {
+ *   "limit": {
+ *     "bytes": 123456789
+ *   }
+ * }
+ *
+ * PUT /access-keys/:id/data-limit
+ */
+async function setRealAccessKeyDataLimit(
+  keyId,
+  limitBytes
+) {
+  const client = getOutlineClient();
 
-async function deleteRealAccessKey(keyId) {
-  if (!OUTLINE_API_URL) {
+  if (!Number.isFinite(limitBytes)) {
     throw new Error(
-      "OUTLINE_API_URL is not configured."
+      "limitBytes must be a valid number."
     );
   }
 
-  await axios.delete(
-    `${OUTLINE_API_URL}/access-keys/${keyId}`
+  if (!Number.isInteger(limitBytes)) {
+    throw new Error(
+      "limitBytes must be an integer."
+    );
+  }
+
+  if (limitBytes < 0) {
+    throw new Error(
+      "limitBytes must be non-negative."
+    );
+  }
+
+  const response = await client.put(
+    `/access-keys/${encodeURIComponent(
+      keyId
+    )}/data-limit`,
+    {
+      limit: {
+        bytes: limitBytes,
+      },
+    }
+  );
+
+  console.log(
+    `Data limit set for Outline key ${keyId}: ${limitBytes} bytes`
+  );
+
+  return response.data;
+}
+
+/**
+ * Set data limit for a mock VPN key.
+ */
+async function setMockAccessKeyDataLimit(
+  keyId,
+  limitBytes
+) {
+  console.log(
+    `Mock data limit set for ${keyId}: ${limitBytes} bytes`
+  );
+
+  return {
+    keyId,
+    limit: {
+      bytes: limitBytes,
+    },
+  };
+}
+
+/**
+ * Set data limit.
+ */
+async function setAccessKeyDataLimit(
+  keyId,
+  limitBytes
+) {
+  if (OUTLINE_MODE === "real") {
+    return setRealAccessKeyDataLimit(
+      keyId,
+      limitBytes
+    );
+  }
+
+  return setMockAccessKeyDataLimit(
+    keyId,
+    limitBytes
+  );
+}
+
+/**
+ * Delete a mock VPN key.
+ */
+async function deleteMockAccessKey(keyId) {
+  console.log(
+    `Mock Outline key revoked: ${keyId}`
+  );
+}
+
+/**
+ * Delete a real Outline VPN access key.
+ *
+ * DELETE /access-keys/:id
+ */
+async function deleteRealAccessKey(keyId) {
+  const client = getOutlineClient();
+
+  await client.delete(
+    `/access-keys/${encodeURIComponent(keyId)}`
   );
 
   console.log(
@@ -82,11 +251,9 @@ async function deleteRealAccessKey(keyId) {
   );
 }
 
-
-// ============================================
-// PUBLIC FUNCTIONS
-// ============================================
-
+/**
+ * Create VPN access key.
+ */
 async function createAccessKey(order) {
   if (OUTLINE_MODE === "real") {
     return createRealAccessKey(order);
@@ -95,7 +262,9 @@ async function createAccessKey(order) {
   return createMockAccessKey(order);
 }
 
-
+/**
+ * Delete VPN access key.
+ */
 async function deleteAccessKey(keyId) {
   if (OUTLINE_MODE === "real") {
     return deleteRealAccessKey(keyId);
@@ -104,8 +273,9 @@ async function deleteAccessKey(keyId) {
   return deleteMockAccessKey(keyId);
 }
 
-
 module.exports = {
+  testOutlineConnection,
   createAccessKey,
+  setAccessKeyDataLimit,
   deleteAccessKey,
 };

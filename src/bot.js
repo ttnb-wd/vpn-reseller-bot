@@ -2,12 +2,17 @@ require("dotenv").config();
 
 const express = require("express");
 const crypto = require("crypto");
+
 const { Telegraf, Markup } = require("telegraf");
 const { Temporal } = require("@js-temporal/polyfill");
 
 const { createDatabase } = require("./db");
 const { PAYMENT_METHODS } = require("./payment-config");
-const { createAccessKey } = require("./outline");
+
+const {
+  createAccessKey,
+  setAccessKeyDataLimit,
+} = require("./outline");
 
 const app = express();
 
@@ -23,14 +28,19 @@ const server = app.listen(PORT, () => {
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
 
-const ADMIN_TELEGRAM_ID = String(process.env.ADMIN_TELEGRAM_ID);
+const ADMIN_TELEGRAM_ID = String(
+  process.env.ADMIN_TELEGRAM_ID
+);
 
 let db;
 
 const pendingProofs = new Map();
 
 const PROCESSING_TIMEOUT_MINUTES = 15;
+
 const RECOVERY_INTERVAL_MS = 5 * 60 * 1000;
+
+const GB_IN_BYTES = 1024 * 1024 * 1024;
 
 function isAdmin(ctx) {
   return String(ctx.from?.id) === ADMIN_TELEGRAM_ID;
@@ -49,9 +59,14 @@ function getDurationLabel(months) {
 }
 
 function calculatePackage(pkg, durationMonths) {
-  const totalDataGb = Number(pkg.dataLimitGb) * durationMonths;
-  const totalPriceMmk = Number(pkg.priceMmk) * durationMonths;
-  const durationDays = Number(pkg.durationDays) * durationMonths;
+  const totalDataGb =
+    Number(pkg.dataLimitGb) * durationMonths;
+
+  const totalPriceMmk =
+    Number(pkg.priceMmk) * durationMonths;
+
+  const durationDays =
+    Number(pkg.durationDays) * durationMonths;
 
   return {
     totalDataGb,
@@ -60,40 +75,87 @@ function calculatePackage(pkg, durationMonths) {
   };
 }
 
+function gbToBytes(gb) {
+  const bytes = Number(gb) * GB_IN_BYTES;
+
+  if (!Number.isFinite(bytes)) {
+    throw new Error(
+      `Invalid GB value: ${gb}`
+    );
+  }
+
+  if (!Number.isInteger(bytes)) {
+    throw new Error(
+      `GB value must convert to an integer byte value: ${gb}`
+    );
+  }
+
+  if (bytes < 0) {
+    throw new Error(
+      `GB value must be non-negative: ${gb}`
+    );
+  }
+
+  return bytes;
+}
+
+/**
+ * Recover orders stuck in PROCESSING.
+ *
+ * IMPORTANT:
+ * If an Outline key was already created, the approval
+ * handler will reuse the existing key instead of creating
+ * another one.
+ */
 async function recoverStuckProcessingOrders() {
   if (!db) return;
 
   try {
     const now = Temporal.Now.instant();
 
-    const processingOrders = await db.public.Order
-      .where({ status: "PROCESSING" })
-      .all();
+    const processingOrders =
+      await db.public.Order
+        .where({
+          status: "PROCESSING",
+        })
+        .all();
 
-    if (!processingOrders.length) return;
+    if (!processingOrders.length) {
+      return;
+    }
 
     for (const order of processingOrders) {
       if (!order.processingAt) {
         console.log(
           `Processing order ${order.orderNumber} has no processingAt timestamp. Skipping recovery.`
         );
+
         continue;
       }
 
       const ageMinutes =
-        Number(now.epochSeconds - order.processingAt.epochSeconds) / 60;
+        Number(
+          now.epochSeconds -
+            order.processingAt.epochSeconds
+        ) / 60;
 
-      if (ageMinutes < PROCESSING_TIMEOUT_MINUTES) continue;
+      if (
+        ageMinutes <
+        PROCESSING_TIMEOUT_MINUTES
+      ) {
+        continue;
+      }
 
-      const recoveredOrders = await db.public.Order
-        .where({
-          id: order.id,
-          status: "PROCESSING",
-        })
-        .updateAll({
-          status: "PENDING_PAYMENT",
-          processingAt: null,
-        });
+      const recoveredOrders =
+        await db.public.Order
+          .where({
+            id: order.id,
+            status: "PROCESSING",
+          })
+          .updateAll({
+            status: "PENDING_PAYMENT",
+            processingAt: null,
+          });
 
       if (recoveredOrders.length > 0) {
         console.log(
@@ -104,7 +166,10 @@ async function recoverStuckProcessingOrders() {
       }
     }
   } catch (error) {
-    console.error("PROCESSING recovery error:", error);
+    console.error(
+      "PROCESSING recovery error:",
+      error
+    );
   }
 }
 
@@ -123,17 +188,36 @@ async function sendMainMenu(ctx) {
   await ctx.reply(
     "🔐 Welcome to VPN Reseller Bot\n\nChoose an option below.",
     Markup.inlineKeyboard([
-      [Markup.button.callback("🛒 Buy VPN", "buy_vpn")],
-      [Markup.button.callback("📱 My VPN", "my_vpn")],
-      [Markup.button.callback("📦 My Orders", "my_orders")],
+      [
+        Markup.button.callback(
+          "🛒 Buy VPN",
+          "buy_vpn"
+        ),
+      ],
+      [
+        Markup.button.callback(
+          "📱 My VPN",
+          "my_vpn"
+        ),
+      ],
+      [
+        Markup.button.callback(
+          "📦 My Orders",
+          "my_orders"
+        ),
+      ],
     ])
   );
 }
 
 async function getActivePackages() {
   return await db.public.Package
-    .where({ active: true })
-    .orderBy((pkg) => pkg.sortOrder.asc())
+    .where({
+      active: true,
+    })
+    .orderBy((pkg) =>
+      pkg.sortOrder.asc()
+    )
     .all();
 }
 
@@ -153,7 +237,8 @@ async function createPackageOrder(
   isRenewal = false
 ) {
   try {
-    const pkg = await getPackageById(packageId);
+    const pkg =
+      await getPackageById(packageId);
 
     if (!pkg) {
       return await ctx.reply(
@@ -161,30 +246,44 @@ async function createPackageOrder(
       );
     }
 
-    const { totalDataGb, totalPriceMmk, durationDays } =
-      calculatePackage(pkg, durationMonths);
+    const {
+      totalDataGb,
+      totalPriceMmk,
+      durationDays,
+    } = calculatePackage(
+      pkg,
+      durationMonths
+    );
 
-    const customer = await db.public.Customer.upsert({
-      conflictOn: { telegramId: true },
+    const customer =
+      await db.public.Customer.upsert({
+        conflictOn: {
+          telegramId: true,
+        },
 
-      create: {
-        telegramId: String(ctx.from.id),
-        username: ctx.from.username || null,
-        firstName: ctx.from.first_name || null,
-      },
+        create: {
+          telegramId: String(ctx.from.id),
+          username:
+            ctx.from.username || null,
+          firstName:
+            ctx.from.first_name || null,
+        },
 
-      update: {
-        username: ctx.from.username || null,
-        firstName: ctx.from.first_name || null,
-      },
-    });
+        update: {
+          username:
+            ctx.from.username || null,
+          firstName:
+            ctx.from.first_name || null,
+        },
+      });
 
     if (isRenewal) {
-      const subscription = await db.public.Subscription
-        .where({
-          customerId: customer.id,
-        })
-        .first();
+      const subscription =
+        await db.public.Subscription
+          .where({
+            customerId: customer.id,
+          })
+          .first();
 
       if (!subscription) {
         return await ctx.reply(
@@ -193,25 +292,30 @@ async function createPackageOrder(
       }
     }
 
-    const plan = `${pkg.name} - ${getDurationLabel(durationMonths)}`;
+    const plan =
+      `${pkg.name} - ${getDurationLabel(
+        durationMonths
+      )}`;
 
-    const order = await db.public.Order.create({
-      orderNumber: `VPN-${crypto.randomUUID()}`,
+    const order =
+      await db.public.Order.create({
+        orderNumber:
+          `VPN-${crypto.randomUUID()}`,
 
-      plan,
+        plan,
 
-      packageId: pkg.id,
+        packageId: pkg.id,
 
-      durationMonths,
+        durationMonths,
 
-      totalDataGb,
+        totalDataGb,
 
-      price: totalPriceMmk,
+        price: totalPriceMmk,
 
-      status: "PENDING_PAYMENT",
+        status: "PENDING_PAYMENT",
 
-      customerId: customer.id,
-    });
+        customerId: customer.id,
+      });
 
     const orderType = isRenewal
       ? "🔄 Renewal Order Created"
@@ -221,10 +325,16 @@ async function createPackageOrder(
       `${orderType}\n\n` +
         `🧾 Order: ${order.orderNumber}\n` +
         `📦 Package: ${pkg.name}\n` +
-        `📊 Total Data: ${formatNumber(totalDataGb)} GB\n` +
-        `📅 Duration: ${getDurationLabel(durationMonths)}\n` +
+        `📊 Total Data: ${formatNumber(
+          totalDataGb
+        )} GB\n` +
+        `📅 Duration: ${getDurationLabel(
+          durationMonths
+        )}\n` +
         `⏳ Days: ${durationDays}\n` +
-        `💰 Total Price: ${formatNumber(totalPriceMmk)} MMK\n\n` +
+        `💰 Total Price: ${formatNumber(
+          totalPriceMmk
+        )} MMK\n\n` +
         `Choose payment method:`,
 
       Markup.inlineKeyboard([
@@ -253,20 +363,28 @@ async function createPackageOrder(
 
     return order;
   } catch (error) {
-    console.error("Create package order error:", error);
+    console.error(
+      "Create package order error:",
+      error
+    );
 
-    await ctx.reply("❌ Failed to create order.");
+    await ctx.reply(
+      "❌ Failed to create order."
+    );
   }
 }
 
 async function startBot() {
   console.log("Starting VPN Bot...");
 
-  const database = await createDatabase();
+  const database =
+    await createDatabase();
 
   db = database.client;
 
-  console.log("PostgreSQL connected.");
+  console.log(
+    "PostgreSQL connected."
+  );
 
   await recoverStuckProcessingOrders();
 
@@ -281,7 +399,9 @@ async function startBot() {
   });
 
   bot.command("myid", async (ctx) => {
-    await ctx.reply(`Your Telegram ID:\n${ctx.from.id}`);
+    await ctx.reply(
+      `Your Telegram ID:\n${ctx.from.id}`
+    );
   });
 
   // =========================
@@ -292,49 +412,65 @@ async function startBot() {
     await ctx.answerCbQuery();
 
     try {
-      const customer = await db.public.Customer
-        .where({
-          telegramId: String(ctx.from.id),
-        })
-        .first();
+      const customer =
+        await db.public.Customer
+          .where({
+            telegramId: String(
+              ctx.from.id
+            ),
+          })
+          .first();
 
       if (!customer) {
-        return await ctx.reply("❌ Customer account not found.");
+        return await ctx.reply(
+          "❌ Customer account not found."
+        );
       }
 
-      const subscription = await db.public.Subscription
-        .where({
-          customerId: customer.id,
-        })
-        .first();
+      const subscription =
+        await db.public.Subscription
+          .where({
+            customerId: customer.id,
+          })
+          .first();
 
       if (!subscription) {
         return await ctx.reply(
           "🔐 You don't have a VPN subscription yet.",
+
           Markup.inlineKeyboard([
-            [Markup.button.callback("🛒 Buy VPN", "buy_vpn")],
+            [
+              Markup.button.callback(
+                "🛒 Buy VPN",
+                "buy_vpn"
+              ),
+            ],
           ])
         );
       }
 
-      const now = Temporal.Now.instant();
+      const now =
+        Temporal.Now.instant();
 
       let remainingDays = 0;
 
       if (subscription.expiresAt) {
-        remainingDays = Math.max(
-          0,
-          Math.ceil(
-            Number(
-              subscription.expiresAt.epochSeconds -
-                now.epochSeconds
-            ) / 86400
-          )
-        );
+        remainingDays =
+          Math.max(
+            0,
+            Math.ceil(
+              Number(
+                subscription.expiresAt
+                  .epochSeconds -
+                  now.epochSeconds
+              ) / 86400
+            )
+          );
       }
 
       const isActive =
-        subscription.status === "ACTIVE" &&
+        subscription.status ===
+          "ACTIVE" &&
         remainingDays > 0;
 
       const status = isActive
@@ -385,7 +521,10 @@ async function startBot() {
         ])
       );
     } catch (error) {
-      console.error("My VPN error:", error);
+      console.error(
+        "My VPN error:",
+        error
+      );
 
       await ctx.reply(
         "❌ Failed to load VPN information."
@@ -397,158 +536,179 @@ async function startBot() {
   // CONNECTION LINK
   // =========================
 
-  bot.action("connection_link", async (ctx) => {
-    await ctx.answerCbQuery();
+  bot.action(
+    "connection_link",
+    async (ctx) => {
+      await ctx.answerCbQuery();
 
-    try {
-      const customer = await db.public.Customer
-        .where({
-          telegramId: String(ctx.from.id),
-        })
-        .first();
+      try {
+        const customer =
+          await db.public.Customer
+            .where({
+              telegramId: String(
+                ctx.from.id
+              ),
+            })
+            .first();
 
-      if (!customer) {
-        return await ctx.reply(
-          "❌ Customer account not found."
+        if (!customer) {
+          return await ctx.reply(
+            "❌ Customer account not found."
+          );
+        }
+
+        const subscription =
+          await db.public.Subscription
+            .where({
+              customerId: customer.id,
+            })
+            .first();
+
+        if (!subscription) {
+          return await ctx.reply(
+            "❌ You don't have a VPN subscription yet."
+          );
+        }
+
+        if (!subscription.vpnKey) {
+          return await ctx.reply(
+            "❌ VPN connection key is not available yet."
+          );
+        }
+
+        const now =
+          Temporal.Now.instant();
+
+        if (
+          subscription.status !==
+            "ACTIVE" ||
+          !subscription.expiresAt ||
+          subscription.expiresAt
+            .epochSeconds <=
+            now.epochSeconds
+        ) {
+          return await ctx.reply(
+            "🔴 Your VPN subscription has expired."
+          );
+        }
+
+        await ctx.reply(
+          `🔗 VPN Connection Link\n\n` +
+            `${subscription.vpnKey}\n\n` +
+            `📅 Expires:\n${formatInstant(
+              subscription.expiresAt
+            )}\n\n` +
+            `⚠️ Keep this connection link private.`,
+
+          Markup.inlineKeyboard([
+            [
+              Markup.button.callback(
+                "📱 Add to Device",
+                "add_device"
+              ),
+            ],
+
+            [
+              Markup.button.callback(
+                "⬅️ Back to My VPN",
+                "my_vpn"
+              ),
+            ],
+          ])
+        );
+      } catch (error) {
+        console.error(
+          "Connection link error:",
+          error
+        );
+
+        await ctx.reply(
+          "❌ Failed to load VPN connection link."
         );
       }
-
-      const subscription = await db.public.Subscription
-        .where({
-          customerId: customer.id,
-        })
-        .first();
-
-      if (!subscription) {
-        return await ctx.reply(
-          "❌ You don't have a VPN subscription yet."
-        );
-      }
-
-      if (!subscription.vpnKey) {
-        return await ctx.reply(
-          "❌ VPN connection key is not available yet."
-        );
-      }
-
-      const now = Temporal.Now.instant();
-
-      if (
-        subscription.status !== "ACTIVE" ||
-        !subscription.expiresAt ||
-        subscription.expiresAt.epochSeconds <=
-          now.epochSeconds
-      ) {
-        return await ctx.reply(
-          "🔴 Your VPN subscription has expired."
-        );
-      }
-
-      await ctx.reply(
-        `🔗 VPN Connection Link\n\n` +
-          `${subscription.vpnKey}\n\n` +
-          `📅 Expires:\n${formatInstant(
-            subscription.expiresAt
-          )}\n\n` +
-          `⚠️ Keep this connection link private.`,
-
-        Markup.inlineKeyboard([
-          [
-            Markup.button.callback(
-              "📱 Add to Device",
-              "add_device"
-            ),
-          ],
-
-          [
-            Markup.button.callback(
-              "⬅️ Back to My VPN",
-              "my_vpn"
-            ),
-          ],
-        ])
-      );
-    } catch (error) {
-      console.error(
-        "Connection link error:",
-        error
-      );
-
-      await ctx.reply(
-        "❌ Failed to load VPN connection link."
-      );
     }
-  });
+  );
 
   // =========================
   // RENEW VPN
   // =========================
 
-  bot.action("renew_vpn", async (ctx) => {
-    await ctx.answerCbQuery();
+  bot.action(
+    "renew_vpn",
+    async (ctx) => {
+      await ctx.answerCbQuery();
 
-    try {
-      const customer = await db.public.Customer
-        .where({
-          telegramId: String(ctx.from.id),
-        })
-        .first();
+      try {
+        const customer =
+          await db.public.Customer
+            .where({
+              telegramId: String(
+                ctx.from.id
+              ),
+            })
+            .first();
 
-      if (!customer) {
-        return await ctx.reply(
-          "❌ Customer account not found."
+        if (!customer) {
+          return await ctx.reply(
+            "❌ Customer account not found."
+          );
+        }
+
+        const subscription =
+          await db.public.Subscription
+            .where({
+              customerId: customer.id,
+            })
+            .first();
+
+        if (!subscription) {
+          return await ctx.reply(
+            "❌ You don't have a VPN subscription yet.\n\nPlease use Buy VPN first."
+          );
+        }
+
+        const packages =
+          await getActivePackages();
+
+        if (!packages.length) {
+          return await ctx.reply(
+            "❌ No VPN packages are currently available."
+          );
+        }
+
+        const buttons =
+          packages.map((pkg) => [
+            Markup.button.callback(
+              `📦 ${pkg.name}`,
+              `renew_package_${pkg.id}`
+            ),
+          ]);
+
+        buttons.push([
+          Markup.button.callback(
+            "⬅️ Back",
+            "my_vpn"
+          ),
+        ]);
+
+        await ctx.reply(
+          "🔄 Choose your renewal package:",
+          Markup.inlineKeyboard(
+            buttons
+          )
+        );
+      } catch (error) {
+        console.error(
+          "Renew package error:",
+          error
+        );
+
+        await ctx.reply(
+          "❌ Failed to load renewal packages."
         );
       }
-
-      const subscription = await db.public.Subscription
-        .where({
-          customerId: customer.id,
-        })
-        .first();
-
-      if (!subscription) {
-        return await ctx.reply(
-          "❌ You don't have a VPN subscription yet.\n\nPlease use Buy VPN first."
-        );
-      }
-
-      const packages = await getActivePackages();
-
-      if (!packages.length) {
-        return await ctx.reply(
-          "❌ No VPN packages are currently available."
-        );
-      }
-
-      const buttons = packages.map((pkg) => [
-        Markup.button.callback(
-          `📦 ${pkg.name}`,
-          `renew_package_${pkg.id}`
-        ),
-      ]);
-
-      buttons.push([
-        Markup.button.callback(
-          "⬅️ Back",
-          "my_vpn"
-        ),
-      ]);
-
-      await ctx.reply(
-        "🔄 Choose your renewal package:",
-        Markup.inlineKeyboard(buttons)
-      );
-    } catch (error) {
-      console.error(
-        "Renew package error:",
-        error
-      );
-
-      await ctx.reply(
-        "❌ Failed to load renewal packages."
-      );
     }
-  });
+  );
 
   bot.action(
     /^renew_package_(\d+)$/,
@@ -556,11 +716,13 @@ async function startBot() {
       await ctx.answerCbQuery();
 
       try {
-        const packageId = Number(ctx.match[1]);
+        const packageId =
+          Number(ctx.match[1]);
 
-        const pkg = await getPackageById(
-          packageId
-        );
+        const pkg =
+          await getPackageById(
+            packageId
+          );
 
         if (!pkg) {
           return await ctx.reply(
@@ -626,14 +788,16 @@ async function startBot() {
       await ctx.answerCbQuery();
 
       try {
-        const packageId = Number(ctx.match[1]);
-        const durationMonths = Number(
-          ctx.match[2]
-        );
+        const packageId =
+          Number(ctx.match[1]);
 
-        const pkg = await getPackageById(
-          packageId
-        );
+        const durationMonths =
+          Number(ctx.match[2]);
+
+        const pkg =
+          await getPackageById(
+            packageId
+          );
 
         if (!pkg) {
           return await ctx.reply(
@@ -699,10 +863,11 @@ async function startBot() {
     async (ctx) => {
       await ctx.answerCbQuery();
 
-      const packageId = Number(ctx.match[1]);
-      const durationMonths = Number(
-        ctx.match[2]
-      );
+      const packageId =
+        Number(ctx.match[1]);
+
+      const durationMonths =
+        Number(ctx.match[2]);
 
       await createPackageOrder(
         ctx,
@@ -717,49 +882,56 @@ async function startBot() {
   // BUY VPN
   // =========================
 
-  bot.action("buy_vpn", async (ctx) => {
-    await ctx.answerCbQuery();
+  bot.action(
+    "buy_vpn",
+    async (ctx) => {
+      await ctx.answerCbQuery();
 
-    try {
-      const packages = await getActivePackages();
+      try {
+        const packages =
+          await getActivePackages();
 
-      if (!packages.length) {
-        return await ctx.reply(
-          "❌ No VPN packages are currently available."
+        if (!packages.length) {
+          return await ctx.reply(
+            "❌ No VPN packages are currently available."
+          );
+        }
+
+        const buttons =
+          packages.map((pkg) => [
+            Markup.button.callback(
+              `📦 ${pkg.name} - ${pkg.dataLimitGb} GB / ${formatNumber(
+                pkg.priceMmk
+              )} MMK`,
+              `package_${pkg.id}`
+            ),
+          ]);
+
+        buttons.push([
+          Markup.button.callback(
+            "⬅️ Back",
+            "back_to_start"
+          ),
+        ]);
+
+        await ctx.reply(
+          "📦 Choose your VPN package:",
+          Markup.inlineKeyboard(
+            buttons
+          )
+        );
+      } catch (error) {
+        console.error(
+          "Load packages error:",
+          error
+        );
+
+        await ctx.reply(
+          "❌ Failed to load VPN packages."
         );
       }
-
-      const buttons = packages.map((pkg) => [
-        Markup.button.callback(
-          `📦 ${pkg.name} - ${pkg.dataLimitGb} GB / ${formatNumber(
-            pkg.priceMmk
-          )} MMK`,
-          `package_${pkg.id}`
-        ),
-      ]);
-
-      buttons.push([
-        Markup.button.callback(
-          "⬅️ Back",
-          "back_to_start"
-        ),
-      ]);
-
-      await ctx.reply(
-        "📦 Choose your VPN package:",
-        Markup.inlineKeyboard(buttons)
-      );
-    } catch (error) {
-      console.error(
-        "Load packages error:",
-        error
-      );
-
-      await ctx.reply(
-        "❌ Failed to load VPN packages."
-      );
     }
-  });
+  );
 
   // =========================
   // PACKAGE SELECTION
@@ -771,11 +943,13 @@ async function startBot() {
       await ctx.answerCbQuery();
 
       try {
-        const packageId = Number(ctx.match[1]);
+        const packageId =
+          Number(ctx.match[1]);
 
-        const pkg = await getPackageById(
-          packageId
-        );
+        const pkg =
+          await getPackageById(
+            packageId
+          );
 
         if (!pkg) {
           return await ctx.reply(
@@ -844,14 +1018,16 @@ async function startBot() {
       await ctx.answerCbQuery();
 
       try {
-        const packageId = Number(ctx.match[1]);
-        const durationMonths = Number(
-          ctx.match[2]
-        );
+        const packageId =
+          Number(ctx.match[1]);
 
-        const pkg = await getPackageById(
-          packageId
-        );
+        const durationMonths =
+          Number(ctx.match[2]);
+
+        const pkg =
+          await getPackageById(
+            packageId
+          );
 
         if (!pkg) {
           return await ctx.reply(
@@ -928,10 +1104,11 @@ async function startBot() {
     async (ctx) => {
       await ctx.answerCbQuery();
 
-      const packageId = Number(ctx.match[1]);
-      const durationMonths = Number(
-        ctx.match[2]
-      );
+      const packageId =
+        Number(ctx.match[1]);
+
+      const durationMonths =
+        Number(ctx.match[2]);
 
       await createPackageOrder(
         ctx,
@@ -946,11 +1123,14 @@ async function startBot() {
   // BACK TO START
   // =========================
 
-  bot.action("back_to_start", async (ctx) => {
-    await ctx.answerCbQuery();
+  bot.action(
+    "back_to_start",
+    async (ctx) => {
+      await ctx.answerCbQuery();
 
-    await sendMainMenu(ctx);
-  });
+      await sendMainMenu(ctx);
+    }
+  );
 
   // =========================
   // PAYMENT METHOD
@@ -958,22 +1138,24 @@ async function startBot() {
 
   bot.action(
     /^payment_bank_(\d+)$/,
-    async (ctx) =>
-      handlePaymentMethod(
+    async (ctx) => {
+      await handlePaymentMethod(
         ctx,
         "bank_transfer",
         Number(ctx.match[1])
-      )
+      );
+    }
   );
 
   bot.action(
     /^payment_wallet_(\d+)$/,
-    async (ctx) =>
-      handlePaymentMethod(
+    async (ctx) => {
+      await handlePaymentMethod(
         ctx,
         "mobile_wallet",
         Number(ctx.match[1])
-      )
+      );
+    }
   );
 
   async function handlePaymentMethod(
@@ -984,11 +1166,12 @@ async function startBot() {
     await ctx.answerCbQuery();
 
     try {
-      const order = await db.public.Order
-        .where({
-          id: orderId,
-        })
-        .first();
+      const order =
+        await db.public.Order
+          .where({
+            id: orderId,
+          })
+          .first();
 
       if (!order) {
         return await ctx.reply(
@@ -996,11 +1179,12 @@ async function startBot() {
         );
       }
 
-      const customer = await db.public.Customer
-        .where({
-          id: order.customerId,
-        })
-        .first();
+      const customer =
+        await db.public.Customer
+          .where({
+            id: order.customerId,
+          })
+          .first();
 
       if (
         !customer ||
@@ -1012,13 +1196,17 @@ async function startBot() {
         );
       }
 
-      if (order.status !== "PENDING_PAYMENT") {
+      if (
+        order.status !==
+        "PENDING_PAYMENT"
+      ) {
         return await ctx.reply(
           `⚠️ This order cannot accept payment.\n\nStatus: ${order.status}`
         );
       }
 
-      const payment = PAYMENT_METHODS[method];
+      const payment =
+        PAYMENT_METHODS[method];
 
       if (!payment) {
         return await ctx.reply(
@@ -1069,39 +1257,52 @@ async function startBot() {
   // =========================
 
   bot.on("photo", async (ctx) => {
-    const userId = String(ctx.from.id);
+    const userId =
+      String(ctx.from.id);
 
-    const orderId = pendingProofs.get(userId);
+    const orderId =
+      pendingProofs.get(userId);
 
     if (!orderId) return;
 
     try {
-      const order = await db.public.Order
-        .where({
-          id: orderId,
-        })
-        .first();
+      const order =
+        await db.public.Order
+          .where({
+            id: orderId,
+          })
+          .first();
 
       if (!order) {
-        pendingProofs.delete(userId);
+        pendingProofs.delete(
+          userId
+        );
 
         return await ctx.reply(
           "❌ Order not found."
         );
       }
 
-      if (order.status !== "PENDING_PAYMENT") {
-        pendingProofs.delete(userId);
+      if (
+        order.status !==
+        "PENDING_PAYMENT"
+      ) {
+        pendingProofs.delete(
+          userId
+        );
 
         return await ctx.reply(
           "⚠️ This order is no longer waiting for payment."
         );
       }
 
-      const photos = ctx.message.photo;
+      const photos =
+        ctx.message.photo;
 
       const paymentProof =
-        photos[photos.length - 1].file_id;
+        photos[
+          photos.length - 1
+        ].file_id;
 
       await db.public.Order
         .where({
@@ -1111,17 +1312,20 @@ async function startBot() {
           paymentProof,
         });
 
-      pendingProofs.delete(userId);
+      pendingProofs.delete(
+        userId
+      );
 
       await ctx.reply(
         "✅ Payment Screenshot Received\n\n⏳ Admin will verify your payment."
       );
 
-      const customer = await db.public.Customer
-        .where({
-          id: order.customerId,
-        })
-        .first();
+      const customer =
+        await db.public.Customer
+          .where({
+            id: order.customerId,
+          })
+          .first();
 
       const pkg = order.packageId
         ? await db.public.Package
@@ -1134,7 +1338,9 @@ async function startBot() {
       const adminCaption =
         `💰 PAYMENT VERIFICATION\n\n` +
         `Order: ${order.orderNumber}\n` +
-        `Package: ${pkg?.name || order.plan}\n` +
+        `Package: ${
+          pkg?.name || order.plan
+        }\n` +
         `Duration: ${getDurationLabel(
           order.durationMonths || 1
         )}\n` +
@@ -1145,13 +1351,16 @@ async function startBot() {
           order.price
         )} MMK\n\n` +
         `Customer: ${
-          customer?.firstName || "N/A"
+          customer?.firstName ||
+          "N/A"
         }\n` +
         `Username: @${
-          customer?.username || "N/A"
+          customer?.username ||
+          "N/A"
         }\n` +
         `Telegram ID: ${
-          customer?.telegramId || "N/A"
+          customer?.telegramId ||
+          "N/A"
         }`;
 
       await bot.telegram.sendPhoto(
@@ -1204,9 +1413,14 @@ async function startBot() {
         "Processing..."
       );
 
-      const orderId = Number(ctx.match[1]);
+      const orderId =
+        Number(ctx.match[1]);
 
       try {
+        // ---------------------------------
+        // 1. Load original order
+        // ---------------------------------
+
         const existingOrder =
           await db.public.Order
             .where({
@@ -1220,7 +1434,10 @@ async function startBot() {
           );
         }
 
-        // Double-approval protection
+        // ---------------------------------
+        // 2. Double approval protection
+        // ---------------------------------
+
         const processingAt =
           Temporal.Now.instant();
 
@@ -1235,17 +1452,24 @@ async function startBot() {
               processingAt,
             });
 
-        if (claimedOrders.length === 0) {
+        if (
+          claimedOrders.length === 0
+        ) {
           return await ctx.reply(
             `⚠️ Order already processed or is currently being processed.\n\nStatus: ${existingOrder.status}`
           );
         }
 
-        const order = claimedOrders[0];
+        const order =
+          claimedOrders[0];
 
         console.log(
           `Order ${order.orderNumber} claimed for approval.`
         );
+
+        // ---------------------------------
+        // 3. Load customer
+        // ---------------------------------
 
         const customer =
           await db.public.Customer
@@ -1259,6 +1483,10 @@ async function startBot() {
             "Customer not found."
           );
         }
+
+        // ---------------------------------
+        // 4. Load package
+        // ---------------------------------
 
         const pkg = order.packageId
           ? await db.public.Package
@@ -1274,8 +1502,14 @@ async function startBot() {
           );
         }
 
+        // ---------------------------------
+        // 5. Calculate package values
+        // ---------------------------------
+
         const durationMonths =
-          Number(order.durationMonths) || 1;
+          Number(
+            order.durationMonths
+          ) || 1;
 
         const totalDataGb =
           Number(order.totalDataGb) ||
@@ -1286,8 +1520,27 @@ async function startBot() {
           Number(pkg.durationDays) *
           durationMonths;
 
+        const dataLimitBytes =
+          gbToBytes(totalDataGb);
+
         const now =
           Temporal.Now.instant();
+
+        console.log(
+          `Approval package: ${pkg.name}`
+        );
+
+        console.log(
+          `Total data: ${totalDataGb} GB`
+        );
+
+        console.log(
+          `Outline limit: ${dataLimitBytes} bytes`
+        );
+
+        // ---------------------------------
+        // 6. Load existing subscription
+        // ---------------------------------
 
         let subscription =
           await db.public.Subscription
@@ -1296,46 +1549,156 @@ async function startBot() {
             })
             .first();
 
+        // =================================
+        // NEW SUBSCRIPTION
+        // =================================
+
         if (!subscription) {
-          // Create new Outline access key
-          const accessKey =
-            await createAccessKey(order);
+          let accessKey = null;
+
+          // ---------------------------------
+          // 7. Reuse existing key if one
+          //    was already created
+          // ---------------------------------
+
+          if (
+            order.vpnKeyId &&
+            order.vpnKey
+          ) {
+            accessKey = {
+              id: order.vpnKeyId,
+              accessUrl: order.vpnKey,
+            };
+
+            console.log(
+              `Reusing existing Outline key ${accessKey.id} for order ${order.orderNumber}.`
+            );
+          } else {
+            // ---------------------------------
+            // 8. Create Outline key
+            // ---------------------------------
+
+            accessKey =
+              await createAccessKey(
+                order
+              );
+
+            if (
+              !accessKey ||
+              !accessKey.id ||
+              !accessKey.accessUrl
+            ) {
+              throw new Error(
+                "Outline API returned an invalid access key."
+              );
+            }
+
+            console.log(
+              `Outline key created: ${accessKey.id}`
+            );
+
+            // ---------------------------------
+            // 9. SAVE KEY IMMEDIATELY
+            //
+            // This is critical for idempotency.
+            // If later API/DB operation fails,
+            // retry will reuse this key.
+            // ---------------------------------
+
+            await db.public.Order
+              .where({
+                id: order.id,
+                status: "PROCESSING",
+              })
+              .update({
+                vpnKey:
+                  accessKey.accessUrl,
+
+                vpnKeyId:
+                  accessKey.id,
+
+                vpnKeyCreatedAt:
+                  now,
+              });
+
+            console.log(
+              `Outline key ${accessKey.id} saved to order ${order.orderNumber}.`
+            );
+          }
+
+          // ---------------------------------
+          // 10. Set Outline data limit
+          // ---------------------------------
+
+          console.log(
+            `Setting Outline data limit: ${totalDataGb} GB`
+          );
+
+          await setAccessKeyDataLimit(
+            accessKey.id,
+            dataLimitBytes
+          );
+
+          console.log(
+            `Outline data limit successfully set: ${totalDataGb} GB`
+          );
+
+          // ---------------------------------
+          // 11. Calculate subscription expiry
+          // ---------------------------------
 
           const expiresAt =
             now.add({
-              hours: durationDays * 24,
+              hours:
+                durationDays * 24,
             });
+
+          // ---------------------------------
+          // 12. Create subscription
+          // ---------------------------------
 
           subscription =
-            await db.public.Subscription.create({
-              customerId: customer.id,
+            await db.public.Subscription.create(
+              {
+                customerId:
+                  customer.id,
 
-              packageId: pkg.id,
+                packageId:
+                  pkg.id,
 
-              plan: `${pkg.name} - ${getDurationLabel(
-                durationMonths
-              )}`,
+                plan:
+                  `${pkg.name} - ${getDurationLabel(
+                    durationMonths
+                  )}`,
 
-              status: "ACTIVE",
+                status: "ACTIVE",
 
-              durationMonths,
+                durationMonths,
 
-              vpnKey:
-                accessKey.accessUrl,
+                vpnKey:
+                  accessKey.accessUrl,
 
-              vpnKeyId:
-                accessKey.id,
+                vpnKeyId:
+                  accessKey.id,
 
-              vpnKeyCreatedAt: now,
+                vpnKeyCreatedAt:
+                  now,
 
-              startedAt: now,
+                startedAt:
+                  now,
 
-              expiresAt,
+                expiresAt,
 
-              dataLimitGb: totalDataGb,
+                dataLimitGb:
+                  totalDataGb,
 
-              dataUsedGb: 0,
-            });
+                dataUsedGb: 0,
+              }
+            );
+
+          // ---------------------------------
+          // 13. Mark order PAID
+          // ---------------------------------
 
           await db.public.Order
             .where({
@@ -1344,9 +1707,11 @@ async function startBot() {
             .update({
               status: "PAID",
 
-              processingAt: null,
+              processingAt:
+                null,
 
-              paidAt: now,
+              paidAt:
+                now,
 
               vpnKey:
                 accessKey.accessUrl,
@@ -1354,14 +1719,21 @@ async function startBot() {
               vpnKeyId:
                 accessKey.id,
 
-              vpnKeyCreatedAt: now,
+              vpnKeyCreatedAt:
+                now,
 
-              startedAt: now,
+              startedAt:
+                now,
 
               expiresAt,
 
-              revokedAt: null,
+              revokedAt:
+                null,
             });
+
+          // ---------------------------------
+          // 14. Notify customer
+          // ---------------------------------
 
           await bot.telegram.sendMessage(
             customer.telegramId,
@@ -1380,14 +1752,42 @@ async function startBot() {
                 expiresAt
               )}\n\n` +
               `📊 Data Used: 0 GB\n\n` +
-              `🔗 Your VPN connection link will be available from My VPN.`
+              `🔗 Your VPN connection link is available from My VPN.`,
+
+            Markup.inlineKeyboard([
+              [
+                Markup.button.callback(
+                  "📱 My VPN",
+                  "my_vpn"
+                ),
+              ],
+            ])
           );
 
           console.log(
             `New subscription created for customer ${customer.id}. Order ${order.orderNumber} approved.`
           );
-        } else {
-          // Extend existing subscription
+        }
+
+        // =================================
+        // EXISTING SUBSCRIPTION / RENEWAL
+        // =================================
+
+        else {
+          // ---------------------------------
+          // 15. Existing subscription must
+          //     have a VPN key
+          // ---------------------------------
+
+          if (
+            !subscription.vpnKeyId ||
+            !subscription.vpnKey
+          ) {
+            throw new Error(
+              "Existing subscription does not have a valid VPN key."
+            );
+          }
+
           const isFuture =
             subscription.expiresAt &&
             Temporal.Instant.compare(
@@ -1400,36 +1800,84 @@ async function startBot() {
               ? subscription.expiresAt
               : now
           ).add({
-            hours: durationDays * 24,
+            hours:
+              durationDays * 24,
           });
 
-          const newTotalDataGb =
+          const currentDataLimitGb =
             Number(
               subscription.dataLimitGb || 0
-            ) + totalDataGb;
+            );
+
+          const newTotalDataGb =
+            currentDataLimitGb +
+            totalDataGb;
+
+          const newDataLimitBytes =
+            gbToBytes(
+              newTotalDataGb
+            );
+
+          // ---------------------------------
+          // 16. Update Outline key limit
+          //
+          // IMPORTANT:
+          // Renewal uses the SAME key.
+          // We increase its total limit.
+          // ---------------------------------
+
+          console.log(
+            `Updating existing Outline key ${subscription.vpnKeyId}`
+          );
+
+          console.log(
+            `New total data limit: ${newTotalDataGb} GB`
+          );
+
+          await setAccessKeyDataLimit(
+            subscription.vpnKeyId,
+            newDataLimitBytes
+          );
+
+          console.log(
+            `Existing Outline key data limit updated to ${newTotalDataGb} GB`
+          );
+
+          // ---------------------------------
+          // 17. Update subscription
+          // ---------------------------------
 
           await db.public.Subscription
             .where({
               id: subscription.id,
             })
             .update({
-              packageId: pkg.id,
+              packageId:
+                pkg.id,
 
-              plan: `${pkg.name} - ${getDurationLabel(
-                durationMonths
-              )}`,
+              plan:
+                `${pkg.name} - ${getDurationLabel(
+                  durationMonths
+                )}`,
 
-              status: "ACTIVE",
+              status:
+                "ACTIVE",
 
               durationMonths,
 
-              expiresAt: newExpiresAt,
+              expiresAt:
+                newExpiresAt,
 
               dataLimitGb:
                 newTotalDataGb,
 
-              revokedAt: null,
+              revokedAt:
+                null,
             });
+
+          // ---------------------------------
+          // 18. Mark renewal order PAID
+          // ---------------------------------
 
           await db.public.Order
             .where({
@@ -1438,9 +1886,11 @@ async function startBot() {
             .update({
               status: "PAID",
 
-              processingAt: null,
+              processingAt:
+                null,
 
-              paidAt: now,
+              paidAt:
+                now,
 
               vpnKey:
                 subscription.vpnKey,
@@ -1457,8 +1907,13 @@ async function startBot() {
               expiresAt:
                 newExpiresAt,
 
-              revokedAt: null,
+              revokedAt:
+                null,
             });
+
+          // ---------------------------------
+          // 19. Notify customer
+          // ---------------------------------
 
           await bot.telegram.sendMessage(
             customer.telegramId,
@@ -1479,7 +1934,16 @@ async function startBot() {
               `📊 Total Data Limit: ${formatNumber(
                 newTotalDataGb
               )} GB\n\n` +
-              `🔐 Your existing VPN key remains active.`
+              `🔐 Your existing VPN key remains active.`,
+
+            Markup.inlineKeyboard([
+              [
+                Markup.button.callback(
+                  "📱 My VPN",
+                  "my_vpn"
+                ),
+              ],
+            ])
           );
 
           console.log(
@@ -1487,9 +1951,18 @@ async function startBot() {
           );
         }
 
+        // ---------------------------------
+        // 20. Update admin payment message
+        // ---------------------------------
+
         try {
+          const caption =
+            ctx.callbackQuery
+              ?.message?.caption ||
+            "";
+
           await ctx.editMessageCaption(
-            `${ctx.callbackQuery.message.caption}\n\n\n` +
+            `${caption}\n\n\n` +
               `✅ PAYMENT APPROVED\n` +
               `🔐 Subscription activated`
           );
@@ -1509,7 +1982,8 @@ async function startBot() {
           "❌ Failed to approve payment.\n\n" +
             "The order may still be in PROCESSING status. " +
             "If it remains there for more than 15 minutes, " +
-            "the system will recover it automatically."
+            "the system will recover it automatically.\n\n" +
+            "If an Outline key was already created, the next approval attempt will reuse that key."
         );
       }
     }
@@ -1532,7 +2006,8 @@ async function startBot() {
         "Rejecting..."
       );
 
-      const orderId = Number(ctx.match[1]);
+      const orderId =
+        Number(ctx.match[1]);
 
       try {
         const order =
@@ -1562,8 +2037,11 @@ async function startBot() {
             id: order.id,
           })
           .update({
-            status: "PAYMENT_REJECTED",
-            processingAt: null,
+            status:
+              "PAYMENT_REJECTED",
+
+            processingAt:
+              null,
           });
 
         const customer =
@@ -1584,8 +2062,13 @@ async function startBot() {
         }
 
         try {
+          const caption =
+            ctx.callbackQuery
+              ?.message?.caption ||
+            "";
+
           await ctx.editMessageCaption(
-            `${ctx.callbackQuery.message.caption}\n\n\n` +
+            `${caption}\n\n\n` +
               `❌ PAYMENT REJECTED`
           );
         } catch (editError) {
@@ -1620,7 +2103,8 @@ async function startBot() {
     async (ctx) => {
       await ctx.answerCbQuery();
 
-      const orderId = Number(ctx.match[1]);
+      const orderId =
+        Number(ctx.match[1]);
 
       try {
         const order =
@@ -1694,89 +2178,101 @@ async function startBot() {
   // MY ORDERS
   // =========================
 
-  bot.action("my_orders", async (ctx) => {
-    await ctx.answerCbQuery();
+  bot.action(
+    "my_orders",
+    async (ctx) => {
+      await ctx.answerCbQuery();
 
-    try {
-      const customer =
-        await db.public.Customer
-          .where({
-            telegramId: String(ctx.from.id),
-          })
-          .first();
+      try {
+        const customer =
+          await db.public.Customer
+            .where({
+              telegramId: String(
+                ctx.from.id
+              ),
+            })
+            .first();
 
-      if (!customer) {
-        return await ctx.reply(
-          "📦 You don't have any orders yet."
-        );
-      }
-
-      const orders =
-        await db.public.Order
-          .where({
-            customerId: customer.id,
-          })
-          .orderBy((order) =>
-            order.createdAt.desc()
-          )
-          .all();
-
-      if (!orders.length) {
-        return await ctx.reply(
-          "📦 You don't have any orders yet."
-        );
-      }
-
-      let message =
-        "📦 Your Orders\n\n";
-
-      for (const order of orders) {
-        const pkg = order.packageId
-          ? await db.public.Package
-              .where({
-                id: order.packageId,
-              })
-              .first()
-          : null;
-
-        message +=
-          `🧾 ${order.orderNumber}\n` +
-          `📦 Package: ${
-            pkg?.name || order.plan
-          }\n` +
-          `📊 Data: ${
-            order.totalDataGb || 0
-          } GB\n` +
-          `📅 Duration: ${getDurationLabel(
-            order.durationMonths || 1
-          )}\n` +
-          `💰 Price: ${formatNumber(
-            order.price
-          )} MMK\n` +
-          `Status: ${order.status}\n`;
-
-        if (order.expiresAt) {
-          message +=
-            `Expires: ${formatInstant(
-              order.expiresAt
-            )}\n`;
+        if (!customer) {
+          return await ctx.reply(
+            "📦 You don't have any orders yet."
+          );
         }
 
-        message += "\n";
+        const orders =
+          await db.public.Order
+            .where({
+              customerId:
+                customer.id,
+            })
+            .orderBy((order) =>
+              order.createdAt.desc()
+            )
+            .all();
+
+        if (!orders.length) {
+          return await ctx.reply(
+            "📦 You don't have any orders yet."
+          );
+        }
+
+        let message =
+          "📦 Your Orders\n\n";
+
+        for (const order of orders) {
+          const pkg =
+            order.packageId
+              ? await db.public.Package
+                  .where({
+                    id: order.packageId,
+                  })
+                  .first()
+              : null;
+
+          message +=
+            `🧾 ${order.orderNumber}\n` +
+            `📦 Package: ${
+              pkg?.name ||
+              order.plan
+            }\n` +
+            `📊 Data: ${
+              order.totalDataGb ||
+              0
+            } GB\n` +
+            `📅 Duration: ${getDurationLabel(
+              order.durationMonths ||
+                1
+            )}\n` +
+            `💰 Price: ${formatNumber(
+              order.price
+            )} MMK\n` +
+            `Status: ${order.status}\n`;
+
+          if (order.expiresAt) {
+            message +=
+              `Expires: ${formatInstant(
+                order.expiresAt
+              )}\n`;
+          }
+
+          message += "\n";
+        }
+
+        await ctx.reply(
+          message
+        );
+      } catch (error) {
+        console.error(
+          "My orders error:",
+          error
+        );
+
+        await ctx.reply(
+          "❌ Failed to load orders."
+        );
       }
-
-      await ctx.reply(message);
-    } catch (error) {
-      console.error(
-        "My orders error:",
-        error
-      );
-
-      await ctx.reply(
-        "❌ Failed to load orders."
-      );
     }
-  });
+  );
 
   // =========================
   // TELEGRAM ERROR HANDLER
