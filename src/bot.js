@@ -42,7 +42,24 @@ const PROCESSING_TIMEOUT_MINUTES = 15;
 const RECOVERY_INTERVAL_MS = 5 * 60 * 1000;
 
 const GB_IN_BYTES = 1024 * 1024 * 1024;
-const OUTLINE_CLIENT_URL = "https://getoutline.org/get-started/";
+const OUTLINE_CLIENT_LINKS = Object.freeze({
+  android: {
+    title: "\u{1F4F1} Android Setup",
+    url: "https://play.google.com/store/apps/details?id=org.outline.android.client",
+  },
+  ios: {
+    title: "\u{1F34E} iPhone / iPad Setup",
+    url: "https://itunes.apple.com/us/app/outline-app/id1356177741",
+  },
+  windows: {
+    title: "\u{1FA9F} Windows Setup",
+    url: "https://s3.amazonaws.com/outline-releases/client/windows/stable/Outline-Client.exe",
+  },
+  macos: {
+    title: "\u{1F34E} macOS Setup",
+    url: "https://itunes.apple.com/us/app/outline-app/id1356178125",
+  },
+});
 
 let startupStage = "production config validation";
 
@@ -174,41 +191,68 @@ function copyVpnKeyButton(vpnKey) {
   return Markup.button.callback("📋 Copy VPN Key", "copy_vpn_key");
 }
 
-async function sendVpnSetup(ctx) {
+async function getUsableVpnSubscription(ctx) {
   const { customer, subscription } = await findCustomerSubscription(ctx.from.id);
 
   if (!customer || !subscription) {
-    return await ctx.reply(
-      "🔐 My VPN\n\nYou don't have an active VPN subscription yet.",
-      Markup.inlineKeyboard([[Markup.button.callback("🛒 Buy VPN", "buy_vpn")]])
+    await ctx.reply(
+      "\u{1F510} My VPN\n\nYou don't have an active VPN subscription yet.",
+      Markup.inlineKeyboard([[Markup.button.callback("\u{1F6D2} Buy VPN", "buy_vpn")]])
     );
+    return null;
   }
 
   if (!isSubscriptionActive(subscription)) {
-    return await ctx.reply(
-      "🔴 VPN Subscription Expired\n\nYour VPN package is expired or inactive.",
+    await ctx.reply(
+      "\u{1F534} VPN Subscription Expired\n\nYour VPN package is expired or inactive.",
       renewBuyKeyboard()
     );
+    return null;
   }
 
-  if (
-    !subscription.vpnKeyId ||
-    !isReusableAccessKey(subscription.vpnKeyId, subscription.vpnKey) ||
-    !isValidOutlineAccessKey(subscription.vpnKey)
-  ) {
-    return await ctx.reply("Your VPN key is not available. Please contact support.");
+  if (!isReusableAccessKey(subscription.vpnKeyId, subscription.vpnKey)) {
+    await ctx.reply(
+      "Your VPN key is not available. Please renew or buy VPN, or contact support.",
+      renewBuyKeyboard()
+    );
+    return null;
   }
+
+  return subscription;
+}
+
+async function sendVpnSetup(ctx) {
+  if (!await getUsableVpnSubscription(ctx)) return;
 
   await ctx.reply(
-    "⚡ Setup VPN\n\n" +
-      "1. Tap 📋 Copy VPN Key.\n" +
-      "2. Tap 🚀 Open Outline, or open the installed app.\n" +
-      "3. In Outline, tap Add. If the key is not detected, paste it.\n" +
+    "\u26A1 Setup VPN\n\nChoose your device:",
+    Markup.inlineKeyboard([
+      [Markup.button.callback("\u{1F4F1} Android", "setup_platform_android")],
+      [Markup.button.callback("\u{1F34E} iPhone / iPad", "setup_platform_ios")],
+      [Markup.button.callback("\u{1FA9F} Windows", "setup_platform_windows")],
+      [Markup.button.callback("\u{1F34E} macOS", "setup_platform_macos")],
+      [Markup.button.callback("\u{1F519} Back to My VPN", "my_vpn")],
+    ])
+  );
+}
+
+async function sendPlatformVpnSetup(ctx, platform) {
+  const client = OUTLINE_CLIENT_LINKS[platform];
+  if (!client) return;
+
+  const subscription = await getUsableVpnSubscription(ctx);
+  if (!subscription) return;
+
+  await ctx.reply(
+    client.title + "\n\n" +
+      "1. Tap Copy VPN Key.\n" +
+      "2. Tap Open Outline to install it, or open your installed app.\n" +
+      "3. In Outline, tap Add and import the copied key. Paste it if needed.\n" +
       "4. Tap Connect.",
     Markup.inlineKeyboard([
       [copyVpnKeyButton(subscription.vpnKey)],
-      [Markup.button.url("🚀 Open Outline", OUTLINE_CLIENT_URL)],
-      [Markup.button.callback("🔙 Back to My VPN", "my_vpn")],
+      [Markup.button.url("\u{1F680} Open Outline", client.url)],
+      [Markup.button.callback("\u{1F519} Choose Device", "setup_vpn")],
     ])
   );
 }
@@ -696,10 +740,10 @@ async function startBot() {
           ...(hasReusableKey
             ? [
                 [copyVpnKeyButton(subscription.vpnKey)],
-                [Markup.button.url("🚀 Open Outline", OUTLINE_CLIENT_URL)],
+
                 [Markup.button.callback("⚡ Setup VPN", "setup_vpn")],
               ]
-            : []),
+            : [[Markup.button.callback("\u{1F6D2} Buy VPN", "buy_vpn")]]),
           [Markup.button.callback("🔄 Renew VPN", "renew_vpn")],
           [Markup.button.callback("📦 My Orders", "my_orders")],
         ])
@@ -729,6 +773,16 @@ async function startBot() {
       await sendVpnSetup(ctx);
     } catch {
       console.error("Could not load VPN setup.");
+      await ctx.reply("Failed to load VPN setup. Please try again from My VPN.");
+    }
+  });
+
+  bot.action(/^setup_platform_(android|ios|windows|macos)$/, async (ctx) => {
+    await ctx.answerCbQuery();
+    try {
+      await sendPlatformVpnSetup(ctx, ctx.match[1]);
+    } catch {
+      console.error("Could not load platform VPN setup.");
       await ctx.reply("Failed to load VPN setup. Please try again from My VPN.");
     }
   });
