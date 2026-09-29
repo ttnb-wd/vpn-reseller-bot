@@ -1,14 +1,15 @@
 # Metro Secure Telegram Mini App
 
-On startup, the bot sets Telegram's native chat menu button to **Metro** with
-`MenuButtonWebApp` pointing to `PUBLIC_BASE_URL/app`. The `/app` route opens the
-same Mini App previously served at `/mini-app/`. The menu URL contains no user
-ID, customer ID, setup token, or VPN key. Telegram controls the native blue
-button and its icon. No BotFather menu configuration or new database tables
-are required.
+On startup, the bot sets Telegram's default native chat menu button to **Metro**
+with `MenuButtonWebApp` pointing to `PUBLIC_BASE_URL/app`, then reads it back with
+`getChatMenuButton`. The `/app` route opens the same Mini App previously served
+at `/mini-app/`. The menu URL contains no user ID, customer ID, setup token, or
+VPN key. Telegram controls the native blue button and its icon. A separate
+BotFather Menu Button setting is not needed when this API call succeeds. A
+private chat with its own non-default menu-button override can supersede the
+default and would need that chat's setting cleared or updated.
 
-The bot's main menu also includes **🧭 Open Metro** as an inline button. Sending
-`/start` in a private chat displays the persistent six-button Reply Keyboard
+Sending `/start` in a private chat displays the persistent six-button Reply Keyboard
 with the `Select an option` input placeholder. Its text buttons run the
 existing Buy VPN, My VPN, Usage, Renew, Connect, and Support flows.
 

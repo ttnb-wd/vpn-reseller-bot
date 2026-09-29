@@ -70,6 +70,7 @@ async function loadBot(existingTables = null, outlineKeys = new Map()) {
   const events = {};
   const sent = [];
   const menuButtonCalls = [];
+  const menuButtonReads = [];
   const keyCalls = [];
   const limitCalls = [];
   const missingKeys = new Set();
@@ -90,6 +91,10 @@ async function loadBot(existingTables = null, outlineKeys = new Map()) {
         async sendMessage(...args) { sent.push({ type: "message", args }); },
         async sendPhoto(...args) { sent.push({ type: "photo", args }); },
         async setChatMenuButton(options) { menuButtonCalls.push(options); return true; },
+        async getChatMenuButton(options) {
+          menuButtonReads.push(options);
+          return menuButtonCalls.at(-1)?.menuButton;
+        },
       };
     }
     start(fn) { events.start = fn; }
@@ -164,7 +169,8 @@ async function loadBot(existingTables = null, outlineKeys = new Map()) {
     await found[0].fn(call);
     return call;
   }
-  return { tables, client, events, handlers, sent, menuButtonCalls, keyCalls, limitCalls, missingKeys, ctx, action,
+  return { tables, client, events, handlers, sent, menuButtonCalls, menuButtonReads,
+    keyCalls, limitCalls, missingKeys, ctx, action,
     recover: context.module.exports.recoverStuckProcessingOrders,
     syncUsage: context.module.exports.syncAccessKeyUsage,
     setUsage(value, ids) { usageByKeyId = value; existingKeyIds = new Set(ids); },
@@ -222,19 +228,27 @@ test("welcome, packages, confirmation and help only read customer data", async (
   assert.deepEqual(plain(bot.menuButtonCalls), [{ menuButton: {
     type: "web_app", text: "Metro", web_app: { url: "https://vpn.example.test/app" },
   } }]);
-  assert.equal(new URL(bot.menuButtonCalls[0].menuButton.web_app.url).search, "");
+  assert.equal(bot.menuButtonReads.length, 1);
+  assert.equal(bot.menuButtonReads[0], undefined);
+  const menuUrl = new URL(bot.menuButtonCalls[0].menuButton.web_app.url);
+  assert.equal(menuUrl.protocol, "https:");
+  assert.equal(menuUrl.pathname, "/app");
+  assert.equal(menuUrl.search, "");
+  assert.equal(menuUrl.hash, "");
   const welcome = bot.ctx();
   await bot.events.start(welcome);
   assert.match(welcome.replies[0][0], /Metro VPN မှ ကြိုဆိုပါတယ်/);
   assert.deepEqual(plain(buttons(welcome.replies[0]).map((row) => row.map((b) => b.text))), [
-    ["🛡️ Buy VPN", "🌐 My VPN"], ["🗂️ My Orders", "🛰️ Setup VPN"], ["🎧 Help"], ["🧭 Open Metro"],
+    ["🛡️ Buy VPN", "🌐 My VPN"], ["🗂️ My Orders", "🛰️ Setup VPN"], ["🎧 Help"],
   ]);
-  assert.equal(buttons(welcome.replies[0])[3][0].web_app.url, "https://vpn.example.test/mini-app/");
+  assert.equal(JSON.stringify(welcome.replies).includes("Open Metro"), false);
   assert.deepEqual(plain(welcome.replies[1][1].reply_markup.keyboard), [
     ["🛡️ Buy VPN", "🌐 My VPN"], ["📊 Usage", "♻️ Renew"], ["⚡ Connect", "🎧 Support"],
   ]);
   assert.equal(welcome.replies[1][1].reply_markup.input_field_placeholder, "Select an option");
   assert.equal(welcome.replies[1][1].reply_markup.is_persistent, true);
+  assert.equal(welcome.replies[1][1].reply_markup.resize_keyboard, true);
+  assert.equal(welcome.replies[1][1].reply_markup.one_time_keyboard, false);
   assert.equal(JSON.stringify(welcome.replies[1][1]).includes("Metro"), false);
   const packages = await bot.action("buy_vpn");
   assert.deepEqual(plain(buttons(packages.replies[0])[0].map((b) => b.callback_data)), ["package_7", "package_19"]);

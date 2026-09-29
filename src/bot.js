@@ -587,7 +587,7 @@ function formatOrderStatus(status) {
 let telegramAdmin;
 function buildMainMenu(ctx) {
   return buildCustomerMenu(Boolean(ctx && isAdmin(ctx) && ctx.chat?.type === "private"),
-    telegramAdmin?.customerAdminRows(), `${getConnectConfig().baseUrl}/mini-app/`);
+    telegramAdmin?.customerAdminRows());
 }
 
 function buildMetroMenuButton() {
@@ -2950,7 +2950,14 @@ async function startBot() {
   startupStage = "Telegram launch";
   await bot.launch();
   startupStage = "Telegram menu button";
-  await bot.telegram.setChatMenuButton({ menuButton: buildMetroMenuButton() });
+  const metroMenuButton = buildMetroMenuButton();
+  await bot.telegram.setChatMenuButton({ menuButton: metroMenuButton });
+  const configuredMenuButton = await bot.telegram.getChatMenuButton();
+  if (configuredMenuButton?.type !== "web_app" ||
+      configuredMenuButton.text !== metroMenuButton.text ||
+      configuredMenuButton.web_app?.url !== metroMenuButton.web_app.url) {
+    throw new Error("Telegram default menu button did not match Metro Mini App configuration.");
+  }
   startUsageSync();
 
   console.log(

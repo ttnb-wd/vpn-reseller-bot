@@ -1,11 +1,10 @@
 const { Markup } = require("telegraf");
 
-function buildCustomerMenu(isAdmin, adminRows = [], miniAppUrl = null) {
+function buildCustomerMenu(isAdmin, adminRows = []) {
   return Markup.inlineKeyboard([
     [Markup.button.callback("🛡️ Buy VPN", "buy_vpn"), Markup.button.callback("🌐 My VPN", "my_vpn")],
     [Markup.button.callback("🗂️ My Orders", "my_orders"), Markup.button.callback("🛰️ Setup VPN", "setup_vpn")],
     [Markup.button.callback("🎧 Help", "help")],
-    ...(miniAppUrl ? [[Markup.button.webApp("🧭 Open Metro", miniAppUrl)]] : []),
     ...(isAdmin ? adminRows : []),
   ]);
 }
@@ -15,7 +14,7 @@ function buildPersistentCustomerKeyboard() {
     ["🛡️ Buy VPN", "🌐 My VPN"],
     ["📊 Usage", "♻️ Renew"],
     ["⚡ Connect", "🎧 Support"],
-  ]).resize().persistent().placeholder("Select an option");
+  ]).resize().persistent().oneTime(false).placeholder("Select an option");
 }
 
 module.exports = { buildCustomerMenu, buildPersistentCustomerKeyboard };
