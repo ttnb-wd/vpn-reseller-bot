@@ -9,6 +9,8 @@ globalThis.Temporal = Temporal;
 const fs = require("fs");
 const path = require("path");
 
+let sharedClient;
+
 async function createDatabase() {
   const { default: postgresServerless } = await import(
     "@prisma/orm-postgres/serverless"
@@ -39,6 +41,8 @@ async function createDatabase() {
     context: database.context,
   });
 
+  sharedClient = client;
+
   return {
     client,
     runtime,
@@ -46,6 +50,12 @@ async function createDatabase() {
   };
 }
 
+function getDatabaseClient() {
+  if (!sharedClient) throw new Error("Database is not connected.");
+  return sharedClient;
+}
+
 module.exports = {
   createDatabase,
+  getDatabaseClient,
 };

@@ -8,6 +8,18 @@ const email = "admin@example.test";
 const password = "synthetic-test-password";
 const passwordHash = bcrypt.hashSync(password, 10);
 const sessionSecret = "synthetic-session-secret-for-route-tests-only";
+const emptyDataApi = {
+  getDashboardData: async () => ({
+    totalCustomers: 0, activeSubscriptions: 0, expiredSubscriptions: 0,
+    pendingPayments: 0, totalOrders: 0, activeVpnKeys: 0,
+    totalDataUsedGb: 0, recentOrders: [],
+  }),
+  getUsersData: async () => ({
+    customers: [], count: 0, page: 1, totalPages: 1,
+    q: "", status: "all", now: { epochMilliseconds: Date.now() },
+  }),
+  getUserDetail: async () => null,
+};
 
 function config(production = false, renderUrl) {
   return validateAdminConfig({
@@ -28,6 +40,8 @@ async function startServer(production = false, options = {}) {
   app.use("/admin", createAdminRouter({
     ...config(production, options.renderUrl),
     expectedOrigin: options.expectedOrigin || base.replace("http:", "https:"),
+    getClient: () => ({}),
+    dataApi: options.dataApi || emptyDataApi,
   }));
   return {
     server, base,

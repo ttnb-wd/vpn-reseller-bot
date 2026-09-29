@@ -1,6 +1,9 @@
 const crypto = require("crypto");
 const bcrypt = require("bcryptjs");
 const express = require("express");
+const { getDatabaseClient } = require("./db");
+const { getDashboardData, getUsersData, getUserDetail } = require("./admin-data");
+const { renderDashboard, renderUsers, renderUserDetail } = require("./admin-ui");
 
 const COOKIE_NAME = "metro_admin_session";
 const SESSION_MAX_AGE_MS = 30 * 60 * 1000;
@@ -129,23 +132,6 @@ function renderLogin(res, message, formToken) {
         <input id="password" name="password" type="password" autocomplete="current-password" required>
         <button class="primary" type="submit">Sign In</button>
       </form>
-    </section>`, nonce));
-}
-
-function renderAdminHome(res, email, formToken) {
-  const nonce = crypto.randomBytes(16).toString("base64");
-  setPageHeaders(res, nonce);
-  return res.type("html").send(renderPage("Home", `
-    <section class="card">
-      <div class="topline"><div><div class="eyebrow">Metro Secure</div><h1>Metro Secure Admin</h1></div>
-        <form method="post" action="/admin/logout"><input type="hidden" name="_csrf" value="${formToken}"><button type="submit">Logout</button></form></div>
-      <p class="identity">Logged in as: <strong>${escapeHtml(email)}</strong></p>
-      <div class="nav" aria-label="Admin sections">
-        <span class="current" aria-current="page">Dashboard</span><span>Users</span>
-        <span>Orders</span><span>Payments</span><span>VPN Keys</span><span>Packages</span>
-        <span>Usage</span><span>Settings</span>
-      </div>
-      <p class="hint">Dashboard and Users are coming in the next phase.</p>
     </section>`, nonce));
 }
 
@@ -302,7 +288,42 @@ function createAdminRouter(config) {
   // Every route registered below this point requires a valid session.
   router.use(requireAdmin);
 
-  router.get("/", (req, res) => renderAdminHome(res, config.email, issueFormToken(res)));
+  const getClient = config.getClient || getDatabaseClient;
+  const dataApi = config.dataApi || { getDashboardData, getUsersData, getUserDetail };
+
+  router.get("/", async (req, res) => {
+    try {
+      const data = await dataApi.getDashboardData(getClient());
+      return renderDashboard(res, config.email, issueFormToken(res), data);
+    } catch {
+      console.error("Admin dashboard query failed.");
+      return res.status(503).type("text").send("Admin data is temporarily unavailable.");
+    }
+  });
+
+  router.get("/users", async (req, res) => {
+    try {
+      const data = await dataApi.getUsersData(getClient(), req.query);
+      return renderUsers(res, config.email, issueFormToken(res), data);
+    } catch {
+      console.error("Admin users query failed.");
+      return res.status(503).type("text").send("Admin data is temporarily unavailable.");
+    }
+  });
+
+  router.get("/users/:id", async (req, res) => {
+    if (!/^[1-9]\d{0,9}$/.test(req.params.id) || Number(req.params.id) > 2147483647) {
+      return res.sendStatus(404);
+    }
+    try {
+      const customer = await dataApi.getUserDetail(getClient(), Number(req.params.id));
+      if (!customer) return res.sendStatus(404);
+      return renderUserDetail(res, config.email, issueFormToken(res), customer);
+    } catch {
+      console.error("Admin user detail query failed.");
+      return res.status(503).type("text").send("Admin data is temporarily unavailable.");
+    }
+  });
 
   router.post("/logout", express.urlencoded({ extended: false, limit: "4kb" }), (req, res) => {
     if (!validFormRequest(req)) return res.sendStatus(403);
