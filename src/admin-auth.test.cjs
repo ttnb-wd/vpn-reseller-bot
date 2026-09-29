@@ -9,23 +9,25 @@ const password = "synthetic-test-password";
 const passwordHash = bcrypt.hashSync(password, 10);
 const sessionSecret = "synthetic-session-secret-for-route-tests-only";
 
-function config(production = false) {
+function config(production = false, renderUrl) {
   return validateAdminConfig({
     ADMIN_EMAIL: email,
     ADMIN_PASSWORD_HASH: passwordHash,
     ADMIN_SESSION_SECRET: sessionSecret,
     NODE_ENV: production ? "production" : "test",
+    RENDER_EXTERNAL_URL: renderUrl,
   });
 }
 
-async function startServer(production = false) {
+async function startServer(production = false, options = {}) {
   const app = express();
-  app.set("trust proxy", "loopback");
+  app.set("trust proxy", production ? 1 : "loopback");
   const server = app.listen(0, "127.0.0.1");
   await new Promise((resolve) => server.once("listening", resolve));
   const base = `http://127.0.0.1:${server.address().port}`;
   app.use("/admin", createAdminRouter({
-    ...config(production), expectedOrigin: base.replace("http:", "https:"),
+    ...config(production, options.renderUrl),
+    expectedOrigin: options.expectedOrigin || base.replace("http:", "https:"),
   }));
   return {
     server, base,
@@ -42,6 +44,11 @@ test("admin configuration rejects missing or invalid values by name", () => {
   assert.throws(() => validateAdminConfig({
     ADMIN_EMAIL: email, ADMIN_PASSWORD_HASH: "invalid", ADMIN_SESSION_SECRET: sessionSecret,
   }), /ADMIN_PASSWORD_HASH/);
+  assert.equal(validateAdminConfig({
+    ADMIN_EMAIL: email, ADMIN_PASSWORD_HASH: passwordHash,
+    ADMIN_SESSION_SECRET: sessionSecret,
+    RENDER_EXTERNAL_HOSTNAME: "metro-secure.onrender.com",
+  }).renderOrigin, "https://metro-secure.onrender.com");
 });
 
 test("admin routes require a session; login, CSRF checks, and logout work", async (t) => {
@@ -82,7 +89,7 @@ test("admin routes require a session; login, CSRF checks, and logout work", asyn
   assert.equal(login.headers.get("location"), "/admin");
   const setCookie = login.headers.get("set-cookie");
   assert.match(setCookie, /HttpOnly/i);
-  assert.match(setCookie, /SameSite=Strict/i);
+  assert.match(setCookie, /SameSite=Lax/i);
   assert.match(setCookie, /Path=\/admin/i);
   assert.match(setCookie, /Max-Age=1800/i);
   assert.equal(setCookie.includes(email), false);
@@ -147,4 +154,54 @@ test("production session cookie is Secure", async (t) => {
   });
   assert.equal(response.status, 303);
   assert.match(response.headers.get("set-cookie"), /Secure/i);
+});
+
+test("Render proxy login accepts the configured external origin and rejects cross-origin posts", async (t) => {
+  const renderOrigin = "https://metro-secure.onrender.com";
+  const site = await startServer(true, {
+    expectedOrigin: "https://vpn.example.test",
+    renderUrl: renderOrigin,
+  });
+  t.after(site.close);
+  const proxyHeaders = {
+    "X-Forwarded-Proto": "https",
+    "X-Forwarded-Host": "metro-secure.onrender.com",
+  };
+  const request = (path, options = {}) => fetch(site.base + path, {
+    redirect: "manual", ...options,
+  });
+  assert.equal((await request("/admin/login", { headers: proxyHeaders })).status, 200);
+  assert.equal((await request("/admin", { headers: proxyHeaders })).status, 303);
+  const blockedLogin = await request("/admin/login", {
+    method: "POST",
+    headers: { ...proxyHeaders, Origin: "https://attacker.example.test" },
+    body: new URLSearchParams({ email, password }),
+  });
+  assert.equal(blockedLogin.status, 403);
+  const valid = await request("/admin/login", {
+    method: "POST",
+    headers: { ...proxyHeaders, Origin: renderOrigin },
+    body: new URLSearchParams({ email, password }),
+  });
+  assert.equal(valid.status, 303);
+  assert.equal(valid.headers.get("location"), "/admin");
+  assert.match(valid.headers.get("set-cookie"), /Secure/i);
+  const cookie = valid.headers.get("set-cookie").split(";")[0];
+  assert.equal((await request("/admin", {
+    headers: { ...proxyHeaders, Cookie: cookie },
+  })).status, 200);
+
+  const crossOrigin = await request("/admin/logout", {
+    method: "POST",
+    headers: { ...proxyHeaders, Cookie: cookie, Origin: "https://attacker.example.test" },
+  });
+  assert.equal(crossOrigin.status, 403);
+  const logout = await request("/admin/logout", {
+    method: "POST",
+    headers: { ...proxyHeaders, Cookie: cookie, Origin: renderOrigin },
+  });
+  assert.equal(logout.status, 303);
+  assert.equal((await request("/admin", {
+    headers: { ...proxyHeaders, Cookie: cookie },
+  })).status, 303);
 });

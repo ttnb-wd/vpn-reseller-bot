@@ -9,6 +9,20 @@ const MAX_FAILED_LOGINS = 5;
 const MAX_TRACKED_IPS = 10000;
 const MAX_SESSIONS = 1000;
 
+function renderOriginFromEnv(env) {
+  try {
+    const url = new URL(env.RENDER_EXTERNAL_URL);
+    if (url.protocol === "https:" && url.hostname.endsWith(".onrender.com") &&
+        !url.port && !url.username && !url.password && url.pathname === "/" &&
+        !url.search && !url.hash) return url.origin;
+  } catch {
+    // Render's external URL is optional outside Render.
+  }
+  const hostname = env.RENDER_EXTERNAL_HOSTNAME;
+  return typeof hostname === "string" && /^[a-z0-9-]+\.onrender\.com$/i.test(hostname)
+    ? `https://${hostname.toLowerCase()}` : null;
+}
+
 function validateAdminConfig(env = process.env) {
   for (const name of ["ADMIN_EMAIL", "ADMIN_PASSWORD_HASH", "ADMIN_SESSION_SECRET"]) {
     if (!env[name]) throw new Error(`${name} is required.`);
@@ -29,6 +43,7 @@ function validateAdminConfig(env = process.env) {
     passwordHash: env.ADMIN_PASSWORD_HASH,
     sessionSecret: env.ADMIN_SESSION_SECRET,
     production: env.NODE_ENV === "production",
+    renderOrigin: renderOriginFromEnv(env),
   };
 }
 
@@ -125,7 +140,7 @@ function createAdminRouter(config) {
   const sessions = new Map();
   const loginAttempts = new Map();
   const cookieOptions = {
-    httpOnly: true, secure: config.production, sameSite: "strict", path: "/admin",
+    httpOnly: true, secure: config.production, sameSite: "lax", path: "/admin",
   };
 
   function prune(map, now) {
@@ -163,11 +178,14 @@ function createAdminRouter(config) {
 
   function sameOrigin(req) {
     const origin = req.get("Origin");
+    if (!origin) return false;
+    if (config.production) {
+      // These origins come from server configuration, not client-supplied Host
+      // or X-Forwarded-Host headers, which can differ behind Render's proxy.
+      return origin === config.expectedOrigin || origin === config.renderOrigin;
+    }
     const host = req.get("Host");
-    if (!origin || !host) return false;
-    const requestOrigin = `${req.protocol}://${host}`;
-    if (origin !== requestOrigin) return false;
-    return !config.production || origin === config.expectedOrigin;
+    return Boolean(host && origin === `${req.protocol}://${host}`);
   }
 
   router.use((req, res, next) => {

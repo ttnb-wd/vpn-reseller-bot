@@ -23,9 +23,11 @@ const {
 
 const app = express();
 
-// HTTPS terminates at the reverse proxy. Only trust forwarded headers from
-// local/private proxy addresses; keep the Express port private in production.
-app.set("trust proxy", "loopback, linklocal, uniquelocal");
+// Render places one TLS-terminating proxy in front of the private Express port.
+// Trust that hop there so req.secure and req.ip reflect the external request.
+// Keep the narrower private-proxy policy outside Render.
+app.set("trust proxy", process.env.RENDER === "true"
+  ? 1 : "loopback, linklocal, uniquelocal");
 
 const PORT = process.env.PORT || 3000;
 
