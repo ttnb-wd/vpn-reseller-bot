@@ -2958,37 +2958,47 @@ async function startBot() {
   // SHUTDOWN
   // =========================
 
-  const shutdown = (signal) => {
+  let shuttingDown = false;
+  const shutdown = async (signal, exitCode = 0) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     console.log(
       `${signal} received. Shutting down...`
     );
 
     clearInterval(usageSyncTimer);
-    bot.stop(signal);
-
-    server.close(() => {
-      console.log(
-        "HTTP server closed."
-      );
-
-      process.exit(0);
-    });
+    try {
+      bot.stop(signal);
+    } catch (error) {
+      if (error?.message !== "Bot is not running!") {
+        logHandlerFailure("shutdown.telegram", error);
+      }
+    }
+    await new Promise((resolve) => server.close(resolve));
+    console.log("HTTP server closed.");
+    try {
+      await database.runtime.close();
+    } catch (error) {
+      logHandlerFailure("shutdown.database", error);
+    }
+    process.exit(exitCode);
   };
 
   process.once(
     "SIGINT",
-    () => shutdown("SIGINT")
+    () => { void shutdown("SIGINT"); }
   );
 
   process.once(
     "SIGTERM",
-    () => shutdown("SIGTERM")
+    () => { void shutdown("SIGTERM"); }
   );
 
   startupStage = "Telegram polling";
   void bot.launch().catch((error) => {
+    if (shuttingDown) return;
     logStartupFailure(error);
-    process.exit(1);
+    void shutdown("Telegram polling failure", 1);
   });
 }
 

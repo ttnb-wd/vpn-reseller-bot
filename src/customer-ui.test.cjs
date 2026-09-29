@@ -72,6 +72,11 @@ async function loadBot(existingTables = null, outlineKeys = new Map(), options =
   const menuButtonCalls = [];
   const menuButtonReads = [];
   const launchCalls = [];
+  const stopCalls = [];
+  const signals = {};
+  const exits = [];
+  const runtimeCloses = [];
+  const serverCloses = [];
   const errors = [];
   const keyCalls = [];
   const limitCalls = [];
@@ -83,6 +88,7 @@ async function loadBot(existingTables = null, outlineKeys = new Map(), options =
     set() {}, get() {}, use() {}, disable() {},
     listen() {
       const server = new EventEmitter();
+      server.close = (done) => { serverCloses.push(true); done(); };
       queueMicrotask(() => server.emit("listening"));
       return server;
     },
@@ -113,6 +119,7 @@ async function loadBot(existingTables = null, outlineKeys = new Map(), options =
       launchCalls.push(true);
       if (options.pollingStaysActive) await new Promise(() => {});
     }
+    stop(signal) { stopCalls.push(signal); }
   }
   const context = vm.createContext({
     __dirname: __dirname,
@@ -120,7 +127,9 @@ async function loadBot(existingTables = null, outlineKeys = new Map(), options =
       if (name === "dotenv") return { config() {} };
       if (name === "express") return () => fakeApp;
       if (name === "telegraf") return { ...localRequire(name), Telegraf: FakeTelegraf };
-      if (name === "./db") return { async createDatabase() { return { client }; } };
+      if (name === "./db") return { async createDatabase() {
+        return { client, runtime: { async close() { runtimeCloses.push(true); } } };
+      } };
       if (name === "./admin-auth") return {
         validateAdminConfig() { return { email: "admin@example.test" }; },
         createAdminRouter() { return () => {}; },
@@ -161,9 +170,10 @@ async function loadBot(existingTables = null, outlineKeys = new Map(), options =
     },
     process: {
       env: { ADMIN_TELEGRAM_ID: "999", PUBLIC_BASE_URL: "https://vpn.example.test", CONNECT_TOKEN_SECRET: "test-secret-".repeat(4) },
-      once() {},
+      once(signal, handler) { signals[signal] = handler; },
+      exit(code) { exits.push(code); },
     },
-    Buffer, URL, setTimeout, clearTimeout, setInterval() {},
+    Buffer, URL, setTimeout, clearTimeout, clearInterval, setInterval() {},
     console: { log() {}, error(...args) { errors.push(args); }, warn() {} }, module: { exports: {} },
   });
   vm.runInContext(source.slice(0, source.lastIndexOf("\nstartBot().catch(")) + `
@@ -191,7 +201,7 @@ async function loadBot(existingTables = null, outlineKeys = new Map(), options =
     return call;
   }
   return { tables, client, events, handlers, sent, menuButtonCalls, menuButtonReads,
-    launchCalls, errors,
+    launchCalls, stopCalls, signals, exits, runtimeCloses, serverCloses, errors,
     keyCalls, limitCalls, missingKeys, ctx, action,
     recover: context.module.exports.recoverStuckProcessingOrders,
     syncUsage: context.module.exports.syncAccessKeyUsage,
@@ -309,6 +319,21 @@ test("polling remains active while the native menu is configured and callbacks s
     ["📊 Admin Panel"], ["👥 Users", "🗂️ Orders"], ["🧾 Payments", "💎 Packages"],
   ]);
   assert.equal(keyboard.input_field_placeholder, "Select an option");
+});
+
+test("one polling launch stops and closes resources on SIGTERM or SIGINT", async () => {
+  const source = readFileSync(path.join(__dirname, "bot.js"), "utf8");
+  assert.equal((source.match(/bot\.launch\(/g) || []).length, 1);
+  for (const signal of ["SIGTERM", "SIGINT"]) {
+    const bot = await loadBot(null, new Map(), { pollingStaysActive: true });
+    assert.equal(bot.launchCalls.length, 1);
+    bot.signals[signal]();
+    await new Promise(setImmediate);
+    assert.deepEqual(bot.stopCalls, [signal]);
+    assert.equal(bot.serverCloses.length, 1);
+    assert.equal(bot.runtimeCloses.length, 1);
+    assert.deepEqual(bot.exits, [0]);
+  }
 });
 
 test("a Telegram menu API failure does not prevent polling or customer actions", async () => {
