@@ -35,6 +35,7 @@ model Order {
   package   Package? @relation(fields: [packageId], references: [id])
 
   durationMonths Int @default(1)
+  totalDurationDays Int?
 
   totalDataGb Float?
   price       Decimal

@@ -405,7 +405,7 @@ function renderPackages(res, email, formToken, data, saved = false) {
   const cards = data.packages.map((pkg) => `<article class="user-card">
     <div class="user-head"><h3>${text(pkg.name)}</h3>${badge(pkg.active ? "Active" : "Inactive", pkg.active ? "active" : "inactive")}</div>
     <dl>${field("Package ID", text(pkg.id))}${field("Data limit", formatGb(pkg.dataLimitGb))}
-      ${field("Duration", `${formatNumber(pkg.durationDays)} days`)}${field("Price", `${formatNumber(pkg.priceMmk, 2)} MMK`)}
+      ${field("Duration", `${formatNumber(pkg.durationDays)} days`)}${field("Price", formatNumber(pkg.priceMmk, 2))}
       ${field("Sort order", formatNumber(pkg.sortOrder))}${field("Created at", formatDate(pkg.createdAt))}
       ${field("Updated at", formatDate(pkg.updatedAt))}
     </dl><div class="actions"><a href="/admin/packages/${pkg.id}/edit">Edit package</a></div></article>`).join("");
@@ -429,7 +429,7 @@ function renderPackageEdit(res, email, formToken, pkg, errors = [], entered = pk
         <div><label for="name">Name</label><input id="name" name="name" value="${input("name")}" maxlength="100" required></div>
         <div><label for="dataLimitGb">Data limit (GB)</label><input id="dataLimitGb" name="dataLimitGb" value="${input("dataLimitGb")}" inputmode="decimal" required></div>
         <div><label for="durationDays">Duration (days)</label><input id="durationDays" name="durationDays" value="${input("durationDays")}" inputmode="numeric" required></div>
-        <div><label for="priceMmk">Price (MMK)</label><input id="priceMmk" name="priceMmk" value="${input("priceMmk")}" inputmode="decimal" required></div>
+        <div><label for="priceMmk">Price</label><input id="priceMmk" name="priceMmk" value="${input("priceMmk")}" inputmode="decimal" required></div>
         <div><label for="sortOrder">Sort order</label><input id="sortOrder" name="sortOrder" value="${input("sortOrder")}" inputmode="numeric" required></div>
         <div><label for="active">Availability</label><select id="active" name="active" required>
           <option value="true"${active === "true" ? " selected" : ""}>Active</option>

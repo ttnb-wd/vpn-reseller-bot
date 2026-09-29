@@ -157,7 +157,7 @@ test("Packages list and edit page render database values and escape the package 
   assert.equal(response.status, 200);
   const html = await response.text();
   assert.deepEqual(api.calls[0], { route: "packages", page: "2" });
-  for (const value of ["200 GB", "30 days", "12,000.5 MMK", "Page 2 of 2", "Sort order"]) {
+  for (const value of ["200 GB", "30 days", "12,000.5", "Page 2 of 2", "Sort order"]) {
     assert.ok(html.includes(value), value);
   }
   assert.match(html, /href="\/admin\/packages\/8\/edit"/);
@@ -167,6 +167,8 @@ test("Packages list and edit page render database values and escape the package 
   const edit = await site.request("/admin/packages/8/edit", { headers: { Cookie: cookie } });
   assert.equal(edit.status, 200);
   const editHtml = await edit.text();
+  assert.match(editHtml, /<label for="priceMmk">Price<\/label>/);
+  assert.equal(html.includes("MMK"), false);
   assert.match(editHtml, /name="priceMmk" value="12000.50"/);
   assert.match(editHtml, /name="_csrf" value="/);
   assert.equal((await site.request("/admin/packages/999/edit", { headers: { Cookie: cookie } })).status, 404);

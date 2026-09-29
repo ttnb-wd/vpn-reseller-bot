@@ -34,7 +34,7 @@ import type {
 } from '@prisma/orm-postgres/contract/types';
 
 export type StorageHash =
-  StorageHashBase<'e845d12fcc970a5077692856d30144300333bfe888c31b9ad963655f5a5e4186'>;
+  StorageHashBase<'30e118c51813da1d6543bc6f3adefbd857a0990d6ae59a8995164c886b67f92e'>;
 export type ExecutionHash = ExecutionHashBase<string>;
 export type ProfileHash =
   ProfileHashBase<'3916f444a8a17ad749191acf9e08dad97d1a327b88c2f1d45d12f240296aa8b2'>;
@@ -254,6 +254,7 @@ export type FieldOutputTypes = {
       readonly plan: CodecTypes['pg/text@1']['output'];
       readonly packageId: CodecTypes['pg/int4@1']['output'] | null;
       readonly durationMonths: CodecTypes['pg/int4@1']['output'];
+      readonly totalDurationDays: CodecTypes['pg/int4@1']['output'] | null;
       readonly totalDataGb: CodecTypes['pg/float8@1']['output'] | null;
       readonly price: CodecTypes['pg/numeric@1']['output'];
       readonly status: CodecTypes['pg/text@1']['output'];
@@ -317,6 +318,7 @@ export type FieldInputTypes = {
       readonly plan: CodecTypes['pg/text@1']['input'];
       readonly packageId: CodecTypes['pg/int4@1']['input'] | null;
       readonly durationMonths: CodecTypes['pg/int4@1']['input'];
+      readonly totalDurationDays: CodecTypes['pg/int4@1']['input'] | null;
       readonly totalDataGb: CodecTypes['pg/float8@1']['input'] | null;
       readonly price: CodecTypes['pg/numeric@1']['input'];
       readonly status: CodecTypes['pg/text@1']['input'];
@@ -393,6 +395,7 @@ export type StorageColumnTypes = {
       readonly startedAt: CodecTypes['pg/timestamptz-temporal@1']['output'] | null;
       readonly status: CodecTypes['pg/text@1']['output'];
       readonly totalDataGb: CodecTypes['pg/float8@1']['output'] | null;
+      readonly totalDurationDays: CodecTypes['pg/int4@1']['output'] | null;
       readonly vpnKey: CodecTypes['pg/text@1']['output'] | null;
       readonly vpnKeyCreatedAt: CodecTypes['pg/timestamptz-temporal@1']['output'] | null;
       readonly vpnKeyId: CodecTypes['pg/text@1']['output'] | null;
@@ -456,6 +459,7 @@ export type StorageColumnInputTypes = {
       readonly startedAt: CodecTypes['pg/timestamptz-temporal@1']['input'] | null;
       readonly status: CodecTypes['pg/text@1']['input'];
       readonly totalDataGb: CodecTypes['pg/float8@1']['input'] | null;
+      readonly totalDurationDays: CodecTypes['pg/int4@1']['input'] | null;
       readonly vpnKey: CodecTypes['pg/text@1']['input'] | null;
       readonly vpnKeyCreatedAt: CodecTypes['pg/timestamptz-temporal@1']['input'] | null;
       readonly vpnKeyId: CodecTypes['pg/text@1']['input'] | null;
@@ -523,6 +527,7 @@ export namespace Models {
     plan: CodecTypes['pg/text@1']['output'];
     packageId: CodecTypes['pg/int4@1']['output'] | null;
     durationMonths: CodecTypes['pg/int4@1']['output'];
+    totalDurationDays: CodecTypes['pg/int4@1']['output'] | null;
     totalDataGb: CodecTypes['pg/float8@1']['output'] | null;
     price: CodecTypes['pg/numeric@1']['output'];
     status: CodecTypes['pg/text@1']['output'];
@@ -665,6 +670,11 @@ type ContractBase = Omit<
                     readonly kind: 'literal';
                     readonly value: DefaultLiteralValue<'pg/int4@1', 1>;
                   };
+                };
+                readonly totalDurationDays: {
+                  readonly nativeType: 'int4';
+                  readonly codecId: 'pg/int4@1';
+                  readonly nullable: true;
                 };
                 readonly totalDataGb: {
                   readonly nativeType: 'float8';
@@ -1100,6 +1110,10 @@ type ContractBase = Omit<
                 readonly nullable: false;
                 readonly type: { readonly kind: 'scalar'; readonly codecId: 'pg/int4@1' };
               };
+              readonly totalDurationDays: {
+                readonly nullable: true;
+                readonly type: { readonly kind: 'scalar'; readonly codecId: 'pg/int4@1' };
+              };
               readonly totalDataGb: {
                 readonly nullable: true;
                 readonly type: { readonly kind: 'scalar'; readonly codecId: 'pg/float8@1' };
@@ -1221,6 +1235,7 @@ type ContractBase = Omit<
                 readonly plan: { readonly column: 'plan' };
                 readonly packageId: { readonly column: 'packageId' };
                 readonly durationMonths: { readonly column: 'durationMonths' };
+                readonly totalDurationDays: { readonly column: 'totalDurationDays' };
                 readonly totalDataGb: { readonly column: 'totalDataGb' };
                 readonly price: { readonly column: 'price' };
                 readonly status: { readonly column: 'status' };

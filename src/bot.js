@@ -575,14 +575,11 @@ function packageSelectionLabel(pkg) {
 }
 
 function formatPackageSelection(packages) {
-  const nameWidth = Math.max(...packages.map((pkg) => Array.from(pkg.name).length));
-  const summary = packages.map((pkg) => {
-    const padding = " ".repeat(nameWidth - Array.from(pkg.name).length + 1);
-    return `${packageSelectionLabel(pkg)}${padding}• ${formatNumber(pkg.dataLimitGb)} GB` +
-      ` • ${pkg.durationDays} ရက် • ${formatMmk(pkg.priceMmk)}`;
-  }).join("\n");
-  return `💎 VPN Package ရွေးပါ\n\n${summary}\n\n` +
-    "သင့်အတွက်သင့်တော်တဲ့ package ခလုတ်ကိုနှိပ်ပါ။\nData၊ သက်တမ်းနဲ့ ဈေးနှုန်းအပြည့်အစုံကို ကြည့်ပြီးမှ ဝယ်ယူနိုင်ပါတယ်။";
+  const summary = packages.map((pkg) =>
+    `${packageSelectionLabel(pkg)} • ${formatNumber(pkg.dataLimitGb)} GB` +
+    ` • ${pkg.durationDays} Days • ${formatMmk(pkg.priceMmk)}`
+  ).join("\n");
+  return `💎 Choose Your VPN Package\n\nသင့်အတွက် package ကိုရွေးပါ 👇\n\n${summary}`;
 }
 
 function buildPackageKeyboard(packages, isRenewal = false) {
@@ -635,9 +632,10 @@ function formatPurchaseConfirmation(pkg, durationMonths, isRenewal = false) {
 }
 
 function buildConfirmationKeyboard(pkg, durationMonths, isRenewal = false) {
+  const version = packageVersion(pkg);
   return Markup.inlineKeyboard([
     [Markup.button.callback(isRenewal ? "Confirm Renewal" : "Confirm Purchase",
-      `${isRenewal ? "confirm_renewal" : "confirm_package"}_${pkg.id}_${durationMonths}`)],
+      `${isRenewal ? "confirm_renewal" : "confirm_package"}_${pkg.id}_${durationMonths}_${version}`)],
     [Markup.button.callback("← Back", `${isRenewal ? "renew_package" : "package"}_${pkg.id}`)],
   ]);
 }
@@ -708,6 +706,26 @@ function calculatePackage(pkg, durationMonths) {
     totalPriceMmk,
     durationDays,
   };
+}
+
+function packageVersion(pkg) {
+  // The callback carries a fingerprint, never business values. Always re-read
+  // the Package row and compare before writing an order.
+  return crypto.createHash("sha256").update(JSON.stringify([
+    pkg.id, pkg.name, Number(pkg.dataLimitGb), Number(pkg.durationDays),
+    String(pkg.priceMmk), pkg.active,
+  ])).digest("hex").slice(0, 16);
+}
+
+function unavailablePackageKeyboard(isRenewal = false) {
+  return Markup.inlineKeyboard([[
+    Markup.button.callback("← Current Packages", isRenewal ? "renew_vpn" : "buy_vpn"),
+  ]]);
+}
+
+async function replyUnavailablePackage(ctx, isRenewal = false) {
+  return ctx.reply("ဒီ package ကို လောလောဆယ် မရနိုင်တော့ပါ။\nPackage အသစ်ရွေးပေးပါ။",
+    unavailablePackageKeyboard(isRenewal));
 }
 
 function gbToBytes(gb) {
@@ -929,14 +947,13 @@ async function sendMainMenu(ctx) {
 }
 
 async function getActivePackages() {
-  return await db.public.Package
+  const packages = await db.public.Package
     .where({
       active: true,
     })
-    .orderBy((pkg) =>
-      pkg.sortOrder.asc()
-    )
     .all();
+  return packages.sort((a, b) =>
+    Number(a.sortOrder) - Number(b.sortOrder) || Number(a.id) - Number(b.id));
 }
 
 async function getPackageById(packageId) {
@@ -952,21 +969,29 @@ async function createPackageOrder(
   ctx,
   packageId,
   durationMonths,
-  isRenewal = false
+  isRenewal = false,
+  confirmedVersion = null
 ) {
   try {
     const pkg =
       await getPackageById(packageId);
 
     if (!pkg) {
+      return replyUnavailablePackage(ctx, isRenewal);
+    }
+
+    if (confirmedVersion !== packageVersion(pkg)) {
       return await ctx.reply(
-        "ဒီ package ကို လောလောဆယ် မရနိုင်ပါ။\n← Back နဲ့ပြန်သွားပြီး အခြား package ကိုရွေးပါ။"
+        "Package အချက်အလက် ပြောင်းထားပါတယ်။ အောက်က လက်ရှိဈေးနှုန်းနဲ့ Data ကို ပြန်စစ်ပြီး အတည်ပြုပေးပါ။\n\n" +
+          formatPurchaseConfirmation(pkg, durationMonths, isRenewal),
+        buildConfirmationKeyboard(pkg, durationMonths, isRenewal)
       );
     }
 
     const {
       totalDataGb,
       totalPriceMmk,
+      durationDays,
     } = calculatePackage(
       pkg,
       durationMonths
@@ -1022,13 +1047,13 @@ async function createPackageOrder(
     }
     const purchaseId = crypto.createHash("sha256").update(JSON.stringify([
       String(ctx.from.id), confirmation.chat.id, confirmation.message_id,
-      pkg.id, durationMonths, isRenewal,
+      pkg.id, durationMonths, isRenewal, confirmedVersion,
     ])).digest("hex").slice(0, 32);
     const orderNumber = `VPN-${purchaseId}`;
     const order = await db.public.Order.upsert({
       conflictOn: { orderNumber: true },
       create: {
-        orderNumber, plan, packageId: pkg.id, durationMonths,
+        orderNumber, plan, packageId: pkg.id, durationMonths, totalDurationDays: durationDays,
         totalDataGb, price: totalPriceMmk, status: "PENDING_PAYMENT", customerId: customer.id,
       },
       update: { orderNumber },
@@ -1134,10 +1159,7 @@ async function startBot() {
         );
       }
 
-      const pkg = subscription.packageId
-        ? await db.public.Package.where({ id: subscription.packageId }).first()
-        : null;
-      const packageLabel = pkg?.name || subscription.plan || "VPN package";
+      const packageLabel = subscription.plan || "VPN package";
       const hasReusableKey = Boolean(subscription.vpnKeyId &&
         isReusableAccessKey(subscription.vpnKeyId, subscription.vpnKey) &&
         isValidOutlineAccessKey(subscription.vpnKey));
@@ -1285,9 +1307,7 @@ async function startBot() {
           );
 
         if (!pkg) {
-          return await ctx.reply(
-            "ဒီ package ကို လောလောဆယ် မရနိုင်ပါ။\n← Back နဲ့ပြန်သွားပြီး အခြား package ကိုရွေးပါ။"
-          );
+          return replyUnavailablePackage(ctx, true);
         }
 
         await ctx.reply(formatPackageDetails(pkg, true), buildPackageDetailKeyboard(pkg, true));
@@ -1319,9 +1339,7 @@ async function startBot() {
           );
 
         if (!pkg) {
-          return await ctx.reply(
-            "ဒီ package ကို လောလောဆယ် မရနိုင်ပါ။\n← Back နဲ့ပြန်သွားပြီး အခြား package ကိုရွေးပါ။"
-          );
+          return replyUnavailablePackage(ctx, true);
         }
 
         await ctx.reply(
@@ -1339,7 +1357,7 @@ async function startBot() {
   );
 
   bot.action(
-    /^confirm_renewal_(\d+)_(1|3|6)$/,
+    /^confirm_renewal_(\d+)_(1|3|6)(?:_([a-f0-9]{16}))?$/,
     async (ctx) => {
       await ctx.answerCbQuery();
 
@@ -1353,7 +1371,8 @@ async function startBot() {
         ctx,
         packageId,
         durationMonths,
-        true
+        true,
+        ctx.match[3] || null
       );
     }
   );
@@ -1411,9 +1430,7 @@ async function startBot() {
           );
 
         if (!pkg) {
-          return await ctx.reply(
-            "ဒီ package ကို လောလောဆယ် မရနိုင်ပါ။\n← Back နဲ့ပြန်သွားပြီး အခြား package ကိုရွေးပါ။"
-          );
+          return replyUnavailablePackage(ctx);
         }
 
         await ctx.reply(formatPackageDetails(pkg), buildPackageDetailKeyboard(pkg));
@@ -1449,9 +1466,7 @@ async function startBot() {
           );
 
         if (!pkg) {
-          return await ctx.reply(
-            "ဒီ package ကို လောလောဆယ် မရနိုင်ပါ။\n← Back နဲ့ပြန်သွားပြီး အခြား package ကိုရွေးပါ။"
-          );
+          return replyUnavailablePackage(ctx);
         }
 
         await ctx.reply(
@@ -1473,7 +1488,7 @@ async function startBot() {
   // =========================
 
   bot.action(
-    /^confirm_package_(\d+)_(1|3|6)$/,
+    /^confirm_package_(\d+)_(1|3|6)(?:_([a-f0-9]{16}))?$/,
     async (ctx) => {
       await ctx.answerCbQuery();
 
@@ -1487,7 +1502,8 @@ async function startBot() {
         ctx,
         packageId,
         durationMonths,
-        false
+        false,
+        ctx.match[3] || null
       );
     }
   );
@@ -1901,14 +1917,15 @@ async function startBot() {
             order.durationMonths
           ) || 1;
 
-        const totalDataGb =
-          Number(order.totalDataGb) ||
-          Number(pkg.dataLimitGb) *
-            durationMonths;
+        // New orders carry the entitlement shown at confirmation. Older
+        // orders retain the existing package-based fallback.
+        const totalDataGb = order.totalDataGb == null
+          ? Number(pkg.dataLimitGb) * durationMonths
+          : Number(order.totalDataGb);
 
-        const durationDays =
-          Number(pkg.durationDays) *
-          durationMonths;
+        const durationDays = order.totalDurationDays == null
+          ? Number(pkg.durationDays) * durationMonths
+          : Number(order.totalDurationDays);
 
         const dataLimitBytes =
           gbToBytes(totalDataGb);
@@ -2062,10 +2079,7 @@ async function startBot() {
                 packageId:
                   pkg.id,
 
-                plan:
-                  `${pkg.name} - ${getDurationLabel(
-                    durationMonths
-                  )}`,
+                plan: order.plan,
 
                 status: "ACTIVE",
 
@@ -2133,7 +2147,7 @@ async function startBot() {
 
           await bot.telegram.sendMessage(
             customer.telegramId,
-            formatActivation(pkg, totalDataGb, expiresAt),
+            formatActivation({ name: order.plan }, totalDataGb, expiresAt),
             buildMyVpnKeyboard(subscription, true)
           );
 
@@ -2301,10 +2315,7 @@ async function startBot() {
               packageId:
                 pkg.id,
 
-              plan:
-                `${pkg.name} - ${getDurationLabel(
-                  durationMonths
-                )}`,
+              plan: order.plan,
 
               status:
                 "ACTIVE",
@@ -2363,7 +2374,7 @@ async function startBot() {
 
           await bot.telegram.sendMessage(
             customer.telegramId,
-            formatActivation(pkg, newTotalDataGb, newExpiresAt, true),
+            formatActivation({ name: order.plan }, newTotalDataGb, newExpiresAt, true),
             buildMyVpnKeyboard({ vpnKeyId: renewalAccessKey.id, vpnKey: renewalAccessKey.accessUrl }, true)
           );
 

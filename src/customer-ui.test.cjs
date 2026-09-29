@@ -6,6 +6,7 @@ const path = require("node:path");
 const vm = require("node:vm");
 const { test } = require("node:test");
 const { Temporal } = require("@js-temporal/polyfill");
+const { updatePackage } = require("./admin-data");
 
 // Exercise the real registered handlers using synthetic data, without polling
 // Telegram or connecting to production PostgreSQL / Outline.
@@ -148,7 +149,7 @@ async function loadBot() {
     await found[0].fn(call);
     return call;
   }
-  return { tables, events, handlers, sent, keyCalls, limitCalls, missingKeys, ctx, action,
+  return { tables, client, events, handlers, sent, keyCalls, limitCalls, missingKeys, ctx, action,
     recover: context.module.exports.recoverStuckProcessingOrders,
     syncUsage: context.module.exports.syncAccessKeyUsage,
     setUsage(value, ids) { usageByKeyId = value; existingKeyIds = new Set(ids); },
@@ -157,6 +158,11 @@ async function loadBot() {
 
 function buttons(reply) { return reply[1].reply_markup.inline_keyboard; }
 function plain(value) { return JSON.parse(JSON.stringify(value)); }
+async function confirmationButton(bot, packageId, months = 1, isRenewal = false) {
+  const prefix = isRenewal ? "renew_duration" : "duration";
+  const screen = await bot.action(`${prefix}_${packageId}_${months}`);
+  return buttons(screen.replies[0])[0][0].callback_data;
+}
 
 test("usage sync records real 30-day key usage and skips unsafe or missing metrics", async () => {
   const bot = await loadBot();
@@ -211,40 +217,126 @@ test("welcome, packages, confirmation and help only read customer data", async (
   assert.equal(buttons(detail.replies[0])[1].length, 2);
   const confirm = await bot.action("duration_19_3");
   assert.match(confirm.replies[0][0], /မှာယူမှု အတည်ပြုပါ[\s\S]*639 GB[\s\S]*93 ရက်[\s\S]*22,950\n/);
-  assert.equal(buttons(confirm.replies[0])[0][0].callback_data, "confirm_package_19_3");
-  assert.match((await bot.action("package_99")).replies[0][0], /လောလောဆယ် မရနိုင်ပါ/);
+  assert.match(buttons(confirm.replies[0])[0][0].callback_data, /^confirm_package_19_3_[a-f0-9]{16}$/);
+  assert.match((await bot.action("package_99")).replies[0][0], /Package အသစ်ရွေးပေးပါ/);
   assert.match((await bot.action("help")).replies[0][0], /Metro VPN အကူအညီ/);
   assert.match((await bot.action("payment_help")).replies[0][0], /ငွေပမာဏအတိအကျ/);
   assert.equal(bot.tables.Order.length, 0);
   assert.equal(bot.keyCalls.length, 0);
 });
 
+test("admin package edits appear on the next Buy VPN read and disabled packages reject old buttons", async () => {
+  const bot = await loadBot();
+  const originalScreen = await bot.action("buy_vpn");
+  assert.match(originalScreen.replies[0][0], /🛡️ Basic • 50 GB • 30 Days • 3,200/);
+  const oldCallback = await confirmationButton(bot, 7);
+  await updatePackage(bot.client, 7, {
+    name: "Basic", dataLimitGb: 150, durationDays: 29,
+    priceMmk: "6000", active: true, sortOrder: 1,
+  });
+  const updatedScreen = await bot.action("buy_vpn");
+  assert.match(updatedScreen.replies[0][0], /🛡️ Basic • 150 GB • 29 Days • 6,000/);
+  assert.doesNotMatch(updatedScreen.replies[0][0], /\b(?:MMK|Ks)\b|\$6,000/);
+  const stale = await bot.action(oldCallback);
+  assert.match(stale.replies[0][0], /150 GB[\s\S]*29 ရက်[\s\S]*6,000/);
+  assert.equal(bot.tables.Order.length, 0);
+  const legacy = await bot.action("confirm_package_7_1");
+  assert.match(legacy.replies[0][0], /6,000/);
+  assert.equal(bot.tables.Order.length, 0);
+  await updatePackage(bot.client, 7, {
+    name: "Basic", dataLimitGb: 150, durationDays: 29,
+    priceMmk: "6000", active: false, sortOrder: 1,
+  });
+  const inactiveScreen = await bot.action("buy_vpn");
+  assert.doesNotMatch(inactiveScreen.replies[0][0], /Basic/);
+  bot.tables.Package[2].sortOrder = 2;
+  const tiedScreen = await bot.action("buy_vpn");
+  assert.deepEqual(plain(buttons(tiedScreen.replies[0]).flat().map((button) => button.callback_data)
+    .filter((value) => value.startsWith("package_"))),
+    ["package_19", "package_25"]);
+  for (const callback of ["package_7", "duration_7_1", oldCallback]) {
+    const result = await bot.action(callback);
+    assert.match(result.replies[0][0], /Package အသစ်ရွေးပေးပါ/);
+    assert.equal(buttons(result.replies[0])[0][0].callback_data, "buy_vpn");
+  }
+  assert.equal(bot.tables.Order.length, 0);
+});
+
+test("orders and approved entitlements keep snapshots when an admin edits the Package", async () => {
+  const bot = await loadBot();
+  const firstCallback = await confirmationButton(bot, 19);
+  await bot.action(firstCallback);
+  const firstOrder = bot.tables.Order[0];
+  assert.equal(firstOrder.totalDataGb, 213);
+  assert.equal(firstOrder.totalDurationDays, 31);
+  assert.equal(firstOrder.price, 7650);
+  await updatePackage(bot.client, 19, {
+    name: "Renamed", dataLimitGb: 300, durationDays: 45,
+    priceMmk: "9000", active: true, sortOrder: 2,
+  });
+  assert.equal(firstOrder.plan, "Standard - 1 Month");
+  assert.equal(firstOrder.totalDataGb, 213);
+  assert.equal(firstOrder.totalDurationDays, 31);
+  assert.equal(firstOrder.price, 7650);
+  await bot.action("approve_payment_1", 999);
+  const subscription = bot.tables.Subscription[0];
+  assert.equal(subscription.plan, firstOrder.plan);
+  assert.equal(subscription.dataLimitGb, 213);
+  assert.equal(subscription.expiresAt.toString(), firstOrder.expiresAt.toString());
+  const myVpn = await bot.action("my_vpn");
+  assert.match(myVpn.replies[0][0], /Package: Standard - 1 Month/);
+  assert.doesNotMatch(myVpn.replies[0][0], /Renamed/);
+  const originalExpiry = subscription.expiresAt;
+  await updatePackage(bot.client, 19, {
+    name: "Renamed", dataLimitGb: 320, durationDays: 46,
+    priceMmk: "9500", active: true, sortOrder: 2,
+  });
+  assert.equal(subscription.dataLimitGb, 213);
+  assert.equal(subscription.expiresAt.toString(), originalExpiry.toString());
+  const renewalCallback = await confirmationButton(bot, 19, 1, true);
+  await bot.action(renewalCallback, 123, 2);
+  const renewal = bot.tables.Order[1];
+  assert.equal(renewal.plan, "Renamed - 1 Month");
+  assert.equal(renewal.price, 9500);
+  assert.equal(renewal.totalDataGb, 320);
+  assert.equal(renewal.totalDurationDays, 46);
+  assert.equal(subscription.dataLimitGb, 213);
+  assert.equal(subscription.expiresAt.toString(), originalExpiry.toString());
+  await bot.action("approve_payment_2", 999);
+  assert.equal(subscription.dataLimitGb, 533);
+  assert.equal(subscription.expiresAt.toString(), originalExpiry.add({ hours: 46 * 24 }).toString());
+});
+
 test("repeated confirmations reuse one order and preserve its price and terminal status", async () => {
   const bot = await loadBot();
-  await Promise.all(Array.from({ length: 5 }, () => bot.action("confirm_package_19_1", 123, 40)));
+  const callback = await confirmationButton(bot, 19);
+  await Promise.all(Array.from({ length: 5 }, () => bot.action(callback, 123, 40)));
   assert.equal(bot.tables.Order.length, 1);
   const order = bot.tables.Order[0];
-  const payment = await bot.action("confirm_package_19_1", 123, 40);
+  const payment = await bot.action(callback, 123, 40);
   assert.match(payment.replies[0][0], /🧾 Payment[\s\S]*7,650\n/);
   assert.equal(buttons(payment.replies[0])[0].length, 2);
-  bot.tables.Package[1].priceMmk = "8000";
-  await bot.action("confirm_package_19_1", 123, 40);
-  assert.equal(order.price, 7650);
   for (const status of ["PAID", "PROCESSING", "CANCELLED", "PAYMENT_REJECTED"]) {
     order.status = status;
-    const repeated = await bot.action("confirm_package_19_1", 123, 40);
+    const repeated = await bot.action(callback, 123, 40);
     assert.equal(bot.tables.Order.length, 1);
     assert.equal(order.status, status);
     assert.match(repeated.replies[0][0], /My Orders ကိုနှိပ်ပါ/);
   }
-  await bot.action("confirm_package_19_1", 123, 41);
+  bot.tables.Package[1].priceMmk = "8000";
+  const stale = await bot.action(callback, 123, 40);
+  assert.match(stale.replies[0][0], /8,000/);
+  assert.equal(order.price, 7650);
+  assert.equal(bot.tables.Order.length, 1);
+  const refreshed = await confirmationButton(bot, 19);
+  await bot.action(refreshed, 123, 41);
   assert.equal(bot.tables.Order.length, 2);
   assert.equal(bot.keyCalls.length, 0);
 });
 
 test("payment proof, approval, My VPN, setup and renewal retain a single real key", async () => {
   const bot = await loadBot();
-  await bot.action("confirm_package_19_1");
+  await bot.action(await confirmationButton(bot, 19));
   await bot.action("payment_wallet_1");
   const photo = bot.ctx();
   photo.message = { photo: [{ file_id: "synthetic-proof" }] };
@@ -278,8 +370,8 @@ test("payment proof, approval, My VPN, setup and renewal retain a single real ke
   const originalExpiry = subscription.expiresAt;
   await bot.action("renew_vpn");
   await bot.action("renew_package_19");
-  await bot.action("renew_duration_19_3");
-  await Promise.all([bot.action("confirm_renewal_19_3", 123, 50), bot.action("confirm_renewal_19_3", 123, 50)]);
+  const renewalCallback = await confirmationButton(bot, 19, 3, true);
+  await Promise.all([bot.action(renewalCallback, 123, 50), bot.action(renewalCallback, 123, 50)]);
   assert.equal(bot.tables.Order.length, 2);
   await bot.action("approve_payment_2", 999);
   assert.equal(bot.keyCalls.length, 1);
@@ -292,21 +384,22 @@ test("payment proof, approval, My VPN, setup and renewal retain a single real ke
 
 test("missing-key replacement, rejection, cancellation and PROCESSING recovery still work", async () => {
   const bot = await loadBot();
-  await bot.action("confirm_package_7_1");
+  const purchaseCallback = await confirmationButton(bot, 7);
+  await bot.action(purchaseCallback);
   await bot.action("approve_payment_1", 999);
   const subscription = bot.tables.Subscription[0];
   bot.missingKeys.add(subscription.vpnKeyId);
-  await bot.action("confirm_renewal_7_1", 123, 2);
+  await bot.action(await confirmationButton(bot, 7, 1, true), 123, 2);
   await bot.action("approve_payment_2", 999);
   assert.equal(bot.keyCalls.length, 2);
   assert.equal(bot.tables.Subscription.length, 1);
   assert.equal(subscription.vpnKeyId, "real-test-2");
   await bot.action("approve_payment_2", 999);
   assert.equal(bot.keyCalls.length, 2);
-  await bot.action("confirm_package_7_1", 123, 3);
+  await bot.action(purchaseCallback, 123, 3);
   await bot.action("reject_payment_3", 999);
   assert.equal(bot.tables.Order[2].status, "PAYMENT_REJECTED");
-  await bot.action("confirm_package_7_1", 123, 4);
+  await bot.action(purchaseCallback, 123, 4);
   await bot.action("cancel_order_4");
   assert.equal(bot.tables.Order[3].status, "CANCELLED");
   const order = bot.tables.Order[0];

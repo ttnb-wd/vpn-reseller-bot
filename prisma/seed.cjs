@@ -16,6 +16,11 @@ async function main() {
   const runtime = await db.connect();
 
   try {
+    const existingPackages = await db.orm.public.Package.where({}).all();
+    if (existingPackages.length) {
+      console.log("Package seed skipped: packages already exist.");
+      return;
+    }
     const packages = [
       {
         name: "Basic",
@@ -44,21 +49,8 @@ async function main() {
     ];
 
     for (const pkg of packages) {
-      const existing = await db.orm.public.Package
-        .where({ name: pkg.name })
-        .first();
-
-      if (existing) {
-        await db.orm.public.Package
-          .where({ id: existing.id })
-          .update(pkg);
-
-        console.log(`Updated: ${pkg.name}`);
-      } else {
-        await db.orm.public.Package.create(pkg);
-
-        console.log(`Created: ${pkg.name}`);
-      }
+      await db.orm.public.Package.create(pkg);
+      console.log(`Created: ${pkg.name}`);
     }
 
     console.log("\n✅ Package seed completed!");

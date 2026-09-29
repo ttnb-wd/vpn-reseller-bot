@@ -246,6 +246,13 @@
                   "kind": "scalar"
                 }
               },
+              "totalDurationDays": {
+                "nullable": true,
+                "type": {
+                  "codecId": "pg/int4@1",
+                  "kind": "scalar"
+                }
+              },
               "vpnKey": {
                 "nullable": true,
                 "type": {
@@ -357,6 +364,9 @@
                 },
                 "totalDataGb": {
                   "column": "totalDataGb"
+                },
+                "totalDurationDays": {
+                  "column": "totalDurationDays"
                 },
                 "vpnKey": {
                   "column": "vpnKey"
@@ -872,6 +882,11 @@
                   "nativeType": "float8",
                   "nullable": true
                 },
+                "totalDurationDays": {
+                  "codecId": "pg/int4@1",
+                  "nativeType": "int4",
+                  "nullable": true
+                },
                 "vpnKey": {
                   "codecId": "pg/text@1",
                   "nativeType": "text",
@@ -1196,7 +1211,7 @@
         "kind": "postgres-schema"
       }
     },
-    "storageHash": "e845d12fcc970a5077692856d30144300333bfe888c31b9ad963655f5a5e4186"
+    "storageHash": "30e118c51813da1d6543bc6f3adefbd857a0990d6ae59a8995164c886b67f92e"
   },
   "capabilities": {
     "postgres": {
