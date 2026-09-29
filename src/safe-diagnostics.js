@@ -38,12 +38,18 @@ function diagnosticCategory(error) {
 }
 
 function describeHandlerFailure(handler, error) {
+  const cause = error?.cause;
   return {
     handler,
     category: diagnosticCategory(error),
     name: safeDiagnosticCode(error?.name),
     code: safeDiagnosticCode(error?.code) || safeDiagnosticCode(error?.cause?.code),
     message: sanitizeDiagnosticMessage(error?.message),
+    cause: cause ? {
+      name: safeDiagnosticCode(cause.name),
+      code: safeDiagnosticCode(cause.code),
+      message: sanitizeDiagnosticMessage(cause.message),
+    } : undefined,
   };
 }
 

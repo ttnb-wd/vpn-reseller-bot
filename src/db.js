@@ -41,6 +41,19 @@ async function createDatabase() {
   const contractJson = JSON.parse(
     fs.readFileSync(contractPath, "utf8")
   );
+  const ormEntry = require.resolve("@prisma/orm-postgres/serverless");
+  const ormPackage = JSON.parse(fs.readFileSync(
+    path.join(path.dirname(ormEntry), "..", "package.json"), "utf8"
+  ));
+  console.info("Database runtime identity:", {
+    host: connectionUrl.hostname,
+    port: connectionUrl.port || "5432",
+    database: decodeURIComponent(connectionUrl.pathname.slice(1)),
+    sslMode: connectionUrl.searchParams.get("sslmode") || "unset",
+    contractArtifact: path.relative(process.cwd(), contractPath),
+    contractStorageHash: contractJson.storage?.storageHash || "missing",
+    ormPostgresVersion: ormPackage.version,
+  });
 
   const database = postgresServerless({
     contractJson,
