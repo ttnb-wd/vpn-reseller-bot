@@ -160,6 +160,42 @@ async function getExistingAccessKeyIds() {
   return new Set(keys.filter((key) => typeof key?.id === "string").map((key) => key.id));
 }
 
+function summarizeAccessKeyAudit(keys, usage, candidateIds, storedAccessUrls) {
+  if (!Array.isArray(keys) || !usage || typeof usage !== "object" || Array.isArray(usage)) {
+    throw new Error("Outline audit data is invalid.");
+  }
+  const storedUrls = Array.isArray(storedAccessUrls)
+    ? storedAccessUrls.filter((url) => typeof url === "string" && url.startsWith("ss://")) : [];
+  return candidateIds.map((id) => {
+    const key = keys.find((entry) => entry?.id === id);
+    if (!key) return { id, exists: false };
+    const limit = key.dataLimit?.bytes;
+    const usageBytes = Object.hasOwn(usage, id) ? usage[id] : null;
+    return {
+      id,
+      exists: true,
+      name: typeof key.name === "string" && !key.name.includes("ss://")
+        ? key.name.slice(0, 120) : null,
+      dataLimitBytes: Number.isSafeInteger(limit) && limit >= 0 ? limit : null,
+      usageBytes: Number.isSafeInteger(usageBytes) && usageBytes >= 0 ? usageBytes : null,
+      usageReported: Object.hasOwn(usage, id),
+      createdAt: typeof key.createdAt === "string" ? key.createdAt : null,
+      storedAccessUrlMatches: typeof key.accessUrl === "string" &&
+        storedUrls.some((url) => url === key.accessUrl),
+    };
+  });
+}
+
+async function getAccessKeyAuditMetadata(candidateIds, storedAccessUrls = []) {
+  const [keysResponse, usage] = await Promise.all([
+    getOutlineClient().get("/access-keys"),
+    getAllAccessKeyUsage(),
+  ]);
+  return summarizeAccessKeyAudit(
+    keysResponse.data?.accessKeys, usage, candidateIds, storedAccessUrls,
+  );
+}
+
 async function createAccessKey() {
   const response = await getOutlineClient().post("/access-keys");
   const accessKey = response.data;
@@ -212,6 +248,8 @@ module.exports = {
   testOutlineConnection,
   getAllAccessKeyUsage,
   getExistingAccessKeyIds,
+  getAccessKeyAuditMetadata,
+  summarizeAccessKeyAudit,
   createAccessKey,
   setAccessKeyDataLimit,
   deleteAccessKey,

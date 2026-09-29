@@ -26,6 +26,14 @@ function keyId(value) {
     ? escapeHtml(value.trim()) : "-";
 }
 
+function isLegacyMockKeyId(value) {
+  return typeof value === "string" && value.startsWith("mock-");
+}
+
+function legacyMockBadge(value) {
+  return isLegacyMockKeyId(value) ? badge("Legacy mock · review required", "inactive") : "";
+}
+
 function formatDate(value) {
   if (!value) return "-";
   const milliseconds = value.epochMilliseconds !== undefined
@@ -169,6 +177,8 @@ function renderLayout(res, title, email, section, formToken, content) {
   .edit-grid input, .edit-grid select { width: 100%; padding: .7rem; border: 1px solid #51829c; border-radius: 9px; background: #081d2e; color: #fff; font: inherit; }
   .notice { border: 1px solid #368968; border-radius: 9px; padding: .8rem; color: #a9f2cc; }
   .errors { border: 1px solid #98505a; border-radius: 9px; padding: .8rem 1.4rem; color: #f6bec4; }
+  .usage-progress { width: 100%; height: .7rem; accent-color: #35b9e8; }
+  .checklist { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: .45rem 1.2rem; padding-left: 1.4rem; }
   @media (max-width: 600px) { .shell { width: min(100% - 1.2rem, 1200px); } .panel { padding: .9rem; } .account { width: 100%; justify-content: space-between; } }
 </style></head><body><div class="shell">
   <header class="top"><div><div class="brand">Metro Secure</div><h1>Metro Secure Admin</h1></div>
@@ -180,7 +190,8 @@ function renderLayout(res, title, email, section, formToken, content) {
     <a href="/admin/payments"${section === "payments" ? ' class="current" aria-current="page"' : ""}>Payments</a>
     <a href="/admin/vpn-keys"${section === "vpn-keys" ? ' class="current" aria-current="page"' : ""}>VPN Keys</a>
     <a href="/admin/packages"${section === "packages" ? ' class="current" aria-current="page"' : ""}>Packages</a>
-    <span class="disabled">Usage</span><span class="disabled">Settings</span>
+    <a href="/admin/usage"${section === "usage" ? ' class="current" aria-current="page"' : ""}>Usage</a>
+    <a href="/admin/settings"${section === "settings" ? ' class="current" aria-current="page"' : ""}>Settings</a>
   </nav>
   <main>${content}</main>
 </div></body></html>`);
@@ -283,7 +294,7 @@ function renderOrders(res, email, formToken, data) {
     ["PAID", "Paid"], ["PAYMENT_REJECTED", "Rejected"], ["CANCELLED", "Cancelled"],
   ];
   const cards = data.orders.map((order) => `<article class="user-card">
-    <div class="user-head"><h3><a href="/admin/orders/${order.id}">${text(order.orderNumber)}</a></h3>${badge(order.status)}</div>
+    <div class="user-head"><h3><a href="/admin/orders/${order.id}">${text(order.orderNumber)}</a></h3>${badge(order.status)}${legacyMockBadge(order.vpnKeyId)}</div>
     <dl>
       ${field("Customer", text(customerName(order.customer)))}${field("Telegram ID", text(order.customer?.telegramId))}
       ${field("Package", text(order.package?.name || order.plan))}${field("Duration", duration(order.durationMonths))}
@@ -323,7 +334,7 @@ function renderOrderDetail(res, email, formToken, order) {
         ${field("Status", badge(order.status))}${field("Payment method", text(order.paymentMethod))}
         ${field("Payment reference", text(order.paymentReference))}${field("Created at", formatDate(order.createdAt))}
         ${field("Paid at", formatDate(order.paidAt))}${field("Started at", formatDate(order.startedAt))}
-        ${field("Expires at", formatDate(order.expiresAt))}${field("VPN key ID", keyId(order.vpnKeyId))}
+        ${field("Expires at", formatDate(order.expiresAt))}${field("VPN key ID", `${keyId(order.vpnKeyId)} ${legacyMockBadge(order.vpnKeyId)}`)}
       </dl></section>
     </div>
     <section class="panel"><h3>Payment Proof</h3>${proof}</section>`);
@@ -350,6 +361,9 @@ function renderPayments(res, email, formToken, data) {
 }
 
 function vpnKeyState(subscription, now) {
+  if (isLegacyMockKeyId(subscription.vpnKeyId)) {
+    return { label: "Legacy mock · review required", className: "inactive" };
+  }
   if (subscription.revokedAt) return { label: "Revoked", className: "inactive" };
   if (!subscription.vpnKeyId) return { label: "Missing", className: "inactive" };
   return subscriptionState(subscription, now);
@@ -367,6 +381,9 @@ function renderVpnKeys(res, email, formToken, data) {
         ${field("First name", text(customer?.firstName))}
         ${field("Package", text(subscription.package?.name || subscription.plan))}
         ${field("Subscription status", badge(subscription.status))}
+        ${isLegacyMockKeyId(subscription.vpnKeyId)
+          ? field("Subscription entitlement", badge(subscriptionState(subscription, data.now).label,
+            subscriptionState(subscription, data.now).className)) : ""}
         ${field("Data used", formatGb(subscription.dataUsedGb))}${field("Data limit", formatGb(subscription.dataLimitGb))}
         ${field("Started at", formatDate(subscription.startedAt))}${field("Expires at", formatDate(subscription.expiresAt))}
         ${field("Revoked at", formatDate(subscription.revokedAt))}
@@ -422,8 +439,115 @@ function renderPackageEdit(res, email, formToken, pkg, errors = [], entered = pk
     </form></section>`);
 }
 
+function renderUsage(res, email, formToken, data, usageMetrics) {
+  const summary = data.summary;
+  const cards = [
+    ["Total Data Used", formatGb(summary.totalDataUsedGb)],
+    ["Total Data Limit", formatGb(summary.totalDataLimitGb)],
+    ["Active Subscriptions", formatNumber(summary.activeSubscriptions)],
+    ["Customers Above 50%", formatNumber(summary.above50)],
+    ["Customers Above 80%", formatNumber(summary.above80)],
+    ["Customers At / Above Limit", formatNumber(summary.atLimit)],
+  ];
+  const filters = [["all", "All"], ["active", "Active"], ["expired", "Expired"],
+    ["above50", ">50%"], ["above80", ">80%"], ["atLimit", "At Limit"]];
+  const rows = data.subscriptions.map((subscription) => {
+    const metrics = usageMetrics(subscription);
+    const percent = metrics.percentage === null ? "N/A" : metrics.percentage > 100
+      ? `${formatNumber(metrics.percentage, 1)}% (100%+)`
+      : `${formatNumber(metrics.percentage, 1)}%`;
+    const barValue = metrics.percentage === null ? null : Math.min(100, metrics.percentage);
+    const customer = subscription.customer;
+    const usageState = isLegacyMockKeyId(subscription.vpnKeyId)
+      ? "Legacy mock · sync skipped"
+      : !subscription.vpnKeyId ? "No key" : "Stored snapshot · sync time not recorded";
+    return `<article class="user-card"><div class="user-head"><h3>${text(customerName(customer))}</h3>${badge(subscriptionState(subscription, data.now).label,
+      subscriptionState(subscription, data.now).className)}</div>
+      <dl>${field("Telegram ID", text(customer?.telegramId))}
+        ${field("Username", customer?.username ? text(`@${customer.username}`) : "-")}
+        ${field("Package", text(subscription.package?.name || subscription.plan))}
+        ${field("VPN key ID", `${keyId(subscription.vpnKeyId)} ${legacyMockBadge(subscription.vpnKeyId)}`)}
+        ${field("Data used", formatGb(metrics.used))}${field("Data limit", formatGb(metrics.limit))}
+        ${field("Usage", text(percent))}${field("Remaining data", formatGb(metrics.remaining))}
+        ${field("Subscription status", badge(subscription.status))}${field("Expiry", formatDate(subscription.expiresAt))}
+        ${field("Last known usage state", text(usageState))}
+      </dl>${barValue === null ? "" : `<progress class="usage-progress" value="${barValue}" max="100" aria-label="Usage ${escapeHtml(percent)}"></progress>`}
+    </article>`;
+  }).join("");
+  return renderLayout(res, "Usage", email, "usage", formToken, `
+    <h2>Usage</h2><p class="intro">Stored subscription usage. Sync time is not recorded in the current schema.</p>
+    <div class="stats">${cards.map(([label, value]) => `<div class="stat"><span>${label}</span><strong>${value}</strong></div>`).join("")}</div>
+    <form class="toolbar" method="get" action="/admin/usage"><div><label for="usage-search">Telegram ID, username, first name, or key ID</label>
+      <input id="usage-search" name="q" value="${escapeHtml(data.q)}" maxlength="100" placeholder="Search usage"></div>
+      ${data.filter !== "all" ? `<input type="hidden" name="status" value="${escapeHtml(data.filter)}">` : ""}<button type="submit">Search</button></form>
+    <div class="filters" aria-label="Usage filters">${filters.map(([status, label]) =>
+      `<a href="${escapeHtml(listUrl("/admin/usage", { q: data.q, status, page: 1 }))}"${data.filter === status ? ' class="selected" aria-current="page"' : ""}>${label}</a>`).join("")}</div>
+    <p class="intro">${formatNumber(data.count)} matching subscription${data.count === 1 ? "" : "s"}</p>
+    <div class="users">${rows || '<p class="empty">No usage records match this view.</p>'}</div>
+    ${pager("/admin/usage", data, data.filter)}`);
+}
+
+function renderSettings(res, email, formToken, settings) {
+  const indicator = (enabled, positive = "Configured", negative = "Missing") =>
+    badge(enabled ? positive : negative, enabled ? "active" : "inactive");
+  const rows = (items) => `<dl>${items.map(([label, value]) => field(label, value)).join("")}</dl>`;
+  const checks = [
+    ["Database connected", settings.databaseConnected, "Connected", "Unavailable"],
+    ["Outline connection configured", settings.outlineConfigured && settings.fingerprintConfigured],
+    ["Telegram bot configured", settings.telegramConfigured],
+    ["Admin authentication configured", settings.adminAuthConfigured],
+    ["Usage worker enabled", settings.usageWorkerEnabled, "Enabled", "Disabled"],
+    ["Public base URL configured", Boolean(settings.publicHostname)],
+    ["Required production env vars present", settings.requiredEnvPresent],
+  ];
+  const cleanup = [
+    "Remove test customers", "Remove test orders", "Review legacy mock-* records",
+    "Review orphan Outline keys", "Rotate previously exposed secrets",
+    "Verify only one Telegram polling instance", "Verify production DB backup",
+    "Verify package prices", "Verify admin access", "Verify payment slip access",
+    "Verify Outline key creation", "Verify renewal", "Verify expiry and revocation",
+    "Verify usage sync", "Verify Render environment", "Verify .env is not committed",
+    "Run final launch smoke test",
+  ];
+  return renderLayout(res, "Settings", email, "settings", formToken, `
+    <h2>Settings</h2><p class="intro">Read-only configuration and operational status. Secret values are never shown.</p>
+    <div class="detail-grid">
+      <section class="panel"><h3>Application</h3>${rows([
+        ["Environment", text(settings.environment)], ["Node environment", text(settings.nodeEnvironment)],
+        ["Public hostname", text(settings.publicHostname)],
+        ["Render deployment", indicator(settings.renderDeployment, "Detected", "Not detected")],
+      ])}</section>
+      <section class="panel"><h3>Telegram</h3>${rows([
+        ["Bot", indicator(settings.telegramConfigured)], ["Telegram admin ID", indicator(settings.telegramAdminConfigured)],
+      ])}</section>
+      <section class="panel"><h3>Outline</h3>${rows([
+        ["API", indicator(settings.outlineConfigured)], ["Certificate fingerprint", indicator(settings.fingerprintConfigured)],
+        ["Mode", "Real Outline only"], ["Last connection status", "Not tracked"],
+      ])}</section>
+      <section class="panel"><h3>Database</h3>${rows([
+        ["Configuration", indicator(settings.databaseConfigured)],
+        ["Connection", indicator(settings.databaseConnected, "Connected", "Unavailable")],
+      ])}</section>
+      <section class="panel"><h3>Workers</h3>${rows([
+        ["Usage sync interval", `${formatNumber(settings.usageIntervalMinutes)} minutes`],
+        ["Usage worker", indicator(settings.usageWorkerEnabled, "Enabled", "Disabled")],
+        ["Usage sync now", indicator(settings.usageSyncRunning, "Running", "Idle")],
+        ["PROCESSING recovery timeout", `${formatNumber(settings.processingRecoveryMinutes)} minutes`],
+      ])}</section>
+      <section class="panel"><h3>Admin</h3>${rows([
+        ["Email", text(settings.adminEmail)], ["Session timeout", `${formatNumber(settings.sessionTimeoutMinutes)} minutes`],
+        ["Authentication", indicator(settings.adminAuthConfigured, "Enabled", "Disabled")],
+      ])}</section>
+    </div>
+    <section class="panel"><h3>Production health</h3>${rows(checks.map(([label, ok, yes, no]) =>
+      [label, indicator(ok, yes || "Configured", no || "Missing")]))}</section>
+    <section class="panel"><h3>Final cleanup checklist for later</h3><p class="intro">Review these before launch. This page performs no cleanup.</p>
+      <ul class="checklist">${cleanup.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></section>`);
+}
+
 module.exports = {
   renderDashboard, renderUsers, renderUserDetail,
   renderOrders, renderOrderDetail, renderPayments,
   renderVpnKeys, renderPackages, renderPackageEdit,
+  renderUsage, renderSettings,
 };

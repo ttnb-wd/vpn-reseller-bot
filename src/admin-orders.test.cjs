@@ -144,6 +144,25 @@ test("order detail shows a protected slip preview and hides credentials and acce
   assert.equal((await site.request("/admin/orders/not-an-id", { headers: { Cookie: cookie } })).status, 404);
 });
 
+test("historical mock order IDs are marked without exposing access URLs", async (t) => {
+  const api = makeDataApi();
+  const mockOrder = { ...order, vpnKeyId: "mock-legacy-7" };
+  api.getOrdersData = async () => ({
+    orders: [mockOrder], count: 1, page: 1, totalPages: 1, q: "", status: "all",
+  });
+  api.getOrderDetail = async () => mockOrder;
+  const site = await startServer(api);
+  t.after(site.close);
+  const cookie = await site.login();
+  for (const path of ["/admin/orders", "/admin/orders/7"]) {
+    const response = await site.request(path, { headers: { Cookie: cookie } });
+    assert.equal(response.status, 200);
+    const html = await response.text();
+    assert.match(html, /Legacy mock · review required/);
+    assert.equal(html.includes("ss://"), false);
+  }
+});
+
 test("payments list shows proof availability, filters, pagination, and working All link", async (t) => {
   const api = makeDataApi();
   const site = await startServer(api);

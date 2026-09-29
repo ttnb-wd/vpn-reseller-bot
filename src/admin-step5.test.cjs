@@ -130,6 +130,24 @@ test("VPN Keys renders only safe IDs with search, filters, and pagination", asyn
   }
 });
 
+test("legacy mock subscription is flagged for review without exposing its access URL", async (t) => {
+  const api = makeApi();
+  api.getVpnKeysData = async () => ({
+    subscriptions: [{ ...subscription, vpnKeyId: "mock-legacy-3" }], count: 1,
+    page: 1, totalPages: 1, q: "", status: "all", now: Temporal.Now.instant(),
+  });
+  const site = await startServer(api);
+  t.after(site.close);
+  const cookie = await site.login();
+  const response = await site.request("/admin/vpn-keys", { headers: { Cookie: cookie } });
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  assert.match(html, /Legacy mock · review required/);
+  assert.match(html, /Subscription entitlement/);
+  assert.match(html, /mock-legacy-3/);
+  assert.equal(html.includes("ss://"), false);
+});
+
 test("Packages list and edit page render database values and escape the package name", async (t) => {
   const api = makeApi();
   const site = await startServer(api);

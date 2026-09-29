@@ -1065,6 +1065,13 @@ async function startBot() {
   app.use("/admin", createAdminRouter({
     ...adminConfig,
     expectedOrigin: new URL(connectConfig.baseUrl).origin,
+    getOperationalStatus: () => ({
+      databaseConnected: Boolean(db),
+      usageWorkerEnabled: Boolean(usageSyncTimer),
+      usageSyncRunning,
+      usageIntervalMinutes: USAGE_SYNC_INTERVAL_MS / 60000,
+      processingRecoveryMinutes: PROCESSING_TIMEOUT_MINUTES,
+    }),
   }));
 
   startupStage = "Outline API connection";

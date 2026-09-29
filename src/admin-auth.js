@@ -6,11 +6,13 @@ const {
   getDashboardData, getUsersData, getUserDetail,
   getOrdersData, getOrderDetail, getOrderProof, getPaymentsData,
   getVpnKeysData, getPackagesData, getPackageDetail, validatePackageInput, updatePackage,
+  getUsageData, usageMetrics, getSettingsData,
 } = require("./admin-data");
 const {
   renderDashboard, renderUsers, renderUserDetail,
   renderOrders, renderOrderDetail, renderPayments,
   renderVpnKeys, renderPackages, renderPackageEdit,
+  renderUsage, renderSettings,
 } = require("./admin-ui");
 const { loadTelegramPaymentProof } = require("./admin-proof");
 
@@ -302,6 +304,7 @@ function createAdminRouter(config) {
     getDashboardData, getUsersData, getUserDetail,
     getOrdersData, getOrderDetail, getOrderProof, getPaymentsData,
     getVpnKeysData, getPackagesData, getPackageDetail, validatePackageInput, updatePackage,
+    getUsageData, usageMetrics, getSettingsData,
   };
   const proofLoader = config.proofLoader || loadTelegramPaymentProof;
 
@@ -447,6 +450,27 @@ function createAdminRouter(config) {
     } catch {
       console.error("Admin package update failed.");
       return res.status(503).type("text").send("Package changes could not be saved.");
+    }
+  });
+
+  router.get("/usage", async (req, res) => {
+    try {
+      const data = await dataApi.getUsageData(getClient(), req.query);
+      return renderUsage(res, config.email, issueFormToken(res), data, dataApi.usageMetrics);
+    } catch {
+      console.error("Admin usage query failed.");
+      return res.status(503).type("text").send("Admin data is temporarily unavailable.");
+    }
+  });
+
+  router.get("/settings", (req, res) => {
+    try {
+      const operationalStatus = config.getOperationalStatus?.() || {};
+      const settings = dataApi.getSettingsData(process.env, config, operationalStatus);
+      return renderSettings(res, config.email, issueFormToken(res), settings);
+    } catch {
+      console.error("Admin settings view failed.");
+      return res.status(503).type("text").send("Settings are temporarily unavailable.");
     }
   });
 
