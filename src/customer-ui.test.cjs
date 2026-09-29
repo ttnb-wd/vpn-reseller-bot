@@ -67,7 +67,7 @@ async function loadBot() {
   let existingKeyIds = new Set();
   let metricsUnavailable = false;
   const fakeApp = {
-    set() {}, get() {},
+    set() {}, get() {}, use() {},
     listen() {
       const server = new EventEmitter();
       queueMicrotask(() => server.emit("listening"));
@@ -95,6 +95,10 @@ async function loadBot() {
       if (name === "express") return () => fakeApp;
       if (name === "telegraf") return { ...localRequire(name), Telegraf: FakeTelegraf };
       if (name === "./db") return { async createDatabase() { return { client }; } };
+      if (name === "./admin-auth") return {
+        validateAdminConfig() { return { email: "admin@example.test" }; },
+        createAdminRouter() { return () => {}; },
+      };
       if (name === "./outline") return {
         validateOutlineConfig() {}, async testOutlineConnection() {},
         async getAllAccessKeyUsage() {

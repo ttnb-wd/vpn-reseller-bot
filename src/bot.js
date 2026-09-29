@@ -9,6 +9,7 @@ const { Temporal } = require("@js-temporal/polyfill");
 
 const { createDatabase } = require("./db");
 const { PAYMENT_METHODS } = require("./payment-config");
+const { validateAdminConfig, createAdminRouter } = require("./admin-auth");
 
 const {
   createAccessKey,
@@ -314,6 +315,9 @@ function sanitizeDiagnosticMessage(value) {
     process.env.BOT_TOKEN,
     process.env.DATABASE_URL,
     process.env.CONNECT_TOKEN_SECRET,
+    process.env.ADMIN_EMAIL,
+    process.env.ADMIN_PASSWORD_HASH,
+    process.env.ADMIN_SESSION_SECRET,
   ];
 
   try {
@@ -336,6 +340,14 @@ function sanitizeDiagnosticMessage(value) {
 }
 
 function logStartupFailure(error) {
+  if (startupStage === "admin configuration") {
+    const missing = /^(ADMIN_(?:EMAIL|PASSWORD_HASH|SESSION_SECRET)) is required\.$/
+      .exec(error?.message || "");
+    if (missing) {
+      console.error("VPN Bot startup failed: missing", missing[1]);
+      return;
+    }
+  }
   const code = safeDiagnosticCode(error?.code) ||
     safeDiagnosticCode(error?.cause?.code);
   const certificateFailure = startupStage === "Outline API connection" &&
@@ -1044,7 +1056,14 @@ async function startBot() {
 
   startupStage = "production config validation";
   validateOutlineConfig();
-  getConnectConfig();
+  const connectConfig = getConnectConfig();
+
+  startupStage = "admin configuration";
+  const adminConfig = validateAdminConfig();
+  app.use("/admin", createAdminRouter({
+    ...adminConfig,
+    expectedOrigin: new URL(connectConfig.baseUrl).origin,
+  }));
 
   startupStage = "Outline API connection";
   await testOutlineConnection();
