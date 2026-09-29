@@ -2,8 +2,9 @@ require("dotenv").config();
 
 const express = require("express");
 const crypto = require("crypto");
+const path = require("path");
 
-const { Telegraf, Markup } = require("telegraf");
+const { Telegraf, Markup, Input } = require("telegraf");
 const { Temporal } = require("@js-temporal/polyfill");
 
 const { createDatabase } = require("./db");
@@ -46,6 +47,8 @@ const PROCESSING_TIMEOUT_MINUTES = 15;
 const RECOVERY_INTERVAL_MS = 5 * 60 * 1000;
 
 const GB_IN_BYTES = 1024 * 1024 * 1024;
+const WELCOME_IMAGE = path.join(__dirname, "..", "assets", "images", "welcome-metro-secure.png");
+const PACKAGE_IMAGE = path.join(__dirname, "..", "assets", "images", "package-metro-secure.png");
 const CONNECT_TOKEN_TTL_MS = 10 * 60 * 1000;
 const CONNECT_TOKEN_AAD = Buffer.from("vpn-connect:v1");
 
@@ -996,6 +999,7 @@ async function startBot() {
   // =========================
 
   bot.start(async (ctx) => {
+    await ctx.replyWithPhoto(Input.fromLocalFile(WELCOME_IMAGE));
     await sendMainMenu(ctx);
   });
 
@@ -1273,6 +1277,7 @@ async function startBot() {
           );
         }
 
+        await ctx.replyWithPhoto(Input.fromLocalFile(PACKAGE_IMAGE));
         await ctx.reply(
           formatPackageSelection(packages),
           buildPackageKeyboard(packages)
