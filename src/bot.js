@@ -1519,7 +1519,7 @@ async function startBot() {
     "back_to_start",
     async (ctx) => {
       await ctx.answerCbQuery();
-
+      await supportService.pauseCustomer(ctx.from.id);
       await sendMainMenu(ctx);
     }
   );
@@ -1538,6 +1538,16 @@ async function startBot() {
 
   bot.action("contact_support", supportService.contact);
   bot.action("support_cancel", supportService.cancel);
+  bot.action("support_main_menu", async (ctx) => {
+    await ctx.answerCbQuery();
+    try {
+      await supportService.pauseCustomer(ctx.from.id);
+      await sendMainMenu(ctx);
+    } catch {
+      console.error("Support main menu failed.");
+      await ctx.reply("Main Menu ကို မဖော်ပြနိုင်သေးပါ။ ခဏနေ ပြန်နှိပ်ပါ။");
+    }
+  });
   bot.action(/^support_reply_(\d+)$/, supportService.selectReply);
   bot.action(/^support_close_(\d+)$/, supportService.close);
 

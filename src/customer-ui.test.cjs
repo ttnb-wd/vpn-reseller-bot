@@ -247,6 +247,7 @@ test("support opens persistent per-customer tickets and relays text and photos t
   assert.equal(first.replies.length, 1);
   assert.equal(first.replies[0][0], startText);
   assert.equal(second.replies[0][0], startText);
+  assert.equal(buttons(first.replies[0])[0][0].callback_data, "support_main_menu");
   assertNoCustomerTicketDetails(first.replies[0][0]);
   assertNoCustomerTicketDetails(second.replies[0][0]);
   assert.equal(bot.tables.SupportTicket.length, 2);
@@ -255,6 +256,7 @@ test("support opens persistent per-customer tickets and relays text and photos t
   await bot.events.text(textMessage);
   assert.equal(textMessage.replies[0][0],
     "✅ မက်ဆေ့ချ်ကို လက်ခံရရှိပါပြီ။\nSupport team က မကြာမီ ပြန်လည်ဖြေကြားပေးပါမယ်။");
+  assert.equal(buttons(textMessage.replies[0])[0][0].callback_data, "support_main_menu");
   assertNoCustomerTicketDetails(textMessage.replies[0][0]);
   assert.equal(bot.sent.at(-1).args[0], "999");
   assert.match(bot.sent.at(-1).args[1], /SUP-0001[\s\S]*Telegram ID: 123[\s\S]*Please help/);
@@ -323,6 +325,8 @@ test("admin reply and close use ticket ownership and keep admin identity inside 
   assert.match(customerReply.args[1], /^🎧 Metro Secure Support\n\nWe can help/);
   assert.equal(customerReply.args[1].includes("999"), false);
   assertNoCustomerTicketDetails(customerReply.args[1]);
+  assert.equal(customerReply.args[2].reply_markup.inline_keyboard[0][0].callback_data,
+    "support_main_menu");
   assert.equal(bot.tables.SupportTicket[1].adminReplySelected, false);
   await bot.action("support_reply_1", 999);
   const adminPhoto = bot.ctx(999);
@@ -332,6 +336,8 @@ test("admin reply and close use ticket ownership and keep admin identity inside 
   assert.match(bot.sent.at(-1).args[2].caption, /Metro Secure Support[\s\S]*Try this/);
   assert.equal(bot.sent.at(-1).args[2].caption.includes("999"), false);
   assertNoCustomerTicketDetails(bot.sent.at(-1).args[2].caption);
+  assert.equal(bot.sent.at(-1).args[2].reply_markup.inline_keyboard[0][0].callback_data,
+    "support_main_menu");
   const nonAdminClose = await bot.action("support_close_2", 123);
   assert.equal(nonAdminClose.replies.length, 0);
   assert.equal(bot.tables.SupportTicket[1].status, "OPEN");
@@ -378,9 +384,66 @@ test("support mode keeps screenshots separate from payment proof and Cancel retu
   const afterResume = bot.ctx();
   afterResume.message = { text: "Another question" };
   await bot.events.text(afterResume);
-  assert.equal(afterResume.replies.length, 0);
+  assert.equal(afterResume.replies.length, 1);
   await bot.action("payment_wallet_1");
   assert.equal(bot.tables.SupportTicket[0].customerInputActive, false);
+});
+
+test("Main Menu pauses support while retaining the ticket and starts a fresh acknowledgement session on re-entry", async () => {
+  const bot = await loadBot();
+  await bot.action("contact_support", 123);
+  const first = bot.ctx(123);
+  first.message = { text: "hello" };
+  await bot.events.text(first);
+  assert.equal(first.replies.length, 1);
+  const second = bot.ctx(123);
+  second.message = { text: "another message" };
+  await bot.events.text(second);
+  assert.equal(second.replies.length, 0);
+  const ticket = bot.tables.SupportTicket[0];
+  const ordersBefore = bot.tables.Order.length;
+  const subscriptionsBefore = bot.tables.Subscription.length;
+  const menu = await bot.action("support_main_menu", 123);
+  assert.equal(menu.replies.length, 1);
+  assert.match(menu.replies[0][0], /Metro VPN မှ ကြိုဆိုပါတယ်/);
+  assert.equal(buttons(menu.replies[0])[0][0].callback_data, "buy_vpn");
+  assert.equal(ticket.status, "OPEN");
+  assert.equal(ticket.customerInputActive, false);
+  assert.equal(ticket.acknowledgedAt, null);
+  assert.equal(bot.tables.SupportTicket.length, 1);
+  assert.equal(bot.tables.Order.length, ordersBefore);
+  assert.equal(bot.tables.Subscription.length, subscriptionsBefore);
+  const whileInMenu = bot.ctx(123);
+  whileInMenu.message = { text: "not a support message" };
+  const adminMessagesBefore = bot.sent.length;
+  await bot.events.text(whileInMenu);
+  assert.equal(bot.sent.length, adminMessagesBefore);
+  await bot.action("support_reply_1", 999);
+  const adminReply = bot.ctx(999);
+  adminReply.message = { text: "We are still here." };
+  await bot.events.text(adminReply);
+  assert.equal(bot.sent.at(-1).args[0], "123");
+  assert.match(bot.sent.at(-1).args[1], /^🎧 Metro Secure Support\n\nWe are still here/);
+  assertNoCustomerTicketDetails(bot.sent.at(-1).args[1]);
+  await bot.action("contact_support", 123);
+  assert.equal(bot.tables.SupportTicket.length, 1);
+  assert.equal(ticket.id, 1);
+  assert.equal(ticket.customerInputActive, true);
+  const resumed = bot.ctx(123);
+  resumed.message = { text: "hello again" };
+  await bot.events.text(resumed);
+  assert.equal(resumed.replies.length, 1);
+  assert.match(bot.sent.at(-1).args[1], /SUP-0001[\s\S]*hello again/);
+  const resumedSecond = bot.ctx(123);
+  resumedSecond.message = { photo: [{ file_id: "second-session-image" }] };
+  await bot.events.photo(resumedSecond);
+  assert.equal(resumedSecond.replies.length, 0);
+  assert.equal(bot.sent.at(-1).args[1], "second-session-image");
+  const restarted = await loadBot(bot.tables);
+  const afterRestart = restarted.ctx(123);
+  afterRestart.message = { text: "still same session" };
+  await restarted.events.text(afterRestart);
+  assert.equal(afterRestart.replies.length, 0);
 });
 
 test("admin package edits appear on the next Buy VPN read and disabled packages reject old buttons", async () => {
