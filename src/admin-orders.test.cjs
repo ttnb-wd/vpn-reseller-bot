@@ -236,6 +236,12 @@ test("Telegram file_id is resolved and downloaded only from Telegram's fixed hos
     token: "12345:SYNTHETIC_TOKEN", fetchImpl: hostileFetch,
   }));
   assert.equal(fetchCount, 1);
+  await assert.rejects(loadTelegramPaymentProof("telegram-photo-file-id", {
+    token: "12345:SYNTHETIC_TOKEN",
+    fetchImpl: async () => Response.json({ ok: true, result: {
+      file_path: "photos/file_1.jpg", file_size: 20 * 1024 * 1024 + 1,
+    } }),
+  }));
 });
 
 class QuerySpy {

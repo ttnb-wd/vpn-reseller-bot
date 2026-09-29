@@ -1,5 +1,6 @@
 const { Temporal } = require("@js-temporal/polyfill");
 const { Markup } = require("telegraf");
+const { createWindowLimiter } = require("./abuse-limits");
 
 const REPLY_WINDOW_MINUTES = 15;
 const CUSTOMER_ACK = "✅ မက်ဆေ့ချ်ကို လက်ခံရရှိပါပြီ။\nSupport team က မကြာမီ ပြန်လည်ဖြေကြားပေးပါမယ်။";
@@ -27,6 +28,9 @@ function supportPromptKeyboard() {
 }
 
 function createSupportService({ db, bot, adminTelegramId, isAdmin, helpKeyboard }) {
+  const allowText = createWindowLimiter({ windowMs: 60000, max: 10 });
+  const allowPhoto = createWindowLimiter({ windowMs: 60000, max: 4 });
+  const limitMessage = "You are sending support messages too quickly. Please wait a minute and try again.";
   async function customerForTelegramId(telegramId) {
     return db.public.Customer.where({ telegramId: String(telegramId) }).first();
   }
@@ -216,6 +220,7 @@ function createSupportService({ db, bot, adminTelegramId, isAdmin, helpKeyboard 
     }
     const target = await activeCustomerTicket(ctx.from.id);
     if (!target) return false;
+    if (!allowText(ctx.from.id)) { await ctx.reply(limitMessage); return true; }
     await relayCustomerText(target.customer, target.ticket, ctx.message.text);
     await db.public.SupportTicket.where({ id: target.ticket.id, status: "OPEN" })
       .update({ updatedAt: Temporal.Now.instant() });
@@ -248,6 +253,12 @@ function createSupportService({ db, bot, adminTelegramId, isAdmin, helpKeyboard 
     }
     const target = await activeCustomerTicket(ctx.from.id);
     if (!target) return false;
+    if (!allowPhoto(ctx.from.id)) { await ctx.reply(limitMessage); return true; }
+    if (photo.file_size != null && (!Number.isSafeInteger(photo.file_size) ||
+        photo.file_size <= 0 || photo.file_size > 20 * 1024 * 1024)) {
+      await ctx.reply("Please send a photo smaller than 20 MB.");
+      return true;
+    }
     await relayCustomerPhoto(target.customer, target.ticket, photo, ctx.message.caption);
     await db.public.SupportTicket.where({ id: target.ticket.id, status: "OPEN" })
       .update({ updatedAt: Temporal.Now.instant() });

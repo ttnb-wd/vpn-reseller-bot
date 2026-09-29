@@ -209,17 +209,85 @@ async function createAccessKey() {
   return { id: accessKey.id, accessUrl: accessKey.accessUrl };
 }
 
-async function setAccessKeyDataLimit(keyId, limitBytes) {
+function provisioningKeyId(order) {
+  if (!Number.isSafeInteger(order?.id) || order.id <= 0 ||
+      typeof order.orderNumber !== "string" || !/^VPN-[A-Za-z0-9_-]{8,100}$/.test(order.orderNumber)) {
+    throw new Error("Order has no stable provisioning identity.");
+  }
+  return `ms-o-${crypto.createHash("sha256").update(`${order.id}:${order.orderNumber}`).digest("hex").slice(0, 40)}`;
+}
+
+async function getAccessKeyById(keyId, client = getOutlineClient()) {
+  if (typeof keyId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(keyId)) {
+    throw new Error("Invalid Outline key ID.");
+  }
+  let response;
+  try {
+    response = await client.get(`/access-keys/${encodeURIComponent(keyId)}`);
+  } catch (error) {
+    if (isAccessKeyNotFoundError(error)) return null;
+    throw error;
+  }
+  const key = response.data;
+  if (key?.id !== keyId || typeof key.accessUrl !== "string" ||
+      !key.accessUrl.startsWith("ss://")) {
+    throw new Error("Outline returned an invalid access key.");
+  }
+  return key;
+}
+
+async function createOrderAccessKey(order, options = {}) {
+  const id = provisioningKeyId(order);
+  const client = options.client || getOutlineClient();
+  async function readExpected() {
+    const key = await getAccessKeyById(id, client);
+    if (key && key.name !== id) throw new Error("Outline provisioning ID is already in use.");
+    return key;
+  }
+  let key = await readExpected();
+  if (key) return { id, accessUrl: key.accessUrl };
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      // The deployed server supports fixed-ID PUT. Never use random POST here.
+      await client.put(`/access-keys/${encodeURIComponent(id)}`, { name: id });
+    } catch (error) {
+      // Only a transport failure has an uncertain result. HTTP failures,
+      // certificate errors and malformed replies require operator review.
+      const uncertain = !error?.response &&
+        ["ECONNRESET", "ETIMEDOUT", "ECONNABORTED", "EPIPE"].includes(error?.code);
+      if (!uncertain) throw error;
+      // A lost response can follow successful server-side creation. Reconcile
+      // before repeating the same fixed-ID request.
+      key = await readExpected();
+      if (key) return { id, accessUrl: key.accessUrl };
+      if (attempt === 1) throw error;
+      continue;
+    }
+    key = await readExpected();
+    if (!key) throw new Error("Outline creation was not confirmed.");
+    return { id, accessUrl: key.accessUrl };
+  }
+  throw new Error("Outline creation was not confirmed.");
+}
+
+async function setAccessKeyDataLimit(keyId, limitBytes, options = {}) {
   assertRealKeyId(keyId);
   if (!Number.isSafeInteger(limitBytes) || limitBytes < 0) {
     throw new Error("limitBytes must be a non-negative safe integer.");
   }
 
   try {
-    const response = await getOutlineClient().put(
+    const client = options.client || getOutlineClient();
+    const before = await getAccessKeyById(String(keyId), client);
+    if (before?.dataLimit?.bytes === limitBytes) return;
+    const response = await client.put(
       `/access-keys/${encodeURIComponent(keyId)}/data-limit`,
       { limit: { bytes: limitBytes } }
     );
+    const after = await getAccessKeyById(String(keyId), client);
+    if (after?.dataLimit?.bytes !== limitBytes) {
+      throw new Error("Outline data limit could not be verified.");
+    }
     console.log("Outline data limit updated successfully.");
     return response.data;
   } catch (error) {
@@ -243,6 +311,33 @@ async function deleteAccessKey(keyId) {
   console.log("Real Outline access key deleted.");
 }
 
+// Reset tooling receives only metadata; never return or persist accessUrl.
+async function listResetAccessKeys() {
+  const response = await getOutlineClient().get("/access-keys");
+  const keys = response.data?.accessKeys;
+  if (!Array.isArray(keys)) throw new Error("Outline access key list is invalid.");
+  const seen = new Set();
+  return keys.map((key) => {
+    const id = key?.id;
+    if (typeof id !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(id) || seen.has(id)) {
+      throw new Error("Outline access key ID is invalid or duplicated.");
+    }
+    seen.add(id);
+    return { id,
+      name: typeof key.name === "string" && !/ss:\/\//i.test(key.name)
+        ? key.name.replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, 120) : null,
+      dataLimitBytes: Number.isSafeInteger(key.dataLimit?.bytes) && key.dataLimit.bytes >= 0
+        ? key.dataLimit.bytes : null };
+  });
+}
+
+async function deleteResetAccessKey(id) {
+  if (typeof id !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(id)) {
+    throw new Error("Invalid Outline access key ID.");
+  }
+  await getOutlineClient().delete(`/access-keys/${encodeURIComponent(id)}`);
+}
+
 module.exports = {
   validateOutlineConfig,
   testOutlineConnection,
@@ -251,7 +346,12 @@ module.exports = {
   getAccessKeyAuditMetadata,
   summarizeAccessKeyAudit,
   createAccessKey,
+  provisioningKeyId,
+  getAccessKeyById,
+  createOrderAccessKey,
   setAccessKeyDataLimit,
   deleteAccessKey,
+  listResetAccessKeys,
+  deleteResetAccessKey,
   isAccessKeyNotFoundError,
 };

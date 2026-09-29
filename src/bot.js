@@ -1,4 +1,4 @@
-require("dotenv").config();
+if (process.env.NODE_ENV !== "production") require("dotenv").config({ quiet: true });
 
 const express = require("express");
 const crypto = require("crypto");
@@ -13,9 +13,11 @@ const { validateAdminConfig, createAdminRouter } = require("./admin-auth");
 const { createSupportService } = require("./support");
 const { createTelegramAdmin } = require("./telegram-admin");
 const { buildCustomerMenu } = require("./customer-menu");
+const { createWindowLimiter } = require("./abuse-limits");
+const { createMiniAppRouter } = require("./mini-app");
 
 const {
-  createAccessKey,
+  createOrderAccessKey,
   setAccessKeyDataLimit,
   validateOutlineConfig,
   testOutlineConnection,
@@ -25,6 +27,19 @@ const {
 } = require("./outline");
 
 const app = express();
+app.disable("x-powered-by");
+app.use((req, res, next) => {
+  res.set({
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "X-Frame-Options": "DENY",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+  });
+  if (process.env.NODE_ENV === "production") {
+    res.set("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+  }
+  next();
+});
 
 // Render places one TLS-terminating proxy in front of the private Express port.
 // Trust that hop there so req.secure and req.ip reflect the external request.
@@ -51,6 +66,11 @@ let usageSyncTimer;
 let usageSyncRunning = false;
 
 const pendingProofs = new Map();
+const allowConnect = createWindowLimiter({ windowMs: 60000, max: 30 });
+const allowNewOrder = createWindowLimiter({ windowMs: 60000, max: 6 });
+const allowMiniFlow = createWindowLimiter({ windowMs: 60000, max: 6 });
+const allowMiniConnect = createWindowLimiter({ windowMs: 60000, max: 12 });
+const recentConfirmations = new Map();
 
 const PROCESSING_TIMEOUT_MINUTES = 15;
 
@@ -274,6 +294,10 @@ app.get("/connect/:token", async (req, res) => {
     "X-Robots-Tag": "noindex, nofollow, noarchive",
     "Content-Security-Policy": `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'`,
   });
+  if (!allowConnect(req.ip || req.socket.remoteAddress)) {
+    res.set("Retry-After", "60");
+    return res.status(429).type("text").send("Too many setup requests. Please try again shortly.");
+  }
   // Never redirect an HTTP request with a bearer token or send it a VPN key.
   if (!req.secure) return res.status(400).type("text").send("Open the HTTPS setup link from My VPN in Telegram.");
   const invalidLink = () => res.status(410).type("text").send(
@@ -375,7 +399,16 @@ function logStartupFailure(error) {
 }
 
 function isAdmin(ctx) {
-  return ctx.from?.id != null && String(ctx.from.id) === ADMIN_TELEGRAM_ID;
+  return ctx.from?.id != null && String(ctx.from.id) === ADMIN_TELEGRAM_ID &&
+    ctx.chat?.type === "private" && String(ctx.chat.id) === ADMIN_TELEGRAM_ID;
+}
+
+function assertIdempotentProvisioningOrder(order) {
+  // Pre-deployment orders may have an unrecorded random POST result. A saved
+  // key is reused, but an unrecorded legacy create needs manual review.
+  if (!/^VPN-I[a-f0-9]{32}$/.test(order.orderNumber || "")) {
+    throw new Error("Legacy order requires manual provisioning review.");
+  }
 }
 
 function formatInstant(instant) {
@@ -549,7 +582,7 @@ function formatOrderStatus(status) {
 let telegramAdmin;
 function buildMainMenu(ctx) {
   return buildCustomerMenu(Boolean(ctx && isAdmin(ctx) && ctx.chat?.type === "private"),
-    telegramAdmin?.customerAdminRows());
+    telegramAdmin?.customerAdminRows(), `${getConnectConfig().baseUrl}/mini-app/`);
 }
 
 function compactButtonRows(buttons) {
@@ -1048,7 +1081,43 @@ async function createPackageOrder(
       String(ctx.from.id), confirmation.chat.id, confirmation.message_id,
       pkg.id, durationMonths, isRenewal, confirmedVersion,
     ])).digest("hex").slice(0, 32);
-    const orderNumber = `VPN-${purchaseId}`;
+    const legacyOrder = await db.public.Order.where({ orderNumber: `VPN-${purchaseId}` }).first();
+    if (legacyOrder) {
+      if (legacyOrder.status === "PENDING_PAYMENT") {
+        await ctx.reply(formatPayment(legacyOrder), buildPaymentKeyboard(legacyOrder));
+      } else {
+        await ctx.reply(`🗂️ မှာယူမှု: ${legacyOrder.orderNumber}\nအခြေအနေ: ${formatOrderStatus(legacyOrder.status)}\n\nဒီမှာယူမှုကို ထပ်အတည်ပြုစရာ မလိုပါ။ အသေးစိတ်ကြည့်ဖို့ My Orders ကိုနှိပ်ပါ။`, buildMainMenu(ctx));
+      }
+      return legacyOrder;
+    }
+    const orderNumber = `VPN-I${purchaseId}`;
+    // A new confirmation message can have a different ID even when it repeats
+    // the same purchase. Reuse its recent pending order and keep renewals after
+    // a completed payment available.
+    const recentPending = await db.public.Order.where({
+      customerId: customer.id, packageId: pkg.id, durationMonths,
+      status: "PENDING_PAYMENT",
+    }).orderBy((row) => row.createdAt.desc()).first();
+    const pendingAt = recentPending?.createdAt?.epochMilliseconds === undefined
+      ? new Date(recentPending?.createdAt).getTime()
+      : Number(recentPending.createdAt.epochMilliseconds);
+    if (recentPending && recentPending.plan === plan &&
+        Number(recentPending.price) === Number(totalPriceMmk) &&
+        Number.isFinite(pendingAt) && Date.now() - pendingAt < 60000) {
+      await ctx.reply(formatPayment(recentPending), buildPaymentKeyboard(recentPending));
+      return recentPending;
+    }
+    const confirmationKey = `${ctx.from.id}:${confirmation.chat.id}:${confirmation.message_id}`;
+    const now = Date.now();
+    if (recentConfirmations.size > 10000) {
+      for (const [key, until] of recentConfirmations) if (until <= now) recentConfirmations.delete(key);
+      if (recentConfirmations.size > 10000) recentConfirmations.delete(recentConfirmations.keys().next().value);
+    }
+    if (!recentConfirmations.has(confirmationKey) && !allowNewOrder(ctx.from.id, now)) {
+      await ctx.reply("Please wait a minute before creating another order. Your existing order is in My Orders.");
+      return;
+    }
+    recentConfirmations.set(confirmationKey, now + 60000);
     const order = await db.public.Order.upsert({
       conflictOn: { orderNumber: true },
       create: {
@@ -1077,10 +1146,63 @@ async function createPackageOrder(
   }
 }
 
+app.use("/mini-app", createMiniAppRouter({
+  botToken: process.env.BOT_TOKEN,
+  async getAccount(telegramId) {
+    const { subscription } = await findCustomerSubscription(telegramId);
+    const active = isSubscriptionActive(subscription);
+    return {
+      hasSubscription: Boolean(subscription),
+      status: active ? "ACTIVE" : subscription && subscription.expiresAt &&
+        Temporal.Instant.compare(subscription.expiresAt, Temporal.Now.instant()) <= 0
+        ? "EXPIRED" : subscription ? "INACTIVE" : "NONE",
+      plan: subscription?.plan || null,
+      dataUsedGb: subscription?.dataUsedGb || 0,
+      dataLimitGb: subscription?.dataLimitGb || 0,
+      expiresAt: subscription?.expiresAt?.toString() || null,
+      region: process.env.VPN_REGION || "Singapore",
+      canConnect: active && isReusableAccessKey(subscription.vpnKeyId, subscription.vpnKey) &&
+        isValidOutlineAccessKey(subscription.vpnKey),
+    };
+  },
+  async getPackages() {
+    return (await getActivePackages()).map((pkg) => ({
+      id: pkg.id, name: pkg.name, dataLimitGb: pkg.dataLimitGb,
+      durationDays: pkg.durationDays, priceMmk: Number(pkg.priceMmk),
+    }));
+  },
+  async getConnectUrl(telegramId) {
+    if (!allowMiniConnect(telegramId)) return null;
+    const { subscription } = await findCustomerSubscription(telegramId);
+    if (!isSubscriptionActive(subscription) ||
+        !isReusableAccessKey(subscription.vpnKeyId, subscription.vpnKey) ||
+        !isValidOutlineAccessKey(subscription.vpnKey)) return null;
+    return createVpnConnectUrl(subscription);
+  },
+  async sendBotFlow(telegramId, flow, packageId) {
+    if (!allowMiniFlow(telegramId)) throw new Error("Too many requests");
+    const packages = await getActivePackages();
+    if (!packages.length) throw new Error("No packages");
+    const selected = packageId === undefined ? null : packages.find((pkg) => pkg.id === packageId);
+    if (packageId !== undefined && !selected) throw new Error("Package unavailable");
+    if (flow === "renew") {
+      const { subscription } = await findCustomerSubscription(telegramId);
+      if (!subscription) throw new Error("No subscription");
+    }
+    const isRenewal = flow === "renew";
+    await bot.telegram.sendMessage(telegramId,
+      selected ? formatPackageDetails(selected, isRenewal) :
+        isRenewal ? "♻️ Choose a package to renew your VPN." : formatPackageSelection(packages),
+      selected ? buildPackageDetailKeyboard(selected, isRenewal) :
+        buildPackageKeyboard(packages, isRenewal));
+  },
+}));
+
 async function startBot() {
   console.log("Starting VPN Bot...");
 
   startupStage = "production config validation";
+  console.log("DATABASE_URL configured:", process.env.DATABASE_URL ? "yes" : "no");
   validateOutlineConfig();
   const connectConfig = getConnectConfig();
 
@@ -1721,6 +1843,12 @@ async function startBot() {
         );
       }
 
+      const proofOwner = await db.public.Customer.where({ id: order.customerId }).first();
+      if (!proofOwner || proofOwner.telegramId !== userId) {
+        pendingProofs.delete(userId);
+        return await ctx.reply("ဒီမှာယူမှုက သင့်အကောင့်နဲ့ မသက်ဆိုင်ပါ။");
+      }
+
       if (
         order.status !==
         "PENDING_PAYMENT"
@@ -1736,11 +1864,15 @@ async function startBot() {
 
       const photos =
         ctx.message.photo;
+      const selectedPhoto = photos?.at(-1);
+      if (!selectedPhoto || (selectedPhoto.file_size != null &&
+          (!Number.isSafeInteger(selectedPhoto.file_size) || selectedPhoto.file_size <= 0 ||
+           selectedPhoto.file_size > 20 * 1024 * 1024))) {
+        return await ctx.reply("Please send a payment photo smaller than 20 MB.");
+      }
 
       const paymentProof =
-        photos[
-          photos.length - 1
-        ].file_id;
+        selectedPhoto.file_id;
 
       await db.public.Order
         .where({
@@ -2002,6 +2134,19 @@ async function startBot() {
 
         if (!subscription) {
           let accessKey = null;
+          // Freeze the entitlement clock before calling Outline so recovery
+          // cannot extend the purchase after a partial failure.
+          const startedAt = order.startedAt
+            ? Temporal.Instant.from(order.startedAt) : now;
+          const expiresAt = order.expiresAt
+            ? Temporal.Instant.from(order.expiresAt)
+            : startedAt.add({ hours: durationDays * 24 });
+          if (!order.startedAt || !order.expiresAt) {
+            await db.public.Order.where({ id: order.id, status: "PROCESSING" })
+              .update({ startedAt, expiresAt });
+            order.startedAt = startedAt;
+            order.expiresAt = expiresAt;
+          }
 
           // ---------------------------------
           // 7. Reuse existing key if one
@@ -2027,8 +2172,9 @@ async function startBot() {
             // 8. Create Outline key
             // ---------------------------------
 
+            assertIdempotentProvisioningOrder(order);
             accessKey =
-              await createAccessKey(
+              await createOrderAccessKey(
                 order
               );
 
@@ -2100,12 +2246,6 @@ async function startBot() {
           // 11. Calculate subscription expiry
           // ---------------------------------
 
-          const expiresAt =
-            now.add({
-              hours:
-                durationDays * 24,
-            });
-
           // ---------------------------------
           // 12. Create subscription
           // ---------------------------------
@@ -2132,10 +2272,10 @@ async function startBot() {
                   accessKey.id,
 
                 vpnKeyCreatedAt:
-                  now,
+                  order.vpnKeyCreatedAt || now,
 
                 startedAt:
-                  now,
+                  startedAt,
 
                 expiresAt,
 
@@ -2170,10 +2310,10 @@ async function startBot() {
                 accessKey.id,
 
               vpnKeyCreatedAt:
-                now,
+                order.vpnKeyCreatedAt || now,
 
               startedAt:
-                now,
+                startedAt,
 
               expiresAt,
 
@@ -2238,7 +2378,8 @@ async function startBot() {
               createdAt: subscription.vpnKeyCreatedAt,
             };
           } else if (subscriptionHasLegacyKey) {
-            renewalAccessKey = await createAccessKey(order);
+            assertIdempotentProvisioningOrder(order);
+            renewalAccessKey = await createOrderAccessKey(order);
 
             if (
               !renewalAccessKey ||
@@ -2269,30 +2410,33 @@ async function startBot() {
             );
           }
 
-          const isFuture =
-            subscription.expiresAt &&
-            Temporal.Instant.compare(
-              subscription.expiresAt,
-              now
-            ) > 0;
-
-          const newExpiresAt = (
-            isFuture
-              ? subscription.expiresAt
-              : now
-          ).add({
-            hours:
-              durationDays * 24,
-          });
+          const isFuture = subscription.expiresAt &&
+            Temporal.Instant.compare(subscription.expiresAt, now) > 0;
+          const newExpiresAt = order.expiresAt
+            ? Temporal.Instant.from(order.expiresAt)
+            : (isFuture ? subscription.expiresAt : now).add({ hours: durationDays * 24 });
+          if (order.expiresAt && subscription.expiresAt &&
+              Temporal.Instant.compare(subscription.expiresAt, newExpiresAt) > 0) {
+            throw new Error("Subscription changed during renewal retry.");
+          }
+          if (!order.expiresAt) {
+            // Save the exact renewal target before changing Outline or the
+            // subscription. A retry after a partial DB write must not add the
+            // purchased duration a second time.
+            await db.public.Order.where({ id: order.id, status: "PROCESSING" })
+              .update({ expiresAt: newExpiresAt });
+            order.expiresAt = newExpiresAt;
+          }
 
           const currentDataLimitGb =
             Number(
               subscription.dataLimitGb || 0
             );
 
-          const newTotalDataGb =
-            currentDataLimitGb +
-            totalDataGb;
+          const alreadyApplied = subscription.expiresAt &&
+            Temporal.Instant.compare(subscription.expiresAt, newExpiresAt) === 0;
+          const newTotalDataGb = alreadyApplied
+            ? currentDataLimitGb : currentDataLimitGb + totalDataGb;
 
           const newDataLimitBytes =
             gbToBytes(
@@ -2327,7 +2471,8 @@ async function startBot() {
             // replacement before retrying the data limit, so a later approval
             // attempt cannot create another key.
             console.warn(`Outline access key missing for order ${order.orderNumber}. Creating one replacement.`);
-            const replacement = await createAccessKey(order);
+            assertIdempotentProvisioningOrder(order);
+            const replacement = await createOrderAccessKey(order);
             if (!replacement ||
                 !isReusableAccessKey(replacement.id, replacement.accessUrl)) {
               throw new Error("Outline API returned an invalid replacement key.");

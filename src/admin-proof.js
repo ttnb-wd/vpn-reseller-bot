@@ -38,7 +38,10 @@ async function loadTelegramPaymentProof(fileId, options = {}) {
   });
   if (infoResponse.status === 400 || infoResponse.status === 404) return null;
   if (!infoResponse.ok) throw new Error("Telegram file lookup failed.");
-  const file = (await infoResponse.json()).result;
+  const infoBytes = await infoResponse.text();
+  if (infoBytes.length > 8192) throw new Error("Telegram file lookup response is too large.");
+  let file;
+  try { file = JSON.parse(infoBytes).result; } catch { throw new Error("Telegram file lookup failed."); }
   const contentType = imageType(file?.file_path);
   if (!contentType || (file.file_size !== undefined && file.file_size > MAX_PROOF_BYTES)) {
     throw new Error("Telegram payment image is unavailable.");

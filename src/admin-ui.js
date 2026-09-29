@@ -514,7 +514,7 @@ function renderSettings(res, email, formToken, settings) {
     <div class="detail-grid">
       <section class="panel"><h3>Application</h3>${rows([
         ["Environment", text(settings.environment)], ["Node environment", text(settings.nodeEnvironment)],
-        ["Public hostname", text(settings.publicHostname)],
+        ["Public URL", indicator(Boolean(settings.publicHostname))],
         ["Render deployment", indicator(settings.renderDeployment, "Detected", "Not detected")],
       ])}</section>
       <section class="panel"><h3>Telegram</h3>${rows([
@@ -535,7 +535,7 @@ function renderSettings(res, email, formToken, settings) {
         ["PROCESSING recovery timeout", `${formatNumber(settings.processingRecoveryMinutes)} minutes`],
       ])}</section>
       <section class="panel"><h3>Admin</h3>${rows([
-        ["Email", text(settings.adminEmail)], ["Session timeout", `${formatNumber(settings.sessionTimeoutMinutes)} minutes`],
+        ["Email", indicator(Boolean(settings.adminEmail))], ["Session timeout", `${formatNumber(settings.sessionTimeoutMinutes)} minutes`],
         ["Authentication", indicator(settings.adminAuthConfigured, "Enabled", "Disabled")],
       ])}</section>
     </div>

@@ -10,7 +10,7 @@ const { updatePackage } = require("./admin-data");
 
 // Exercise the real registered handlers using synthetic data, without polling
 // Telegram or connecting to production PostgreSQL / Outline.
-async function loadBot(existingTables = null) {
+async function loadBot(existingTables = null, outlineKeys = new Map()) {
   const file = path.join(__dirname, "bot.js");
   const source = readFileSync(file, "utf8");
   const localRequire = createRequire(file);
@@ -76,7 +76,7 @@ async function loadBot(existingTables = null) {
   let existingKeyIds = new Set();
   let metricsUnavailable = false;
   const fakeApp = {
-    set() {}, get() {}, use() {},
+    set() {}, get() {}, use() {}, disable() {},
     listen() {
       const server = new EventEmitter();
       queueMicrotask(() => server.emit("listening"));
@@ -115,9 +115,13 @@ async function loadBot(existingTables = null) {
           return usageByKeyId;
         },
         async getExistingAccessKeyIds() { return existingKeyIds; },
-        async createAccessKey(order) {
+        async createOrderAccessKey(order) {
+          if (outlineKeys.has(order.id)) return outlineKeys.get(order.id);
           keyCalls.push(order.id);
-          return { id: `real-test-${keyCalls.length}`, accessUrl: `ss://synthetic@192.0.2.1:1234#${keyCalls.length}` };
+          const key = { id: `real-test-${order.id}`,
+            accessUrl: `ss://synthetic@192.0.2.1:1234#${order.id}` };
+          outlineKeys.set(order.id, key);
+          return key;
         },
         async setAccessKeyDataLimit(id, bytes) {
           limitCalls.push({ id, bytes });
@@ -144,6 +148,7 @@ async function loadBot(existingTables = null) {
     const replies = [];
     return {
       from: { id: userId, first_name: "Test" }, replies,
+      chat: { id: userId, type: "private" },
       callbackQuery: { message: { chat: { id: userId }, message_id: messageId } },
       async answerCbQuery() {}, async editMessageCaption() {}, async replyWithPhoto() {},
       async reply(...args) { replies.push(args); },
@@ -216,8 +221,9 @@ test("welcome, packages, confirmation and help only read customer data", async (
   await bot.events.start(welcome);
   assert.match(welcome.replies[0][0], /Metro VPN မှ ကြိုဆိုပါတယ်/);
   assert.deepEqual(plain(buttons(welcome.replies[0]).map((row) => row.map((b) => b.text))), [
-    ["🛡️ Buy VPN", "🌐 My VPN"], ["🗂️ My Orders", "🛰️ Setup VPN"], ["🎧 Help"],
+    ["🛡️ Buy VPN", "🌐 My VPN"], ["🗂️ My Orders", "🛰️ Setup VPN"], ["🎧 Help"], ["🧭 Open Metro"],
   ]);
+  assert.equal(buttons(welcome.replies[0])[3][0].web_app.url, "https://vpn.example.test/mini-app/");
   const packages = await bot.action("buy_vpn");
   assert.deepEqual(plain(buttons(packages.replies[0])[0].map((b) => b.callback_data)), ["package_7", "package_19"]);
   assert.equal(buttons(packages.replies[0])[1][0].text, "💎 Premium");
@@ -387,6 +393,48 @@ test("support mode keeps screenshots separate from payment proof and Cancel retu
   assert.equal(afterResume.replies.length, 1);
   await bot.action("payment_wallet_1");
   assert.equal(bot.tables.SupportTicket[0].customerInputActive, false);
+});
+
+test("support flood is stopped before forwarding to admin", async () => {
+  const bot = await loadBot();
+  await bot.action("contact_support");
+  for (let index = 0; index < 10; index++) {
+    const message = bot.ctx();
+    message.message = { text: `question ${index}` };
+    await bot.events.text(message);
+  }
+  const forwarded = bot.sent.length;
+  const blocked = bot.ctx();
+  blocked.message = { text: "flood" };
+  await bot.events.text(blocked);
+  assert.equal(bot.sent.length, forwarded);
+  assert.match(blocked.replies[0][0], /too quickly/i);
+});
+
+test("payment photo upload rechecks ownership and image size", async () => {
+  const bot = await loadBot();
+  await bot.action(await confirmationButton(bot, 19));
+  await bot.action("payment_wallet_1");
+  const oversized = bot.ctx();
+  oversized.message = { photo: [{ file_id: "oversized", file_size: 20 * 1024 * 1024 + 1 }] };
+  await bot.events.photo(oversized);
+  assert.equal(bot.tables.Order[0].paymentProof, undefined);
+  bot.tables.Order[0].customerId = 99;
+  const alien = bot.ctx();
+  alien.message = { photo: [{ file_id: "alien" }] };
+  await bot.events.photo(alien);
+  assert.equal(bot.tables.Order[0].paymentProof, undefined);
+});
+
+test("rapid distinct order confirmations are limited per customer", async () => {
+  const bot = await loadBot();
+  const callback = await confirmationButton(bot, 19);
+  for (let messageId = 1; messageId <= 8; messageId++) {
+    await bot.action(callback, 123, messageId);
+    const order = bot.tables.Order.at(-1);
+    if (order) order.status = "PAID";
+  }
+  assert.equal(bot.tables.Order.length, 6);
 });
 
 test("Main Menu pauses support while retaining the ticket and starts a fresh acknowledgement session on re-entry", async () => {
@@ -601,6 +649,78 @@ test("payment proof, approval, My VPN, setup and renewal retain a single real ke
   assert.equal(subscription.dataLimitGb, 852);
   assert.equal(subscription.expiresAt.toString(), originalExpiry.add({ hours: 93 * 24 }).toString());
   assert.equal(bot.limitCalls.at(-1).bytes, 852 * 1024 ** 3);
+});
+
+test("restart after failed order key write recovers the same Outline key", async () => {
+  const outlineKeys = new Map();
+  const first = await loadBot(null, outlineKeys);
+  await first.action(await confirmationButton(first, 19));
+  const originalWhere = first.client.public.Order.where;
+  let failed = false;
+  first.client.public.Order.where = (filter) => {
+    const query = originalWhere(filter);
+    const originalUpdate = query.update;
+    query.update = async (data) => {
+      if (data.vpnKey && !failed) { failed = true; throw new Error("synthetic DB failure"); }
+      return originalUpdate(data);
+    };
+    return query;
+  };
+  await first.action("approve_payment_1", 999);
+  assert.equal(first.tables.Order[0].status, "PROCESSING");
+  assert.equal(first.tables.Order[0].vpnKey, undefined);
+  assert.equal(outlineKeys.size, 1);
+  first.tables.Order[0].processingAt = Temporal.Now.instant().subtract({ minutes: 20 });
+  const restarted = await loadBot(first.tables, outlineKeys);
+  await restarted.action("approve_payment_1", 999);
+  assert.equal(restarted.tables.Order[0].status, "PAID");
+  assert.equal(restarted.keyCalls.length, 0);
+  assert.equal(outlineKeys.size, 1);
+});
+
+test("renewal retry after the subscription write keeps the exact expiry and data limit", async () => {
+  const bot = await loadBot();
+  await bot.action(await confirmationButton(bot, 19));
+  await bot.action("approve_payment_1", 999);
+  await bot.action(await confirmationButton(bot, 19, 1, true), 123, 88);
+  const originalWhere = bot.client.public.Order.where;
+  let failed = false;
+  bot.client.public.Order.where = (filter) => {
+    const query = originalWhere(filter);
+    const originalUpdate = query.update;
+    query.update = async (data) => {
+      if (filter.id === 2 && data.status === "PAID" && !failed) {
+        failed = true;
+        throw new Error("synthetic order write failure");
+      }
+      return originalUpdate(data);
+    };
+    return query;
+  };
+  await bot.action("approve_payment_2", 999);
+  const subscription = bot.tables.Subscription[0];
+  const expiry = subscription.expiresAt.toString();
+  const limit = subscription.dataLimitGb;
+  assert.equal(bot.tables.Order[1].status, "PROCESSING");
+  bot.tables.Order[1].processingAt = Temporal.Now.instant().subtract({ minutes: 20 });
+  await bot.recover();
+  await bot.action("approve_payment_2", 999);
+  assert.equal(subscription.expiresAt.toString(), expiry);
+  assert.equal(subscription.dataLimitGb, limit);
+  assert.equal(bot.tables.Order[1].status, "PAID");
+});
+
+test("legacy orders reuse a saved order but do not create an untraceable new key", async () => {
+  const bot = await loadBot();
+  const callback = await confirmationButton(bot, 19);
+  await bot.action(callback, 123, 73);
+  const order = bot.tables.Order[0];
+  order.orderNumber = order.orderNumber.replace("VPN-I", "VPN-");
+  await bot.action(callback, 123, 73);
+  assert.equal(bot.tables.Order.length, 1);
+  await bot.action("approve_payment_1", 999);
+  assert.equal(bot.keyCalls.length, 0);
+  assert.equal(order.status, "PROCESSING");
 });
 
 test("missing-key replacement, rejection, cancellation and PROCESSING recovery still work", async () => {

@@ -170,6 +170,18 @@ test("existing-key HTTPS setup", async (t) => {
     assert.equal((await request()).status, 200);
   });
 
+  await t.test("security headers are present and private files are not served", async () => {
+    const response = await request();
+    assert.equal(response.headers.get("x-content-type-options"), "nosniff");
+    assert.equal(response.headers.get("x-frame-options"), "DENY");
+    assert.match(response.headers.get("permissions-policy"), /camera=\(\)/);
+    for (const file of ["/.env", "/backups/private.sql", "/prisma/contract.prisma",
+      "/migrations/20260929_support_tickets.sql", "/src/bot.js", "/.git/config"]) {
+      const result = await fetch(origin + file);
+      assert.equal(result.status, 404, file);
+    }
+  });
+
   await t.test("tampered, malformed, wrong-secret and expired tokens are rejected before DB lookup", async () => {
     const before = queryCount;
     const bytes = Buffer.from(token.slice(3), "base64url");

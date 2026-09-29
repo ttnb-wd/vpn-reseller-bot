@@ -87,6 +87,7 @@ function setPageHeaders(res, nonce) {
     "Referrer-Policy": "no-referrer",
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
     "X-Robots-Tag": "noindex, nofollow, noarchive",
     "Content-Security-Policy": `default-src 'none'; style-src 'nonce-${nonce}'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`,
   });
@@ -387,7 +388,9 @@ function createAdminRouter(config) {
       if (!proof) return res.sendStatus(404);
       const extensions = { "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp" };
       const extension = extensions[proof.contentType];
-      if (!extension || !Buffer.isBuffer(proof.bytes)) throw new Error("Invalid proof response.");
+      if (!extension || !Buffer.isBuffer(proof.bytes) || proof.bytes.length > 20 * 1024 * 1024) {
+        throw new Error("Invalid proof response.");
+      }
       res.set({
         "Cache-Control": "private, no-store, max-age=0",
         "Content-Security-Policy": "default-src 'none'; sandbox",
