@@ -158,6 +158,9 @@ async function loadBot() {
 
 function buttons(reply) { return reply[1].reply_markup.inline_keyboard; }
 function plain(value) { return JSON.parse(JSON.stringify(value)); }
+function assertNoCustomerTicketDetails(message) {
+  assert.doesNotMatch(message, /SUP-|\bTicket\b|ticket/i);
+}
 async function confirmationButton(bot, packageId, months = 1, isRenewal = false) {
   const prefix = isRenewal ? "renew_duration" : "duration";
   const screen = await bot.action(`${prefix}_${packageId}_${months}`);
@@ -232,12 +235,19 @@ test("support opens persistent per-customer tickets and relays text and photos t
   const bot = await loadBot();
   const first = await bot.action("contact_support", 123);
   const second = await bot.action("contact_support", 456);
-  assert.match(first.replies[1][0], /SUP-0001/);
-  assert.match(second.replies[1][0], /SUP-0002/);
+  const startText = "🎧 Metro Secure Support\n\nမက်ဆေ့ချ်ကို လက်ခံရရှိပါပြီ။\nSupport team က အမြန်ဆုံး ပြန်လည်ဖြေကြားပေးပါမယ်။\n\nဒီ chat ထဲမှာပဲ ဆက်လက်မေးမြန်းနိုင်ပါတယ်။";
+  assert.equal(first.replies.length, 1);
+  assert.equal(first.replies[0][0], startText);
+  assert.equal(second.replies[0][0], startText);
+  assertNoCustomerTicketDetails(first.replies[0][0]);
+  assertNoCustomerTicketDetails(second.replies[0][0]);
   assert.equal(bot.tables.SupportTicket.length, 2);
   const textMessage = bot.ctx(123);
   textMessage.message = { text: "Please help with my VPN" };
   await bot.events.text(textMessage);
+  assert.equal(textMessage.replies[0][0],
+    "✅ မက်ဆေ့ချ်ကို လက်ခံရရှိပါပြီ။\nSupport team က မကြာမီ ပြန်လည်ဖြေကြားပေးပါမယ်။");
+  assertNoCustomerTicketDetails(textMessage.replies[0][0]);
   assert.equal(bot.sent.at(-1).args[0], "999");
   assert.match(bot.sent.at(-1).args[1], /SUP-0001[\s\S]*Telegram ID: 123[\s\S]*Please help/);
   assert.equal(bot.sent.at(-1).args[2].reply_markup.inline_keyboard[0][0].callback_data,
@@ -249,13 +259,16 @@ test("support opens persistent per-customer tickets and relays text and photos t
   const photo = bot.ctx(456);
   photo.message = { photo: [{ file_id: "support-image" }], caption: "Screenshot" };
   await bot.events.photo(photo);
+  assert.equal(photo.replies[0][0], textMessage.replies[0][0]);
+  assertNoCustomerTicketDetails(photo.replies[0][0]);
   assert.equal(bot.sent.at(-1).type, "photo");
   assert.equal(bot.sent.at(-1).args[0], "999");
   assert.equal(bot.sent.at(-1).args[1], "support-image");
   assert.match(bot.sent.at(-1).args[2].caption, /SUP-0002[\s\S]*Screenshot/);
   assert.equal(bot.tables.Order.length, 0);
   const repeat = await bot.action("contact_support", 123);
-  assert.match(repeat.replies[1][0], /SUP-0001/);
+  assert.equal(repeat.replies[0][0], startText);
+  assertNoCustomerTicketDetails(repeat.replies[0][0]);
   assert.equal(bot.tables.SupportTicket.length, 2);
 });
 
@@ -274,6 +287,7 @@ test("admin reply and close use ticket ownership and keep admin identity inside 
   assert.equal(customerReply.args[0], "456");
   assert.match(customerReply.args[1], /^🎧 Metro Secure Support\n\nWe can help/);
   assert.equal(customerReply.args[1].includes("999"), false);
+  assertNoCustomerTicketDetails(customerReply.args[1]);
   assert.equal(bot.tables.SupportTicket[1].adminReplySelected, false);
   await bot.action("support_reply_1", 999);
   const adminPhoto = bot.ctx(999);
@@ -282,6 +296,7 @@ test("admin reply and close use ticket ownership and keep admin identity inside 
   assert.equal(bot.sent.at(-1).args[0], "123");
   assert.match(bot.sent.at(-1).args[2].caption, /Metro Secure Support[\s\S]*Try this/);
   assert.equal(bot.sent.at(-1).args[2].caption.includes("999"), false);
+  assertNoCustomerTicketDetails(bot.sent.at(-1).args[2].caption);
   const nonAdminClose = await bot.action("support_close_2", 123);
   assert.equal(nonAdminClose.replies.length, 0);
   assert.equal(bot.tables.SupportTicket[1].status, "OPEN");
@@ -289,9 +304,11 @@ test("admin reply and close use ticket ownership and keep admin identity inside 
   assert.equal(bot.tables.SupportTicket[1].status, "CLOSED");
   assert.ok(bot.tables.SupportTicket[1].closedAt);
   assert.equal(bot.sent.at(-1).args[0], "456");
-  assert.match(bot.sent.at(-1).args[1], /Support ticket ပိတ်ပြီးပါပြီ/);
+  assert.match(bot.sent.at(-1).args[1], /Support ဆက်သွယ်မှုကို ပိတ်ပြီးပါပြီ/);
+  assertNoCustomerTicketDetails(bot.sent.at(-1).args[1]);
   const reopened = await bot.action("contact_support", 456);
-  assert.match(reopened.replies[1][0], /SUP-0003/);
+  assertNoCustomerTicketDetails(reopened.replies[0][0]);
+  assert.equal(bot.tables.SupportTicket[2].id, 3);
 });
 
 test("support mode keeps screenshots separate from payment proof and Cancel returns to payment mode", async () => {

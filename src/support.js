@@ -2,6 +2,7 @@ const { Temporal } = require("@js-temporal/polyfill");
 const { Markup } = require("telegraf");
 
 const REPLY_WINDOW_MINUTES = 15;
+const CUSTOMER_ACK = "✅ မက်ဆေ့ချ်ကို လက်ခံရရှိပါပြီ။\nSupport team က မကြာမီ ပြန်လည်ဖြေကြားပေးပါမယ်။";
 
 function ticketNumber(ticket) {
   return `SUP-${String(ticket.id).padStart(4, "0")}`;
@@ -74,11 +75,8 @@ function createSupportService({ db, bot, adminTelegramId, isAdmin, helpKeyboard 
           .update({ customerInputActive: true, updatedAt: Temporal.Now.instant() });
       }
       await ctx.reply(
-        `🎧 Metro Secure Support\n\nမေးလိုတာကို အောက်မှာ တိုက်ရိုက်ရေးပို့ပါ။\nScreenshot / photo လည်း ပို့နိုင်ပါတယ်။\n\nSupport team က ဒီ chat ထဲမှာပဲ ပြန်လည်ဖြေကြားပေးပါမယ်။`,
+        "🎧 Metro Secure Support\n\nမက်ဆေ့ချ်ကို လက်ခံရရှိပါပြီ။\nSupport team က အမြန်ဆုံး ပြန်လည်ဖြေကြားပေးပါမယ်။\n\nဒီ chat ထဲမှာပဲ ဆက်လက်မေးမြန်းနိုင်ပါတယ်။",
         supportPromptKeyboard()
-      );
-      await ctx.reply(
-        `🎧 Support Ticket Opened\n\nTicket: ${ticketNumber(ticket)}\n\nမေးလိုတာကို ဒီ chat ထဲမှာ တိုက်ရိုက်ပို့နိုင်ပါတယ်။`
       );
     } catch {
       console.error("Support ticket opening failed.");
@@ -184,7 +182,7 @@ function createSupportService({ db, bot, adminTelegramId, isAdmin, helpKeyboard 
       });
       const customer = await db.public.Customer.where({ id: ticket.customerId }).first();
       if (customer) await bot.telegram.sendMessage(customer.telegramId,
-        "✅ Support ticket ပိတ်ပြီးပါပြီ။\n\nလိုအပ်ရင် Contact Support ကနေ ticket အသစ်ဖွင့်နိုင်ပါတယ်။");
+        "✅ Support ဆက်သွယ်မှုကို ပိတ်ပြီးပါပြီ။\n\nလိုအပ်ရင် Contact Support မှာ ပြန်လည်ဆက်သွယ်နိုင်ပါတယ်။");
       await ctx.reply(`${ticketNumber(ticket)} closed.`);
     } catch {
       console.error("Support ticket closing failed.");
@@ -214,7 +212,7 @@ function createSupportService({ db, bot, adminTelegramId, isAdmin, helpKeyboard 
     await relayCustomerText(target.customer, target.ticket, ctx.message.text);
     await db.public.SupportTicket.where({ id: target.ticket.id, status: "OPEN" })
       .update({ updatedAt: Temporal.Now.instant() });
-    await ctx.reply(`🎧 ${ticketNumber(target.ticket)}\nSupport team ဆီ ပို့ပြီးပါပြီ။`);
+    await ctx.reply(CUSTOMER_ACK);
     return true;
   }
 
@@ -245,7 +243,7 @@ function createSupportService({ db, bot, adminTelegramId, isAdmin, helpKeyboard 
     await relayCustomerPhoto(target.customer, target.ticket, photo, ctx.message.caption);
     await db.public.SupportTicket.where({ id: target.ticket.id, status: "OPEN" })
       .update({ updatedAt: Temporal.Now.instant() });
-    await ctx.reply(`🎧 ${ticketNumber(target.ticket)}\nScreenshot ပို့ပြီးပါပြီ။`);
+    await ctx.reply(CUSTOMER_ACK);
     return true;
   }
 
