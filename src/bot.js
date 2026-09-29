@@ -417,7 +417,7 @@ async function getUsableVpnSubscription(ctx) {
 
   if (!customer || !subscription) {
     await ctx.reply(
-      "🌐 My VPN\n\nYou don't have an active VPN subscription yet.",
+      "🌐 My VPN\n\nVPN package မရှိသေးပါ။ Buy VPN ကိုနှိပ်ပြီး package ရွေးပါ။\nငွေပေးချေပြီး Admin အတည်ပြုရင် စသုံးနိုင်ပါမယ်။",
       buildMainMenu()
     );
     return null;
@@ -425,7 +425,7 @@ async function getUsableVpnSubscription(ctx) {
 
   if (!isSubscriptionActive(subscription)) {
     await ctx.reply(
-      "⏳ VPN Subscription Expired\n\nYour VPN package is expired or inactive.",
+      "⏳ VPN သက်တမ်းကုန်နေပါပြီ သို့မဟုတ် လက်ရှိသုံးမရပါ။\n\nRenew ကိုနှိပ်ပြီး Data နဲ့ သက်တမ်း တိုးနိုင်ပါတယ်။ မူလ VPN key ကိုပဲ ဆက်သုံးပါမယ်။\nအကူအညီလိုရင် Help ကိုနှိပ်ပါ။",
       renewBuyKeyboard()
     );
     return null;
@@ -433,7 +433,7 @@ async function getUsableVpnSubscription(ctx) {
 
   if (!isReusableAccessKey(subscription.vpnKeyId, subscription.vpnKey)) {
     await ctx.reply(
-      "Your VPN key is not available. Please renew or buy VPN, or contact support.",
+      "VPN key ကို လောလောဆယ် ရယူမရပါ။\nHelp → Contact Support ကိုနှိပ်ပြီး အကူအညီတောင်းပါ။",
       renewBuyKeyboard()
     );
     return null;
@@ -448,9 +448,11 @@ async function sendVpnSetup(ctx) {
 
   await ctx.reply(
     "🛰️ Setup VPN\n\n" +
-      "1️⃣ Copy your VPN key\n2️⃣ Open Outline\n3️⃣ Add the VPN\n4️⃣ Tap Connect\n\n" +
-      "If Outline does not open, use Safari or Chrome, or paste your key into Outline.\n" +
-      "Keep your key private. The setup link expires within 10 minutes; My VPN gives you a new link.",
+      "VPN ချိတ်ဆက်ဖို့ ဒီအဆင့်တွေကို လုပ်ပါ။\n" +
+      "1️⃣ Copy VPN Key ကိုနှိပ်ပြီး key ကူးပါ\n2️⃣ Open Outline ကိုနှိပ်ပါ\n" +
+      "3️⃣ Outline ထဲမှာ key ထည့်ပြီး Add ကိုနှိပ်ပါ\n4️⃣ Connect ကိုနှိပ်ရင် VPN စသုံးနိုင်ပါပြီ\n\n" +
+      "Outline မပွင့်ရင် link ကို Safari / Chrome နဲ့ဖွင့်ပါ၊ ဒါမှမဟုတ် key ကို Outline ထဲ ကူးထည့်ပါ။\n" +
+      "Link သက်တမ်း ၁၀ မိနစ်အတွင်း ကုန်ပါမယ်။ ကုန်သွားရင် My VPN → Setup VPN ကိုပြန်နှိပ်ပါ။ Key ကို မမျှဝေပါနဲ့။",
     Markup.inlineKeyboard([
       [copyVpnKeyButton(subscription.vpnKey), Markup.button.url("🧭 Open Outline", createVpnConnectUrl(subscription))],
       [Markup.button.callback("← Back to My VPN", "my_vpn")],
@@ -463,7 +465,7 @@ async function sendExistingVpnKey(ctx, actionTitle) {
 
   if (!customer || !subscription) {
     await ctx.reply(
-      "🌐 My VPN\n\nYou don't have an active VPN subscription yet.",
+      "🌐 My VPN\n\nVPN package မရှိသေးပါ။ Buy VPN ကိုနှိပ်ပြီး package ရွေးပါ။\nငွေပေးချေပြီး Admin အတည်ပြုရင် စသုံးနိုင်ပါမယ်။",
       buildMainMenu()
     );
     return;
@@ -471,7 +473,7 @@ async function sendExistingVpnKey(ctx, actionTitle) {
 
   if (!isSubscriptionActive(subscription)) {
     await ctx.reply(
-      "⏳ VPN Subscription Expired\n\nYour VPN package is expired or inactive.",
+      "⏳ VPN သက်တမ်းကုန်နေပါပြီ သို့မဟုတ် လက်ရှိသုံးမရပါ။\n\nRenew ကိုနှိပ်ပြီး Data နဲ့ သက်တမ်း တိုးနိုင်ပါတယ်။ မူလ VPN key ကိုပဲ ဆက်သုံးပါမယ်။\nအကူအညီလိုရင် Help ကိုနှိပ်ပါ။",
       renewBuyKeyboard()
     );
     return;
@@ -483,14 +485,14 @@ async function sendExistingVpnKey(ctx, actionTitle) {
     !isValidOutlineAccessKey(subscription.vpnKey)
   ) {
     await ctx.reply(
-      "Your VPN key is not available yet. Please contact support or renew your VPN.",
+      "VPN key ကို လောလောဆယ် ရယူမရပါ။\nHelp → Contact Support ကိုနှိပ်ပြီး အကူအညီတောင်းပါ။",
       renewBuyKeyboard()
     );
     return;
   }
 
   await ctx.reply(
-    `${actionTitle}\n\nCopy this existing key into the Outline app:\n\n${subscription.vpnKey}\n\nKeep this key private.`
+    `${actionTitle}\n\nဒါက သင့်လက်ရှိ VPN key ပါ။ အောက်က key အပြည့်အစုံကို ကူးပါ။\n\n${subscription.vpnKey}\n\nOutline ထဲ ကူးထည့်ပြီး Add → Connect ကိုနှိပ်ရင် စသုံးနိုင်ပါပြီ။ Key ကို မမျှဝေပါနဲ့။`
   );
 }
 
@@ -504,11 +506,11 @@ function formatMmk(value) {
 
 function formatOrderStatus(status) {
   return {
-    PENDING_PAYMENT: "Awaiting payment review",
-    PROCESSING: "Activating VPN",
-    PAID: "Paid",
-    PAYMENT_REJECTED: "Payment rejected",
-    CANCELLED: "Cancelled",
+    PENDING_PAYMENT: "ငွေပေးချေရန် / ငွေလွှဲပုံစစ်ဆေးရန် စောင့်နေသည်",
+    PROCESSING: "VPN ဖွင့်ပေးနေသည် — ခဏစောင့်ပါ",
+    PAID: "ငွေပေးချေပြီး — VPN ဖွင့်ပေးပြီးပြီ",
+    PAYMENT_REJECTED: "ငွေပေးချေမှု အတည်မပြုနိုင်ပါ — Help မှ ဆက်သွယ်ပါ",
+    CANCELLED: "မှာယူမှု ပယ်ဖျက်ထားသည်",
   }[status] || status;
 }
 
@@ -549,9 +551,10 @@ function formatPackageSelection(packages) {
   const summary = packages.map((pkg) => {
     const padding = " ".repeat(nameWidth - Array.from(pkg.name).length + 1);
     return `${packageSelectionLabel(pkg)}${padding}• ${formatNumber(pkg.dataLimitGb)} GB` +
-      ` • ${pkg.durationDays} Days • ${formatMmk(pkg.priceMmk)}`;
+      ` • ${pkg.durationDays} ရက် • ${formatMmk(pkg.priceMmk)}`;
   }).join("\n");
-  return `💎 Choose Your VPN Package\n\nသင့်အတွက် package ကိုရွေးပါ 👇\n\n${summary}`;
+  return `💎 VPN Package ရွေးပါ\n\n${summary}\n\n` +
+    "သင့်အတွက်သင့်တော်တဲ့ package ခလုတ်ကိုနှိပ်ပါ။\nData၊ သက်တမ်းနဲ့ ဈေးနှုန်းအပြည့်အစုံကို ကြည့်ပြီးမှ ဝယ်ယူနိုင်ပါတယ်။";
 }
 
 function buildPackageKeyboard(packages, isRenewal = false) {
@@ -567,14 +570,18 @@ function buildPackageKeyboard(packages, isRenewal = false) {
   ]);
 }
 
-function formatPackageDetails(pkg) {
+function formatPackageDetails(pkg, isRenewal = false) {
   const title = /\bplan$/i.test(pkg.name) ? pkg.name : `${pkg.name} Plan`;
   return `💎 ${title.toUpperCase()}\n\n` +
-    `📡 Data: ${formatNumber(pkg.dataLimitGb)} GB\n` +
-    `⏳ Duration: ${pkg.durationDays} Days\n` +
-    `🧾 Price: ${formatMmk(pkg.priceMmk)}\n\n` +
-    "Network:\n• Outline VPN\n• Android / iPhone / iPad\n• Windows / macOS\n" +
-    "• Secure personal access key\n• Renewal uses the same VPN key";
+    `📡 အသုံးပြုနိုင်သော Data: ${formatNumber(pkg.dataLimitGb)} GB\n` +
+    `⏳ သက်တမ်း: ${pkg.durationDays} ရက်\n` +
+    `🧾 ဈေးနှုန်း: ${formatMmk(pkg.priceMmk)}\n\n` +
+    "Outline VPN ကို Android / iPhone / iPad / Windows / macOS မှာ သုံးနိုင်ပါတယ်။\n" +
+    "ကိုယ်ပိုင် VPN key ရပါမယ်။ သက်တမ်းတိုးရင် မူလ key ကိုပဲ ဆက်သုံးပါမယ်။\n\n" +
+    (isRenewal
+      ? "Renew This Plan ကိုနှိပ်ပြီး သက်တမ်းတိုးမယ့် အချက်အလက်တွေကို အတည်ပြုပါ။\n"
+      : "Buy This Plan ကိုနှိပ်ရင် မှာယူမှုအတည်ပြုမယ့် စာမျက်နှာကို ရောက်ပါမယ်။\n") +
+    "ပိုကြာကြာသုံးချင်ရင် အောက်က ရက်အရေအတွက်ခလုတ်ကို ရွေးပါ။";
 }
 
 function buildPackageDetailKeyboard(pkg, isRenewal = false) {
@@ -591,10 +598,12 @@ function buildPackageDetailKeyboard(pkg, isRenewal = false) {
 
 function formatPurchaseConfirmation(pkg, durationMonths, isRenewal = false) {
   const { totalDataGb, totalPriceMmk, durationDays } = calculatePackage(pkg, durationMonths);
-  return `🧾 Confirm Your ${isRenewal ? "Renewal" : "Order"}\n\n` +
-    `Plan: ${pkg.name}\n📡 Data: ${formatNumber(totalDataGb)} GB\n` +
-    `⏳ Duration: ${durationDays} Days\n🧾 Price: ${formatMmk(totalPriceMmk)}\n\n` +
-    "Please confirm before continuing.";
+  return `🧾 ${isRenewal ? "သက်တမ်းတိုးမှု" : "မှာယူမှု"} အတည်ပြုပါ\n\n` +
+    `Package: ${pkg.name}\n📡 ${isRenewal ? "ထပ်တိုးမယ့် Data" : "Data"}: ${formatNumber(totalDataGb)} GB\n` +
+    `⏳ ${isRenewal ? "ထပ်တိုးမယ့် သက်တမ်း" : "သက်တမ်း"}: ${durationDays} ရက်\n🧾 ဈေးနှုန်း: ${formatMmk(totalPriceMmk)}\n\n` +
+    (isRenewal ? "မူလ VPN key ကိုပဲ ဆက်သုံးပြီး Data နဲ့ သက်တမ်းကို တိုးပေးပါမယ်။\n" : "") +
+    `အချက်အလက်မှန်ရင် ${isRenewal ? "Confirm Renewal" : "Confirm Purchase"} ကိုနှိပ်ပါ။\n` +
+    "ငွေပေးချေမယ့် စာမျက်နှာကို ရောက်ပါမယ်။ ပြန်ရွေးချင်ရင် ← Back ကိုနှိပ်ပါ။";
 }
 
 function buildConfirmationKeyboard(pkg, durationMonths, isRenewal = false) {
@@ -617,9 +626,11 @@ function buildMyVpnKeyboard(subscription, activated = false) {
 }
 
 function formatActivation(pkg, dataLimitGb, expiresAt, isRenewal = false) {
-  return `VPN ${isRenewal ? "RENEWED" : "ACTIVATED"}\n\nYour VPN is ready.\n\n` +
-    `Plan: ${pkg.name}\n📡 Data: ${formatNumber(dataLimitGb)} GB\n` +
-    `⏳ Expiry: ${formatInstant(expiresAt)}\nStatus: Active\n\nNext step 👇`;
+  return `🌐 VPN ${isRenewal ? "သက်တမ်းတိုးပြီးပါပြီ" : "အဆင်သင့်ဖြစ်ပါပြီ"}\n\n` +
+    `Package: ${pkg.name}\n📡 စုစုပေါင်း Data: ${formatNumber(dataLimitGb)} GB\n` +
+    `⏳ သက်တမ်းကုန်ရက်: ${formatInstant(expiresAt)}\nအခြေအနေ: အသုံးပြုနိုင်ပါပြီ\n\n` +
+    (isRenewal ? "Data နဲ့ သက်တမ်း တိုးပေးပြီးပါပြီ။ လက်ရှိ VPN key နဲ့ ဆက်သုံးနိုင်ပါတယ်။\n" : "") +
+    "Setup VPN ကိုနှိပ်ပါ။ Key ထည့်နည်းကို တစ်ဆင့်ချင်းပြပေးပြီး Outline မှာ Connect လုပ်နိုင်ပါမယ်။";
 }
 
 function buildHelpKeyboard() {
@@ -642,9 +653,12 @@ function buildPaymentKeyboard(order) {
 }
 
 function formatPayment(order) {
-  return `🧾 Payment\n\nOrder: ${order.orderNumber}\nPlan: ${order.plan}\n` +
-    `Amount: ${formatMmk(order.price)}\n\n` +
-    "1️⃣ Choose a payment method\n2️⃣ Send the exact amount\n3️⃣ Upload the payment screenshot";
+  return `🧾 Payment — ငွေပေးချေပါ\n\nမှာယူမှု: ${order.orderNumber}\nPackage: ${order.plan}\n` +
+    `ပေးချေရန်: ${formatMmk(order.price)}\n\n` +
+    "1️⃣ အောက်က ငွေပေးချေနည်းခလုတ်တစ်ခုကို နှိပ်ပါ\n" +
+    "2️⃣ ပေါ်လာမယ့် အကောင့်ကို ငွေပမာဏအတိအကျ လွှဲပါ\n" +
+    "3️⃣ ငွေလွှဲပြီးကြောင်း screenshot ကို ဒီ chat မှာ ပုံအဖြစ်ပို့ပါ\n" +
+    "4️⃣ Admin စစ်ဆေးအတည်ပြုတာကို စောင့်ပါ\n\nအတည်ပြုပြီးရင် VPN အဆင်သင့်ဖြစ်ကြောင်းနဲ့ Setup လုပ်နည်းကို ပို့ပေးပါမယ်။";
 }
 
 function getDurationLabel(months) {
@@ -821,10 +835,10 @@ function startProcessingRecovery() {
 
 async function sendMainMenu(ctx) {
   await ctx.reply(
-    "👋 Welcome to Metro VPN\n\nFast • Secure • Simple\n\n" +
-      "VPN စသုံးဖို့ 3 steps ပဲလိုပါတယ်:\n\n" +
-      "1️⃣ VPN Package ရွေးပါ\n2️⃣ Payment ပြုလုပ်ပါ\n3️⃣ VPN Setup လုပ်ပြီး Connect လုပ်ပါ\n\n" +
-      "အောက်က menu ကနေ စတင်နိုင်ပါတယ် 👇",
+    "👋 Metro VPN မှ ကြိုဆိုပါတယ်\n\n" +
+      "VPN စသုံးဖို့ အဆင့် ၃ ဆင့်ပဲ လိုပါတယ်။\n" +
+      "1️⃣ Package ရွေးပါ\n2️⃣ ငွေပေးချေပြီး screenshot ပို့ပါ\n3️⃣ Admin အတည်ပြုပြီးရင် VPN Setup လုပ်ပါ\n\n" +
+      "စဝယ်ဖို့ Buy VPN ကိုနှိပ်ပါ။ Package အသေးစိတ်ကို အရင်ကြည့်နိုင်ပါတယ်။\nဝယ်ပြီးသားဆိုရင် My VPN မှာ စစ်ကြည့်ပါ။",
     buildMainMenu()
   );
 }
@@ -861,7 +875,7 @@ async function createPackageOrder(
 
     if (!pkg) {
       return await ctx.reply(
-        "❌ Package not found or currently unavailable."
+        "ဒီ package ကို လောလောဆယ် မရနိုင်ပါ။\n← Back နဲ့ပြန်သွားပြီး အခြား package ကိုရွေးပါ။"
       );
     }
 
@@ -905,7 +919,7 @@ async function createPackageOrder(
 
       if (!subscription) {
         return await ctx.reply(
-          "❌ You don't have a VPN subscription yet.\n\nPlease use Buy VPN first."
+          "VPN package မရှိသေးလို့ သက်တမ်းတိုးမရသေးပါ။\n/start → Buy VPN ကိုနှိပ်ပြီး package အရင်ဝယ်ပါ။"
         );
       }
     }
@@ -919,7 +933,7 @@ async function createPackageOrder(
     // The existing unique orderNumber constraint makes concurrent presses atomic.
     const confirmation = ctx.callbackQuery?.message;
     if (!confirmation?.chat?.id || !confirmation.message_id) {
-      return await ctx.reply("Please choose your package again from Buy VPN.", buildMainMenu());
+      return await ctx.reply("မှာယူမှုကို ပြန်စဖို့ Buy VPN ကိုနှိပ်ပြီး package ပြန်ရွေးပါ။", buildMainMenu());
     }
     const purchaseId = crypto.createHash("sha256").update(JSON.stringify([
       String(ctx.from.id), confirmation.chat.id, confirmation.message_id,
@@ -937,7 +951,7 @@ async function createPackageOrder(
 
     if (order.status !== "PENDING_PAYMENT") {
       await ctx.reply(
-        `🗂️ Order: ${order.orderNumber}\nStatus: ${formatOrderStatus(order.status)}\n\nOpen My Orders for details.`,
+        `🗂️ မှာယူမှု: ${order.orderNumber}\nအခြေအနေ: ${formatOrderStatus(order.status)}\n\nဒီမှာယူမှုကို ထပ်အတည်ပြုစရာ မလိုပါ။ အသေးစိတ်ကြည့်ဖို့ My Orders ကိုနှိပ်ပါ။`,
         buildMainMenu()
       );
       return order;
@@ -949,7 +963,7 @@ async function createPackageOrder(
     console.error("Create package order failed.");
 
     await ctx.reply(
-      "❌ Failed to create order."
+      "မှာယူမှုကို အပြီးသတ်မလုပ်နိုင်သေးပါ။\nခဏစောင့်ပြီး မူလ Confirm ခလုတ်ကို ပြန်နှိပ်ပါ။ ထပ်ဖြစ်ရင် /start → Help မှ ဆက်သွယ်ပါ။"
     );
   }
 }
@@ -987,7 +1001,7 @@ async function startBot() {
 
   bot.command("myid", async (ctx) => {
     await ctx.reply(
-      `Your Telegram ID:\n${ctx.from.id}`
+      `သင့် Telegram ID:\n${ctx.from.id}\n\nအကူအညီတောင်းတဲ့အခါ ဒီနံပါတ်ကို ပေးနိုင်ပါတယ်။ Menu ကိုပြန်ဖွင့်ဖို့ /start ကိုနှိပ်ပါ။`
     );
   });
 
@@ -1003,14 +1017,14 @@ async function startBot() {
 
       if (!customer || !subscription) {
         return await ctx.reply(
-          "🌐 My VPN\n\nYou don't have an active VPN subscription yet.",
+          "🌐 My VPN\n\nVPN package မရှိသေးပါ။ Buy VPN ကိုနှိပ်ပြီး package ရွေးပါ။\nငွေပေးချေပြီး Admin အတည်ပြုရင် စသုံးနိုင်ပါမယ်။",
           buildMainMenu()
         );
       }
 
       if (!isSubscriptionActive(subscription)) {
         return await ctx.reply(
-          "⏳ VPN Subscription Expired\n\nYour VPN package has expired or is inactive.",
+          "⏳ VPN သက်တမ်းကုန်နေပါပြီ သို့မဟုတ် လက်ရှိသုံးမရပါ။\n\nRenew ကိုနှိပ်ပြီး Data နဲ့ သက်တမ်း တိုးနိုင်ပါတယ်။ မူလ VPN key ကိုပဲ ဆက်သုံးပါမယ်။\nအကူအညီလိုရင် Help ကိုနှိပ်ပါ။",
           renewBuyKeyboard()
         );
       }
@@ -1024,17 +1038,20 @@ async function startBot() {
         isValidOutlineAccessKey(subscription.vpnKey));
 
       await ctx.reply(
-        `🌐 My VPN\n\nPlan: ${packageLabel}\n` +
-          `📡 Usage: ${formatNumber(subscription.dataUsedGb || 0)} GB / ${formatNumber(subscription.dataLimitGb || 0)} GB\n` +
-          `⏳ Expiry: ${formatInstant(subscription.expiresAt)}\nStatus: Active` +
-          (hasReusableKey ? "" : "\n\nYour VPN key is unavailable. Please contact support."),
+        `🌐 My VPN\n\nPackage: ${packageLabel}\n` +
+          `📡 သုံးပြီး / စုစုပေါင်း Data: ${formatNumber(subscription.dataUsedGb || 0)} GB / ${formatNumber(subscription.dataLimitGb || 0)} GB\n` +
+          `⏳ သက်တမ်းကုန်ရက်: ${formatInstant(subscription.expiresAt)}\nအခြေအနေ: သက်တမ်းရှိနေပါသည်\n\n` +
+          "Data မှာ သုံးပြီးပမာဏနဲ့ စုစုပေါင်းခွင့်ပြုထားတဲ့ ပမာဏကို ပြထားပါတယ်။ သက်တမ်းကုန်ရက်အထိ ကျန် Data ကို သုံးနိုင်ပါတယ်။\n" +
+          (hasReusableKey
+            ? "စချိတ်ဆက်ဖို့ Setup VPN ကိုနှိပ်ပါ။ Data / သက်တမ်း တိုးချင်ရင် Renew ကိုနှိပ်ပြီး package ရွေးပါ။"
+            : "VPN key ကို လောလောဆယ် ရယူမရပါ။ Help → Contact Support ကိုနှိပ်ပြီး အကူအညီတောင်းပါ။"),
         buildMyVpnKeyboard(subscription)
       );
     } catch {
       console.error("Could not load My VPN.");
 
       await ctx.reply(
-        "❌ Failed to load VPN information."
+        "VPN အချက်အလက်ကို လောလောဆယ် မဖော်ပြနိုင်ပါ။\nခဏစောင့်ပြီး My VPN ကို ပြန်နှိပ်ပါ။"
       );
     }
   });
@@ -1045,7 +1062,7 @@ async function startBot() {
       await sendExistingVpnKey(ctx, "Copy VPN Key");
     } catch {
       console.error("Could not load VPN key for copying.");
-      await ctx.reply("Failed to load your VPN key.");
+      await ctx.reply("VPN key ကို လောလောဆယ် ရယူမရပါ။\nMy VPN → Copy VPN Key ကို ပြန်နှိပ်ပါ။ ထပ်ဖြစ်ရင် /start → Help မှ ဆက်သွယ်ပါ။");
     }
   });
 
@@ -1055,7 +1072,7 @@ async function startBot() {
       await sendVpnSetup(ctx);
     } catch {
       console.error("Could not load VPN setup.");
-      await ctx.reply("Failed to load VPN setup. Please try again from My VPN.");
+      await ctx.reply("VPN Setup ကို လောလောဆယ် ဖွင့်မရပါ။\nMy VPN → Setup VPN ကို ပြန်နှိပ်ပါ။ ထပ်ဖြစ်ရင် /start → Help မှ ဆက်သွယ်ပါ။");
     }
   });
 
@@ -1066,7 +1083,7 @@ async function startBot() {
       await sendVpnSetup(ctx);
     } catch {
       console.error("Could not load platform VPN setup.");
-      await ctx.reply("Failed to load VPN setup. Please try again from My VPN.");
+      await ctx.reply("VPN Setup ကို လောလောဆယ် ဖွင့်မရပါ။\nMy VPN → Setup VPN ကို ပြန်နှိပ်ပါ။ ထပ်ဖြစ်ရင် /start → Help မှ ဆက်သွယ်ပါ။");
     }
   });
 
@@ -1083,7 +1100,7 @@ async function startBot() {
         await sendVpnSetup(ctx);
       } catch {
         console.error("Could not load VPN setup from the connection link.");
-        await ctx.reply("Failed to load VPN setup. Please try again from My VPN.");
+        await ctx.reply("VPN Setup ကို လောလောဆယ် ဖွင့်မရပါ။\nMy VPN → Setup VPN ကို ပြန်နှိပ်ပါ။ ထပ်ဖြစ်ရင် /start → Help မှ ဆက်သွယ်ပါ။");
       }
     }
   );
@@ -1109,7 +1126,7 @@ async function startBot() {
 
         if (!customer) {
           return await ctx.reply(
-            "❌ Customer account not found."
+            "သင့်အကောင့်မှာ VPN ဝယ်ယူထားတာ မတွေ့သေးပါ။\n/start → Buy VPN ကိုနှိပ်ပြီး စဝယ်နိုင်ပါတယ်။"
           );
         }
 
@@ -1122,7 +1139,7 @@ async function startBot() {
 
         if (!subscription) {
           return await ctx.reply(
-            "❌ You don't have a VPN subscription yet.\n\nPlease use Buy VPN first."
+            "VPN package မရှိသေးလို့ သက်တမ်းတိုးမရသေးပါ။\n/start → Buy VPN ကိုနှိပ်ပြီး package အရင်ဝယ်ပါ။"
           );
         }
 
@@ -1131,19 +1148,19 @@ async function startBot() {
 
         if (!packages.length) {
           return await ctx.reply(
-            "❌ No VPN packages are currently available."
+            "လောလောဆယ် ရွေးနိုင်တဲ့ package မရှိသေးပါ။\nခဏကြာမှ ပြန်ကြည့်ပါ၊ ဒါမှမဟုတ် /start → Help မှ ဆက်သွယ်ပါ။"
           );
         }
 
         await ctx.reply(
-          "♻️ Choose Your Renewal Package\n\nသင့်အတွက်သင့်တော်တဲ့ package ကိုရွေးပါ 👇",
+          "♻️ VPN သက်တမ်းတိုးပါ\n\nမူလ VPN key ကိုပဲ ဆက်သုံးပြီး Data နဲ့ သက်တမ်းကို ထပ်တိုးပေးပါမယ်။\nအောက်က package ခလုတ်တစ်ခုကိုနှိပ်ပြီး ထပ်တိုးမယ့် ပမာဏနဲ့ ဈေးနှုန်းကိုကြည့်ပါ။\nငွေပေးချေပြီး Admin အတည်ပြုရင် သက်တမ်းတိုးပြီးပါပြီ။",
           buildPackageKeyboard(packages, true)
         );
       } catch (error) {
         console.error("Renew package failed.");
 
         await ctx.reply(
-          "❌ Failed to load renewal packages."
+          "သက်တမ်းတိုးနိုင်တဲ့ package တွေကို မဖော်ပြနိုင်သေးပါ။\nခဏစောင့်ပြီး My VPN → Renew ကို ပြန်နှိပ်ပါ။"
         );
       }
     }
@@ -1165,16 +1182,16 @@ async function startBot() {
 
         if (!pkg) {
           return await ctx.reply(
-            "❌ Package not found."
+            "ဒီ package ကို လောလောဆယ် မရနိုင်ပါ။\n← Back နဲ့ပြန်သွားပြီး အခြား package ကိုရွေးပါ။"
           );
         }
 
-        await ctx.reply(formatPackageDetails(pkg), buildPackageDetailKeyboard(pkg, true));
+        await ctx.reply(formatPackageDetails(pkg, true), buildPackageDetailKeyboard(pkg, true));
       } catch (error) {
         console.error("Renew package selection failed.");
 
         await ctx.reply(
-          "❌ Failed to load renewal package."
+          "ဒီ package အသေးစိတ်ကို မဖော်ပြနိုင်သေးပါ။\nခဏစောင့်ပြီး မူလ package ခလုတ်ကို ပြန်နှိပ်ပါ။"
         );
       }
     }
@@ -1199,7 +1216,7 @@ async function startBot() {
 
         if (!pkg) {
           return await ctx.reply(
-            "❌ Package not found."
+            "ဒီ package ကို လောလောဆယ် မရနိုင်ပါ။\n← Back နဲ့ပြန်သွားပြီး အခြား package ကိုရွေးပါ။"
           );
         }
 
@@ -1211,7 +1228,7 @@ async function startBot() {
         console.error("Renew duration selection failed.");
 
         await ctx.reply(
-          "❌ Failed to calculate renewal."
+          "သက်တမ်းတိုးမယ့် ဈေးနှုန်းကို မဖော်ပြနိုင်သေးပါ။\nခဏစောင့်ပြီး My VPN → Renew မှ ပြန်ရွေးပါ။"
         );
       }
     }
@@ -1252,7 +1269,7 @@ async function startBot() {
 
         if (!packages.length) {
           return await ctx.reply(
-            "❌ No VPN packages are currently available."
+            "လောလောဆယ် ရွေးနိုင်တဲ့ package မရှိသေးပါ။\nခဏကြာမှ ပြန်ကြည့်ပါ၊ ဒါမှမဟုတ် /start → Help မှ ဆက်သွယ်ပါ။"
           );
         }
 
@@ -1264,7 +1281,7 @@ async function startBot() {
         console.error("Could not load packages.");
 
         await ctx.reply(
-          "❌ Failed to load VPN packages."
+          "Package တွေကို မဖော်ပြနိုင်သေးပါ။\nခဏစောင့်ပြီး Buy VPN ကို ပြန်နှိပ်ပါ။"
         );
       }
     }
@@ -1290,7 +1307,7 @@ async function startBot() {
 
         if (!pkg) {
           return await ctx.reply(
-            "❌ Package not found or unavailable."
+            "ဒီ package ကို လောလောဆယ် မရနိုင်ပါ။\n← Back နဲ့ပြန်သွားပြီး အခြား package ကိုရွေးပါ။"
           );
         }
 
@@ -1299,7 +1316,7 @@ async function startBot() {
         console.error("Package selection failed.");
 
         await ctx.reply(
-          "❌ Failed to load package."
+          "ဒီ package အသေးစိတ်ကို မဖော်ပြနိုင်သေးပါ။\nခဏစောင့်ပြီး မူလ package ခလုတ်ကို ပြန်နှိပ်ပါ။"
         );
       }
     }
@@ -1328,7 +1345,7 @@ async function startBot() {
 
         if (!pkg) {
           return await ctx.reply(
-            "❌ Package not found or unavailable."
+            "ဒီ package ကို လောလောဆယ် မရနိုင်ပါ။\n← Back နဲ့ပြန်သွားပြီး အခြား package ကိုရွေးပါ။"
           );
         }
 
@@ -1340,7 +1357,7 @@ async function startBot() {
         console.error("Duration selection failed.");
 
         await ctx.reply(
-          "❌ Failed to calculate package price."
+          "ဈေးနှုန်းကို မဖော်ပြနိုင်သေးပါ။\nခဏစောင့်ပြီး Buy VPN မှ package ပြန်ရွေးပါ။"
         );
       }
     }
@@ -1390,7 +1407,7 @@ async function startBot() {
   bot.action("help", async (ctx) => {
     await ctx.answerCbQuery();
     await ctx.reply(
-      "🎧 Metro VPN Help\n\nHaving trouble?\nChoose what you need help with:",
+      "🎧 Metro VPN အကူအညီ\n\nလိုအပ်တဲ့ ခလုတ်ကိုနှိပ်ပါ။\n• VPN Setup — VPN ချိတ်ဆက်နည်း\n• Payment Help — ငွေလွှဲနဲ့ screenshot ပို့နည်း\n• My VPN — Data နဲ့ သက်တမ်းစစ်ရန်\n• Contact Support — တိုက်ရိုက်အကူအညီတောင်းရန်\n\nသက်ဆိုင်ရာ လမ်းညွှန်ကို ပြပေးပါမယ်။ ငွေပေးချေမှုအတွက် ဆက်သွယ်ရင် မှာယူမှုနံပါတ်ပါ ပေးပါ။",
       buildHelpKeyboard()
     );
   });
@@ -1398,9 +1415,13 @@ async function startBot() {
   bot.action("payment_help", async (ctx) => {
     await ctx.answerCbQuery();
     await ctx.reply(
-      "🧾 Payment Help\n\n1️⃣ Choose a method on your order's Payment screen\n" +
-        "2️⃣ Send the exact amount to the displayed account\n3️⃣ Upload a clear screenshot in this chat\n\n" +
-        "After uploading, wait for admin approval. For payment questions, contact support with your order number.",
+      "🧾 Payment Help — ငွေပေးချေနည်း\n\n" +
+        "1️⃣ မူလ Payment စာက ငွေပေးချေနည်းခလုတ်ကိုနှိပ်ပါ\n" +
+        "2️⃣ ပြထားတဲ့အကောင့်ကို ငွေပမာဏအတိအကျ လွှဲပါ\n" +
+        "3️⃣ ရှင်းလင်းတဲ့ screenshot ကို ဒီ chat မှာ ပုံအဖြစ်ပို့ပါ\n" +
+        "4️⃣ Admin အတည်ပြုတာကို စောင့်ပါ\n\n" +
+        "အတည်ပြုပြီးရင် VPN Setup လုပ်နည်းကို ပို့ပေးပါမယ်။\n" +
+        "ပြဿနာရှိရင် Contact Support ကိုနှိပ်ပြီး မှာယူမှုနံပါတ်ကို ပေးပါ။ ထပ်ငွေမလွှဲပါနဲ့။",
       buildHelpKeyboard()
     );
   });
@@ -1448,7 +1469,7 @@ async function startBot() {
 
       if (!order) {
         return await ctx.reply(
-          "❌ Order not found."
+          "မှာယူမှုကို မတွေ့ပါ။\n/start → My Orders မှာ ပြန်စစ်ပါ။ အကူအညီလိုရင် Help မှ ဆက်သွယ်ပါ။"
         );
       }
 
@@ -1465,7 +1486,7 @@ async function startBot() {
           String(ctx.from.id)
       ) {
         return await ctx.reply(
-          "❌ You are not authorized to access this order."
+          "ဒီမှာယူမှုက သင့်အကောင့်နဲ့ မသက်ဆိုင်ပါ။\n/start → My Orders မှာ သင့်မှာယူမှုကို ပြန်စစ်ပါ။"
         );
       }
 
@@ -1474,7 +1495,7 @@ async function startBot() {
         "PENDING_PAYMENT"
       ) {
         return await ctx.reply(
-          `⚠️ This order cannot accept payment.\n\nStatus: ${order.status}`
+          `ဒီမှာယူမှုအတွက် ငွေပေးချေမှု ဆက်လုပ်မရပါ။\nအခြေအနေ: ${formatOrderStatus(order.status)}\n\n/start → My Orders မှာ ပြန်စစ်ပါ။ ငွေလွှဲပြီးသားဆိုရင် Help မှ ဆက်သွယ်ပါ။`
         );
       }
 
@@ -1483,7 +1504,7 @@ async function startBot() {
 
       if (!payment) {
         return await ctx.reply(
-          "❌ Payment method unavailable."
+          "ဒီငွေပေးချေနည်းကို လောလောဆယ် သုံးမရပါ။\nမူလ Payment စာမှာ အခြားနည်းကို ရွေးပါ၊ ဒါမှမဟုတ် Help ကိုနှိပ်ပါ။"
         );
       }
 
@@ -1497,9 +1518,11 @@ async function startBot() {
 
       await ctx.reply(
         `🧾 Payment — ${payment.name}\n\n` +
-          `Order: ${order.orderNumber}\nPlan: ${order.plan}\nAmount: ${formatMmk(order.price)}\n\n` +
-          `Account Name: ${payment.accountName}\nAccount Number: ${payment.accountNumber}\n\n` +
-          "Send the exact amount, then upload your payment screenshot in this chat.",
+          `မှာယူမှု: ${order.orderNumber}\nPackage: ${order.plan}\nပေးချေရန်: ${formatMmk(order.price)}\n\n` +
+          `အကောင့်အမည်: ${payment.accountName}\nအကောင့်နံပါတ်: ${payment.accountNumber}\n\n` +
+          "အပေါ်ကအကောင့်ကို ငွေပမာဏအတိအကျ လွှဲပါ။\n" +
+          "ပြီးရင် ငွေလွှဲ screenshot ကို ဒီ chat မှာ ပုံအဖြစ်ပို့ပြီး Admin စစ်ဆေးတာကို စောင့်ပါ။\n" +
+          "အတည်ပြုပြီးရင် Setup VPN ခလုတ်နဲ့ ချိတ်ဆက်နည်းကို ပို့ပေးပါမယ်။ မရှင်းလင်းရင် Help ကိုနှိပ်ပါ။",
         buildPaymentKeyboard(order)
       );
 
@@ -1511,7 +1534,7 @@ async function startBot() {
       console.error("Payment method selection failed.");
 
       await ctx.reply(
-        "❌ Something went wrong."
+        "ငွေပေးချေနည်းကို ရွေးချယ်မရသေးပါ။\nခဏစောင့်ပြီး မူလငွေပေးချေနည်းခလုတ်ကို ပြန်နှိပ်ပါ။"
       );
     }
   }
@@ -1543,7 +1566,7 @@ async function startBot() {
         );
 
         return await ctx.reply(
-          "❌ Order not found."
+          "မှာယူမှုကို မတွေ့ပါ။\n/start → My Orders မှာ ပြန်စစ်ပါ။ အကူအညီလိုရင် Help မှ ဆက်သွယ်ပါ။"
         );
       }
 
@@ -1556,7 +1579,7 @@ async function startBot() {
         );
 
         return await ctx.reply(
-          "⚠️ This order is no longer waiting for payment."
+          "ဒီမှာယူမှုအတွက် screenshot ထပ်ပို့စရာ မလိုတော့ပါ။\n/start → My Orders မှာ အခြေအနေကို ပြန်စစ်ပါ။ မရှင်းလင်းရင် Help မှ ဆက်သွယ်ပါ။"
         );
       }
 
@@ -1581,7 +1604,7 @@ async function startBot() {
       );
 
       await ctx.reply(
-        "🧾 Payment Screenshot Received\n\nYour payment is awaiting admin review. We'll notify you when your VPN is ready.",
+        "🧾 ငွေလွှဲပုံ လက်ခံရရှိပါပြီ\n\nAdmin စစ်ဆေးအတည်ပြုတာကို စောင့်ပေးပါ။ အတည်ပြုပြီးရင် VPN အဆင်သင့်ဖြစ်ကြောင်း ပို့ပေးပါမယ်။\nအဲဒီစာမှာ Setup VPN ကိုနှိပ်ပြီး စချိတ်ဆက်နိုင်ပါတယ်။\nလက်ရှိအခြေအနေကြည့်ဖို့ My Orders ကိုနှိပ်ပါ။ ထပ်ငွေလွှဲဖို့ မလိုပါ။",
         Markup.inlineKeyboard([
           [Markup.button.callback("🗂️ My Orders", "my_orders"), Markup.button.callback("🎧 Help", "payment_help")],
         ])
@@ -1655,7 +1678,7 @@ async function startBot() {
       console.error("Payment proof handling failed.");
 
       await ctx.reply(
-        "❌ Failed to submit payment proof."
+        "ငွေလွှဲပုံပို့တာကို အပြီးသတ်မလုပ်နိုင်သေးပါ။ ထပ်ငွေမလွှဲပါနဲ့။\nမူလ Payment စာက Help ကိုနှိပ်ပြီး မှာယူမှုနံပါတ်နဲ့အတူ Contact Support မှ ဆက်သွယ်ပါ။"
       );
     }
   });
@@ -2346,9 +2369,9 @@ async function startBot() {
           await bot.telegram.sendMessage(
             customer.telegramId,
 
-            `🧾 Payment Rejected\n\n` +
-              `Order: ${order.orderNumber}\n\n` +
-              `Please contact support with your order number for help.`,
+            `🧾 ငွေပေးချေမှု အတည်မပြုနိုင်ပါ\n\n` +
+              `မှာယူမှု: ${order.orderNumber}\n\n` +
+              `Contact Support ကိုနှိပ်ပြီး မှာယူမှုနံပါတ်နဲ့ ငွေလွှဲပုံကို ပေးပါ။\nပြန်စစ်ဆေးဖို့ အကူအညီတောင်းနိုင်ပါတယ်။ စစ်ဆေးမပြီးမချင်း ထပ်ငွေမလွှဲပါနဲ့။`,
             buildHelpKeyboard()
           );
         }
@@ -2402,7 +2425,7 @@ async function startBot() {
 
         if (!order) {
           return await ctx.reply(
-            "❌ Order not found."
+            "မှာယူမှုကို မတွေ့ပါ။\n/start → My Orders မှာ ပြန်စစ်ပါ။ အကူအညီလိုရင် Help မှ ဆက်သွယ်ပါ။"
           );
         }
 
@@ -2411,7 +2434,7 @@ async function startBot() {
           "PENDING_PAYMENT"
         ) {
           return await ctx.reply(
-            "⚠️ This order cannot be cancelled."
+            "ဒီမှာယူမှုကို ပယ်ဖျက်မရတော့ပါ။\n/start → My Orders မှာ အခြေအနေကိုကြည့်ပါ။ လိုအပ်ရင် Help မှ ဆက်သွယ်ပါ။"
           );
         }
 
@@ -2428,7 +2451,7 @@ async function startBot() {
             String(ctx.from.id)
         ) {
           return await ctx.reply(
-            "❌ You are not authorized to cancel this order."
+            "ဒီမှာယူမှုက သင့်အကောင့်နဲ့ မသက်ဆိုင်လို့ ပယ်ဖျက်မရပါ။\n/start → My Orders မှာ သင့်မှာယူမှုကို ပြန်စစ်ပါ။"
           );
         }
 
@@ -2445,14 +2468,14 @@ async function startBot() {
         );
 
         await ctx.reply(
-          `🗂️ Order cancelled.\n\nOrder: ${order.orderNumber}`,
+          `🗂️ မှာယူမှု ပယ်ဖျက်ပြီးပါပြီ\n\nမှာယူမှု: ${order.orderNumber}\n\nအသစ်ဝယ်ချင်ရင် Buy VPN ကိုနှိပ်ပြီး package ပြန်ရွေးပါ။\nငွေလွှဲပြီးသားဆိုရင် Help မှ ဆက်သွယ်ပါ။`,
           buildMainMenu()
         );
       } catch (error) {
         console.error("Cancel order failed.");
 
         await ctx.reply(
-          "❌ Failed to cancel order."
+          "မှာယူမှု ပယ်ဖျက်တာကို အတည်မပြုနိုင်သေးပါ။\n/start → My Orders မှာ ပြန်စစ်ပါ။ လိုအပ်ရင် Help မှ ဆက်သွယ်ပါ။"
         );
       }
     }
@@ -2479,7 +2502,7 @@ async function startBot() {
 
         if (!customer) {
           return await ctx.reply(
-            "🗂️ My Orders\n\nYou don't have any orders yet.", buildMainMenu()
+            "🗂️ My Orders\n\nမှာယူထားတာ မရှိသေးပါ။\nBuy VPN ကိုနှိပ်ပြီး package ရွေးပါ။ အတည်ပြုပြီးတဲ့ မှာယူမှုတွေကို ဒီနေရာမှာ ပြန်ကြည့်နိုင်ပါတယ်။", buildMainMenu()
           );
         }
 
@@ -2496,12 +2519,15 @@ async function startBot() {
 
         if (!orders.length) {
           return await ctx.reply(
-            "🗂️ My Orders\n\nYou don't have any orders yet.", buildMainMenu()
+            "🗂️ My Orders\n\nမှာယူထားတာ မရှိသေးပါ။\nBuy VPN ကိုနှိပ်ပြီး package ရွေးပါ။ အတည်ပြုပြီးတဲ့ မှာယူမှုတွေကို ဒီနေရာမှာ ပြန်ကြည့်နိုင်ပါတယ်။", buildMainMenu()
           );
         }
 
         let message =
-          "🗂️ My Orders\n\n";
+          "🗂️ My Orders — သင့်မှာယူမှုများ\n\n" +
+          "အခြေအနေမှာ ငွေပေးချေရန် / စစ်ဆေးရန် စောင့်နေသလား၊ VPN ဖွင့်ပေးနေသလား၊ ပြီးပြီလားဆိုတာ ပြထားပါတယ်။\n" +
+          "Screenshot ပို့ပြီးသားဆိုရင် အတည်ပြုတာကို စောင့်ပါ။ ငွေပေးချေပြီးဆိုရင် Setup VPN ကိုနှိပ်ပြီး ချိတ်ဆက်ပါ။\n" +
+          "အတည်မပြုနိုင်တာ၊ ပယ်ဖျက်ထားတာနဲ့ ပတ်သက်ပြီး အကူအညီလိုရင် Help ကိုနှိပ်ပါ။\n\n";
 
         for (const order of orders) {
           const pkg =
@@ -2515,7 +2541,7 @@ async function startBot() {
 
           message +=
             `🧾 ${order.orderNumber}\n` +
-            `Plan: ${
+            `Package: ${
               pkg?.name ||
               order.plan
             }\n` +
@@ -2523,18 +2549,15 @@ async function startBot() {
               order.totalDataGb ||
               0
             } GB\n` +
-            `⏳ Duration: ${getDurationLabel(
-              order.durationMonths ||
-                1
-            )}\n` +
-            `🧾 Price: ${formatNumber(
+            `⏳ ကာလ: ${order.durationMonths || 1} လ\n` +
+            `🧾 ဈေးနှုန်း: ${formatNumber(
               order.price
             )} MMK\n` +
-            `Status: ${formatOrderStatus(order.status)}\n`;
+            `အခြေအနေ: ${formatOrderStatus(order.status)}\n`;
 
           if (order.expiresAt) {
             message +=
-              `⏳ Expiry: ${formatInstant(
+              `⏳ သက်တမ်းကုန်ရက်: ${formatInstant(
                 order.expiresAt
               )}\n`;
           }
@@ -2550,7 +2573,7 @@ async function startBot() {
         console.error("Could not load orders.");
 
         await ctx.reply(
-          "❌ Failed to load orders."
+          "မှာယူမှုတွေကို မဖော်ပြနိုင်သေးပါ။\nခဏစောင့်ပြီး My Orders ကို ပြန်နှိပ်ပါ။"
         );
       }
     }

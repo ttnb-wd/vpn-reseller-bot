@@ -145,7 +145,7 @@ test("welcome, packages, confirmation and help only read customer data", async (
   const bot = await loadBot();
   const welcome = bot.ctx();
   await bot.events.start(welcome);
-  assert.match(welcome.replies[0][0], /Welcome to Metro VPN/);
+  assert.match(welcome.replies[0][0], /Metro VPN မှ ကြိုဆိုပါတယ်/);
   assert.deepEqual(plain(buttons(welcome.replies[0]).map((row) => row.map((b) => b.text))), [
     ["🛡️ Buy VPN", "🌐 My VPN"], ["🗂️ My Orders", "🛰️ Setup VPN"], ["🎧 Help"],
   ]);
@@ -154,15 +154,15 @@ test("welcome, packages, confirmation and help only read customer data", async (
   assert.equal(buttons(packages.replies[0])[1][0].text, "💎 Premium");
   assert.equal(JSON.stringify(packages.replies).includes("Retired"), false);
   const detail = await bot.action("package_19");
-  assert.match(detail.replies[0][0], /STANDARD PLAN[\s\S]*213 GB[\s\S]*31 Days[\s\S]*7,650 MMK/);
+  assert.match(detail.replies[0][0], /STANDARD PLAN[\s\S]*213 GB[\s\S]*31 ရက်[\s\S]*7,650 MMK/);
   assert.equal(buttons(detail.replies[0])[0][0].callback_data, "duration_19_1");
   assert.equal(buttons(detail.replies[0])[1].length, 2);
   const confirm = await bot.action("duration_19_3");
-  assert.match(confirm.replies[0][0], /Confirm Your Order[\s\S]*639 GB[\s\S]*93 Days[\s\S]*22,950 MMK/);
+  assert.match(confirm.replies[0][0], /မှာယူမှု အတည်ပြုပါ[\s\S]*639 GB[\s\S]*93 ရက်[\s\S]*22,950 MMK/);
   assert.equal(buttons(confirm.replies[0])[0][0].callback_data, "confirm_package_19_3");
-  assert.match((await bot.action("package_99")).replies[0][0], /unavailable/);
-  assert.match((await bot.action("help")).replies[0][0], /Metro VPN Help/);
-  assert.match((await bot.action("payment_help")).replies[0][0], /exact amount/);
+  assert.match((await bot.action("package_99")).replies[0][0], /လောလောဆယ် မရနိုင်ပါ/);
+  assert.match((await bot.action("help")).replies[0][0], /Metro VPN အကူအညီ/);
+  assert.match((await bot.action("payment_help")).replies[0][0], /ငွေပမာဏအတိအကျ/);
   assert.equal(bot.tables.Order.length, 0);
   assert.equal(bot.keyCalls.length, 0);
 });
@@ -183,7 +183,7 @@ test("repeated confirmations reuse one order and preserve its price and terminal
     const repeated = await bot.action("confirm_package_19_1", 123, 40);
     assert.equal(bot.tables.Order.length, 1);
     assert.equal(order.status, status);
-    assert.match(repeated.replies[0][0], /Open My Orders/);
+    assert.match(repeated.replies[0][0], /My Orders ကိုနှိပ်ပါ/);
   }
   await bot.action("confirm_package_19_1", 123, 41);
   assert.equal(bot.tables.Order.length, 2);
@@ -207,7 +207,7 @@ test("payment proof, approval, My VPN, setup and renewal retain a single real ke
   const subscription = bot.tables.Subscription[0];
   const key = subscription.vpnKey;
   const activated = bot.sent.find((sent) => sent.type === "message").args;
-  assert.match(activated[1], /VPN ACTIVATED/);
+  assert.match(activated[1], /VPN အဆင်သင့်ဖြစ်ပါပြီ/);
   assert.equal(activated[1].includes(key), false);
   assert.equal(activated[2].reply_markup.inline_keyboard[0][1].copy_text.text, key);
   subscription.dataUsedGb = 35;
