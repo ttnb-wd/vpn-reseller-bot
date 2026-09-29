@@ -501,7 +501,7 @@ function formatNumber(value) {
 }
 
 function formatMmk(value) {
-  return `${formatNumber(value)} MMK`;
+  return formatNumber(value);
 }
 
 function formatOrderStatus(status) {
@@ -1637,9 +1637,7 @@ async function startBot() {
         `Data: ${formatNumber(
           order.totalDataGb || 0
         )} GB\n` +
-        `Price: ${formatNumber(
-          order.price
-        )} MMK\n\n` +
+        `Price: ${formatMmk(order.price)}\n\n` +
         `Customer: ${
           customer?.firstName ||
           "N/A"
@@ -2550,9 +2548,7 @@ async function startBot() {
               0
             } GB\n` +
             `⏳ ကာလ: ${order.durationMonths || 1} လ\n` +
-            `🧾 ဈေးနှုန်း: ${formatNumber(
-              order.price
-            )} MMK\n` +
+            `🧾 ဈေးနှုန်း: ${formatMmk(order.price)}\n` +
             `အခြေအနေ: ${formatOrderStatus(order.status)}\n`;
 
           if (order.expiresAt) {

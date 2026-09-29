@@ -154,11 +154,11 @@ test("welcome, packages, confirmation and help only read customer data", async (
   assert.equal(buttons(packages.replies[0])[1][0].text, "💎 Premium");
   assert.equal(JSON.stringify(packages.replies).includes("Retired"), false);
   const detail = await bot.action("package_19");
-  assert.match(detail.replies[0][0], /STANDARD PLAN[\s\S]*213 GB[\s\S]*31 ရက်[\s\S]*7,650 MMK/);
+  assert.match(detail.replies[0][0], /STANDARD PLAN[\s\S]*213 GB[\s\S]*31 ရက်[\s\S]*7,650\n/);
   assert.equal(buttons(detail.replies[0])[0][0].callback_data, "duration_19_1");
   assert.equal(buttons(detail.replies[0])[1].length, 2);
   const confirm = await bot.action("duration_19_3");
-  assert.match(confirm.replies[0][0], /မှာယူမှု အတည်ပြုပါ[\s\S]*639 GB[\s\S]*93 ရက်[\s\S]*22,950 MMK/);
+  assert.match(confirm.replies[0][0], /မှာယူမှု အတည်ပြုပါ[\s\S]*639 GB[\s\S]*93 ရက်[\s\S]*22,950\n/);
   assert.equal(buttons(confirm.replies[0])[0][0].callback_data, "confirm_package_19_3");
   assert.match((await bot.action("package_99")).replies[0][0], /လောလောဆယ် မရနိုင်ပါ/);
   assert.match((await bot.action("help")).replies[0][0], /Metro VPN အကူအညီ/);
@@ -173,7 +173,7 @@ test("repeated confirmations reuse one order and preserve its price and terminal
   assert.equal(bot.tables.Order.length, 1);
   const order = bot.tables.Order[0];
   const payment = await bot.action("confirm_package_19_1", 123, 40);
-  assert.match(payment.replies[0][0], /🧾 Payment[\s\S]*7,650 MMK/);
+  assert.match(payment.replies[0][0], /🧾 Payment[\s\S]*7,650\n/);
   assert.equal(buttons(payment.replies[0])[0].length, 2);
   bot.tables.Package[1].priceMmk = "8000";
   await bot.action("confirm_package_19_1", 123, 40);
