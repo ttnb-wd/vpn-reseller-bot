@@ -2,6 +2,8 @@ const { Temporal } = require("@js-temporal/polyfill");
 
 const USERS_PER_PAGE = 20;
 const ORDERS_PER_PAGE = 20;
+const VPN_KEYS_PER_PAGE = 20;
+const PACKAGES_PER_PAGE = 20;
 const RECENT_ORDERS = 8;
 const ORDER_STATUSES = ["PENDING_PAYMENT", "PROCESSING", "PAID", "PAYMENT_REJECTED", "CANCELLED"];
 
@@ -216,7 +218,117 @@ async function getPaymentsData(client, params = {}) {
   return { orders, count, page, totalPages, filter };
 }
 
+async function getVpnKeysData(client, params = {}) {
+  const { or } = await import("@prisma/orm-postgres/orm-client");
+  const now = Temporal.Now.instant();
+  const q = typeof params.q === "string" ? params.q.trim().slice(0, 100) : "";
+  const status = ["all", "active", "expired", "revoked", "missing"].includes(params.status)
+    ? params.status : "all";
+  let query = client.public.Subscription;
+  if (q) {
+    const pattern = searchPattern(q);
+    query = query.where((subscription) => or(
+      subscription.vpnKeyId.ilike(pattern),
+      subscription.customer.some((customer) => or(
+        customer.telegramId.ilike(pattern),
+        customer.username.ilike(pattern),
+        customer.firstName.ilike(pattern),
+      )),
+    ));
+  }
+  if (status === "revoked") {
+    query = query.where((subscription) => subscription.revokedAt.isNotNull());
+  } else if (status === "missing") {
+    query = query.where((subscription) => subscription.revokedAt.isNull())
+      .where((subscription) => or(subscription.vpnKeyId.isNull(), subscription.vpnKeyId.eq("")));
+  } else if (status === "active" || status === "expired") {
+    query = query.where({ status: "ACTIVE" })
+      .where((subscription) => subscription.revokedAt.isNull())
+      .where((subscription) => subscription.vpnKeyId.isNotNull())
+      .where((subscription) => subscription.vpnKeyId.neq(""))
+      .where((subscription) => status === "active"
+        ? subscription.expiresAt.gt(now) : subscription.expiresAt.lte(now));
+  }
+  const { count } = await query.aggregate((aggregate) => ({ count: aggregate.count() }));
+  const totalPages = Math.max(1, Math.ceil(count / VPN_KEYS_PER_PAGE));
+  const page = Math.min(parsePage(params.page), totalPages);
+  const subscriptions = await query
+    .select("id", "plan", "status", "vpnKeyId", "vpnKeyCreatedAt", "dataUsedGb",
+      "dataLimitGb", "startedAt", "expiresAt", "revokedAt")
+    .include("customer", (customer) => customer.select("id", "telegramId", "username", "firstName"))
+    .include("package", (pkg) => pkg.select("name"))
+    .orderBy([(subscription) => subscription.createdAt.desc(), (subscription) => subscription.id.desc()])
+    .offset((page - 1) * VPN_KEYS_PER_PAGE)
+    .limit(VPN_KEYS_PER_PAGE)
+    .all();
+  return { subscriptions, count, page, totalPages, q, status, now };
+}
+
+async function getPackagesData(client, params = {}) {
+  const query = client.public.Package;
+  const { count } = await query.aggregate((aggregate) => ({ count: aggregate.count() }));
+  const totalPages = Math.max(1, Math.ceil(count / PACKAGES_PER_PAGE));
+  const page = Math.min(parsePage(params.page), totalPages);
+  const packages = await query
+    .select("id", "name", "dataLimitGb", "durationDays", "priceMmk", "active",
+      "sortOrder", "createdAt", "updatedAt")
+    .orderBy([(pkg) => pkg.sortOrder.asc(), (pkg) => pkg.id.asc()])
+    .offset((page - 1) * PACKAGES_PER_PAGE)
+    .limit(PACKAGES_PER_PAGE)
+    .all();
+  return { packages, count, page, totalPages };
+}
+
+async function getPackageDetail(client, id) {
+  return client.public.Package.where({ id })
+    .select("id", "name", "dataLimitGb", "durationDays", "priceMmk", "active", "sortOrder")
+    .first();
+}
+
+function validatePackageInput(body = {}) {
+  const errors = [];
+  const name = typeof body.name === "string" ? body.name.trim() : "";
+  if (!name || name.length > 100) errors.push("Name must be 1–100 characters.");
+  const gbText = typeof body.dataLimitGb === "string" ? body.dataLimitGb.trim() : "";
+  const dataLimitGb = Number(gbText);
+  if (!/^(?:0|[1-9]\d{0,6})(?:\.\d{1,3})?$/.test(gbText) ||
+      !Number.isFinite(dataLimitGb) || dataLimitGb <= 0 || dataLimitGb > 1000000) {
+    errors.push("Data limit must be greater than 0 and at most 1,000,000 GB (up to 3 decimals).");
+  }
+  const durationText = typeof body.durationDays === "string" ? body.durationDays.trim() : "";
+  const durationDays = Number(durationText);
+  if (!/^[1-9]\d{0,3}$/.test(durationText) || durationDays > 3650) {
+    errors.push("Duration must be an integer from 1 to 3,650 days.");
+  }
+  const priceMmk = typeof body.priceMmk === "string" ? body.priceMmk.trim() : "";
+  if (!/^(?:0|[1-9]\d{0,8})(?:\.\d{1,2})?$/.test(priceMmk)) {
+    errors.push("Price must be 0–999,999,999 MMK (up to 2 decimals).");
+  }
+  const sortText = typeof body.sortOrder === "string" ? body.sortOrder.trim() : "";
+  const sortOrder = Number(sortText);
+  if (!/^-?(?:0|[1-9]\d{0,5})$/.test(sortText) || Math.abs(sortOrder) > 100000) {
+    errors.push("Sort order must be an integer from -100,000 to 100,000.");
+  }
+  if (body.active !== "true" && body.active !== "false") {
+    errors.push("Choose Active or Inactive.");
+  }
+  return {
+    errors,
+    values: { name, dataLimitGb, durationDays, priceMmk,
+      active: body.active === "true", sortOrder },
+  };
+}
+
+async function updatePackage(client, id, values) {
+  return client.public.Package.where({ id }).update({
+    name: values.name, dataLimitGb: values.dataLimitGb, durationDays: values.durationDays,
+    priceMmk: values.priceMmk, active: values.active, sortOrder: values.sortOrder,
+    updatedAt: Temporal.Now.instant(),
+  });
+}
+
 module.exports = {
   getDashboardData, getUsersData, getUserDetail,
   getOrdersData, getOrderDetail, getOrderProof, getPaymentsData,
+  getVpnKeysData, getPackagesData, getPackageDetail, validatePackageInput, updatePackage,
 };

@@ -121,6 +121,7 @@ function renderLayout(res, title, email, section, formToken, content) {
   button, .button { border: 0; border-radius: 9px; padding: .65rem .9rem; background: #35b9e8; color: #062034; font: inherit; font-weight: 700; text-decoration: none; cursor: pointer; }
   button:hover, .button:hover { background: #70d8f8; }
   button:focus-visible, a:focus-visible, input:focus-visible { outline: 3px solid #70d8f8; outline-offset: 2px; }
+  select:focus-visible { outline: 3px solid #70d8f8; outline-offset: 2px; }
   nav { display: flex; flex-wrap: wrap; gap: .45rem; margin: 1.5rem 0 2rem; }
   nav a, nav span { display: inline-block; border: 1px solid #2b5670; border-radius: 9px; padding: .65rem .8rem; text-decoration: none; color: #aec5d6; }
   nav a:hover, nav .current { color: #e9f4ff; border-color: #35b9e8; background: #173c53; }
@@ -163,6 +164,11 @@ function renderLayout(res, title, email, section, formToken, content) {
   .empty { color: #aec5d6; padding: 1rem 0; }
   .proof-preview { display: block; max-width: 100%; max-height: 360px; width: auto; height: auto; margin: .8rem 0; border: 1px solid #2b5670; border-radius: 10px; object-fit: contain; }
   .actions { display: flex; flex-wrap: wrap; align-items: center; gap: .7rem; margin-top: 1rem; }
+  .edit-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 1rem; }
+  .edit-grid label { display: block; color: #bdd4e4; margin-bottom: .35rem; }
+  .edit-grid input, .edit-grid select { width: 100%; padding: .7rem; border: 1px solid #51829c; border-radius: 9px; background: #081d2e; color: #fff; font: inherit; }
+  .notice { border: 1px solid #368968; border-radius: 9px; padding: .8rem; color: #a9f2cc; }
+  .errors { border: 1px solid #98505a; border-radius: 9px; padding: .8rem 1.4rem; color: #f6bec4; }
   @media (max-width: 600px) { .shell { width: min(100% - 1.2rem, 1200px); } .panel { padding: .9rem; } .account { width: 100%; justify-content: space-between; } }
 </style></head><body><div class="shell">
   <header class="top"><div><div class="brand">Metro Secure</div><h1>Metro Secure Admin</h1></div>
@@ -172,8 +178,9 @@ function renderLayout(res, title, email, section, formToken, content) {
     <a href="/admin/users"${section === "users" ? ' class="current" aria-current="page"' : ""}>Users</a>
     <a href="/admin/orders"${section === "orders" ? ' class="current" aria-current="page"' : ""}>Orders</a>
     <a href="/admin/payments"${section === "payments" ? ' class="current" aria-current="page"' : ""}>Payments</a>
-    <span class="disabled">VPN Keys</span>
-    <span class="disabled">Packages</span><span class="disabled">Usage</span><span class="disabled">Settings</span>
+    <a href="/admin/vpn-keys"${section === "vpn-keys" ? ' class="current" aria-current="page"' : ""}>VPN Keys</a>
+    <a href="/admin/packages"${section === "packages" ? ' class="current" aria-current="page"' : ""}>Packages</a>
+    <span class="disabled">Usage</span><span class="disabled">Settings</span>
   </nav>
   <main>${content}</main>
 </div></body></html>`);
@@ -342,7 +349,81 @@ function renderPayments(res, email, formToken, data) {
     ${pager("/admin/payments", data, data.filter)}`);
 }
 
+function vpnKeyState(subscription, now) {
+  if (subscription.revokedAt) return { label: "Revoked", className: "inactive" };
+  if (!subscription.vpnKeyId) return { label: "Missing", className: "inactive" };
+  return subscriptionState(subscription, now);
+}
+
+function renderVpnKeys(res, email, formToken, data) {
+  const filters = [["all", "All"], ["active", "Active"], ["expired", "Expired"],
+    ["revoked", "Revoked"], ["missing", "Missing"]];
+  const cards = data.subscriptions.map((subscription) => {
+    const customer = subscription.customer;
+    const state = vpnKeyState(subscription, data.now);
+    return `<article class="user-card"><div class="user-head"><h3>${keyId(subscription.vpnKeyId)}</h3>${badge(state.label, state.className)}</div>
+      <dl>${field("Customer", text(customerName(customer)))}${field("Telegram ID", text(customer?.telegramId))}
+        ${field("Username", customer?.username ? text(`@${customer.username}`) : "-")}
+        ${field("First name", text(customer?.firstName))}
+        ${field("Package", text(subscription.package?.name || subscription.plan))}
+        ${field("Subscription status", badge(subscription.status))}
+        ${field("Data used", formatGb(subscription.dataUsedGb))}${field("Data limit", formatGb(subscription.dataLimitGb))}
+        ${field("Started at", formatDate(subscription.startedAt))}${field("Expires at", formatDate(subscription.expiresAt))}
+        ${field("Revoked at", formatDate(subscription.revokedAt))}
+        ${field("Key created at", formatDate(subscription.vpnKeyCreatedAt))}
+      </dl></article>`;
+  }).join("");
+  return renderLayout(res, "VPN Keys", email, "vpn-keys", formToken, `
+    <h2>VPN Keys</h2><p class="intro">${formatNumber(data.count)} subscription${data.count === 1 ? "" : "s"} · Read-only database view</p>
+    <form class="toolbar" method="get" action="/admin/vpn-keys"><div><label for="key-search">Key ID, Telegram ID, username, or first name</label>
+      <input id="key-search" name="q" value="${escapeHtml(data.q)}" maxlength="100" placeholder="Search VPN keys"></div>
+      ${data.status !== "all" ? `<input type="hidden" name="status" value="${escapeHtml(data.status)}">` : ""}<button type="submit">Search</button></form>
+    <div class="filters" aria-label="VPN key status">${filters.map(([status, label]) =>
+      `<a href="${escapeHtml(listUrl("/admin/vpn-keys", { q: data.q, status, page: 1 }))}"${data.status === status ? ' class="selected" aria-current="page"' : ""}>${label}</a>`).join("")}</div>
+    <div class="users">${cards || '<p class="empty">No subscriptions match this search.</p>'}</div>
+    ${pager("/admin/vpn-keys", data, data.status)}`);
+}
+
+function renderPackages(res, email, formToken, data, saved = false) {
+  const cards = data.packages.map((pkg) => `<article class="user-card">
+    <div class="user-head"><h3>${text(pkg.name)}</h3>${badge(pkg.active ? "Active" : "Inactive", pkg.active ? "active" : "inactive")}</div>
+    <dl>${field("Package ID", text(pkg.id))}${field("Data limit", formatGb(pkg.dataLimitGb))}
+      ${field("Duration", `${formatNumber(pkg.durationDays)} days`)}${field("Price", `${formatNumber(pkg.priceMmk, 2)} MMK`)}
+      ${field("Sort order", formatNumber(pkg.sortOrder))}${field("Created at", formatDate(pkg.createdAt))}
+      ${field("Updated at", formatDate(pkg.updatedAt))}
+    </dl><div class="actions"><a href="/admin/packages/${pkg.id}/edit">Edit package</a></div></article>`).join("");
+  return renderLayout(res, "Packages", email, "packages", formToken, `
+    <h2>Packages</h2><p class="intro">${formatNumber(data.count)} package${data.count === 1 ? "" : "s"}</p>
+    ${saved ? '<p class="notice" role="status">Package changes saved.</p>' : ""}
+    <div class="users">${cards || '<p class="empty">No packages found.</p>'}</div>
+    ${pager("/admin/packages", data, "all")}`);
+}
+
+function renderPackageEdit(res, email, formToken, pkg, errors = [], entered = pkg) {
+  const input = (name) => escapeHtml(entered?.[name] ?? "");
+  const active = String(entered?.active);
+  return renderLayout(res, "Edit package", email, "packages", formToken, `
+    <p><a href="/admin/packages">← Back to packages</a></p><h2>Edit package ${text(pkg.name)}</h2>
+    <p class="intro">Changes to this package are used for future purchases. Existing order and subscription records are not rewritten.</p>
+    ${errors.length ? `<ul class="errors" role="alert">${errors.map((error) => `<li>${escapeHtml(error)}</li>`).join("")}</ul>` : ""}
+    <section class="panel"><form method="post" action="/admin/packages/${pkg.id}/edit">
+      <input type="hidden" name="_csrf" value="${escapeHtml(formToken)}">
+      <div class="edit-grid">
+        <div><label for="name">Name</label><input id="name" name="name" value="${input("name")}" maxlength="100" required></div>
+        <div><label for="dataLimitGb">Data limit (GB)</label><input id="dataLimitGb" name="dataLimitGb" value="${input("dataLimitGb")}" inputmode="decimal" required></div>
+        <div><label for="durationDays">Duration (days)</label><input id="durationDays" name="durationDays" value="${input("durationDays")}" inputmode="numeric" required></div>
+        <div><label for="priceMmk">Price (MMK)</label><input id="priceMmk" name="priceMmk" value="${input("priceMmk")}" inputmode="decimal" required></div>
+        <div><label for="sortOrder">Sort order</label><input id="sortOrder" name="sortOrder" value="${input("sortOrder")}" inputmode="numeric" required></div>
+        <div><label for="active">Availability</label><select id="active" name="active" required>
+          <option value="true"${active === "true" ? " selected" : ""}>Active</option>
+          <option value="false"${active === "false" ? " selected" : ""}>Inactive</option>
+        </select></div>
+      </div><div class="actions"><button type="submit">Save Changes</button></div>
+    </form></section>`);
+}
+
 module.exports = {
   renderDashboard, renderUsers, renderUserDetail,
   renderOrders, renderOrderDetail, renderPayments,
+  renderVpnKeys, renderPackages, renderPackageEdit,
 };

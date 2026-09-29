@@ -5,10 +5,12 @@ const { getDatabaseClient } = require("./db");
 const {
   getDashboardData, getUsersData, getUserDetail,
   getOrdersData, getOrderDetail, getOrderProof, getPaymentsData,
+  getVpnKeysData, getPackagesData, getPackageDetail, validatePackageInput, updatePackage,
 } = require("./admin-data");
 const {
   renderDashboard, renderUsers, renderUserDetail,
   renderOrders, renderOrderDetail, renderPayments,
+  renderVpnKeys, renderPackages, renderPackageEdit,
 } = require("./admin-ui");
 const { loadTelegramPaymentProof } = require("./admin-proof");
 
@@ -299,6 +301,7 @@ function createAdminRouter(config) {
   const dataApi = config.dataApi || {
     getDashboardData, getUsersData, getUserDetail,
     getOrdersData, getOrderDetail, getOrderProof, getPaymentsData,
+    getVpnKeysData, getPackagesData, getPackageDetail, validatePackageInput, updatePackage,
   };
   const proofLoader = config.proofLoader || loadTelegramPaymentProof;
 
@@ -393,6 +396,57 @@ function createAdminRouter(config) {
     } catch {
       console.error("Admin payment proof fetch failed.");
       return res.status(502).type("text").send("Payment proof is temporarily unavailable.");
+    }
+  });
+
+  router.get("/vpn-keys", async (req, res) => {
+    try {
+      const data = await dataApi.getVpnKeysData(getClient(), req.query);
+      return renderVpnKeys(res, config.email, issueFormToken(res), data);
+    } catch {
+      console.error("Admin VPN keys query failed.");
+      return res.status(503).type("text").send("Admin data is temporarily unavailable.");
+    }
+  });
+
+  router.get("/packages", async (req, res) => {
+    try {
+      const data = await dataApi.getPackagesData(getClient(), req.query);
+      return renderPackages(res, config.email, issueFormToken(res), data, req.query.saved === "1");
+    } catch {
+      console.error("Admin packages query failed.");
+      return res.status(503).type("text").send("Admin data is temporarily unavailable.");
+    }
+  });
+
+  router.get("/packages/:id/edit", async (req, res) => {
+    if (!validOrderId(req.params.id)) return res.sendStatus(404);
+    try {
+      const pkg = await dataApi.getPackageDetail(getClient(), Number(req.params.id));
+      if (!pkg) return res.sendStatus(404);
+      return renderPackageEdit(res, config.email, issueFormToken(res), pkg);
+    } catch {
+      console.error("Admin package edit query failed.");
+      return res.status(503).type("text").send("Admin data is temporarily unavailable.");
+    }
+  });
+
+  router.post("/packages/:id/edit", express.urlencoded({ extended: false, limit: "4kb" }), async (req, res) => {
+    if (!validFormRequest(req) || !hasValidFormToken(req)) return res.sendStatus(403);
+    if (!validOrderId(req.params.id)) return res.sendStatus(404);
+    try {
+      const id = Number(req.params.id);
+      const pkg = await dataApi.getPackageDetail(getClient(), id);
+      if (!pkg) return res.sendStatus(404);
+      const { errors, values } = dataApi.validatePackageInput(req.body);
+      if (errors.length) {
+        return renderPackageEdit(res.status(400), config.email, issueFormToken(res), pkg, errors, req.body);
+      }
+      await dataApi.updatePackage(getClient(), id, values);
+      return res.redirect(303, "/admin/packages?saved=1");
+    } catch {
+      console.error("Admin package update failed.");
+      return res.status(503).type("text").send("Package changes could not be saved.");
     }
   });
 
