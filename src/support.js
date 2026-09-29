@@ -75,7 +75,7 @@ function createSupportService({ db, bot, adminTelegramId, isAdmin, helpKeyboard 
           .update({ customerInputActive: true, updatedAt: Temporal.Now.instant() });
       }
       await ctx.reply(
-        "🎧 Metro Secure Support\n\nမက်ဆေ့ချ်ကို လက်ခံရရှိပါပြီ။\nSupport team က အမြန်ဆုံး ပြန်လည်ဖြေကြားပေးပါမယ်။\n\nဒီ chat ထဲမှာပဲ ဆက်လက်မေးမြန်းနိုင်ပါတယ်။",
+        "🎧 Metro Secure Support\n\nမေးလိုတာကို အောက်မှာ တိုက်ရိုက်ရေးပို့ပါ။\nScreenshot / photo လည်း ပို့နိုင်ပါတယ်။\n\nSupport team က ဒီ chat ထဲမှာပဲ ပြန်လည်ဖြေကြားပေးပါမယ်။",
         supportPromptKeyboard()
       );
     } catch {
@@ -130,6 +130,15 @@ function createSupportService({ db, bot, adminTelegramId, isAdmin, helpKeyboard 
       await bot.telegram.sendMessage(adminTelegramId,
         `${ticketNumber(ticket)} (caption continued)\n${content.slice(available)}`);
     }
+  }
+
+  async function acknowledgeFirstMessage(ctx, ticket) {
+    const now = Temporal.Now.instant();
+    const claimed = await db.public.SupportTicket
+      .where({ id: ticket.id, status: "OPEN" })
+      .where((row) => row.acknowledgedAt.isNull())
+      .updateAll({ acknowledgedAt: now, updatedAt: now });
+    if (claimed.length) await ctx.reply(CUSTOMER_ACK);
   }
 
   async function selectedAdminTicket() {
@@ -212,7 +221,7 @@ function createSupportService({ db, bot, adminTelegramId, isAdmin, helpKeyboard 
     await relayCustomerText(target.customer, target.ticket, ctx.message.text);
     await db.public.SupportTicket.where({ id: target.ticket.id, status: "OPEN" })
       .update({ updatedAt: Temporal.Now.instant() });
-    await ctx.reply(CUSTOMER_ACK);
+    await acknowledgeFirstMessage(ctx, target.ticket);
     return true;
   }
 
@@ -243,7 +252,7 @@ function createSupportService({ db, bot, adminTelegramId, isAdmin, helpKeyboard 
     await relayCustomerPhoto(target.customer, target.ticket, photo, ctx.message.caption);
     await db.public.SupportTicket.where({ id: target.ticket.id, status: "OPEN" })
       .update({ updatedAt: Temporal.Now.instant() });
-    await ctx.reply(CUSTOMER_ACK);
+    await acknowledgeFirstMessage(ctx, target.ticket);
     return true;
   }
 

@@ -10,11 +10,11 @@ const { updatePackage } = require("./admin-data");
 
 // Exercise the real registered handlers using synthetic data, without polling
 // Telegram or connecting to production PostgreSQL / Outline.
-async function loadBot() {
+async function loadBot(existingTables = null) {
   const file = path.join(__dirname, "bot.js");
   const source = readFileSync(file, "utf8");
   const localRequire = createRequire(file);
-  const tables = {
+  const tables = existingTables || {
     Customer: [], Order: [], Subscription: [], SupportTicket: [],
     Package: [
       { id: 7, name: "Basic", dataLimitGb: 50, durationDays: 30, priceMmk: "3200", active: true, sortOrder: 1 },
@@ -24,6 +24,11 @@ async function loadBot() {
     ],
   };
   const matches = (row, filter) => Object.entries(filter).every(([key, value]) => row[key] === value);
+  const predicateFor = (filter) => typeof filter === "function"
+    ? filter(new Proxy({}, { get: (_target, field) => ({
+      isNull: () => (row) => row[field] == null,
+    }) }))
+    : (row) => matches(row, filter);
   const client = { public: {} };
   for (const [name, rows] of Object.entries(tables)) {
     const create = (data) => {
@@ -40,8 +45,10 @@ async function loadBot() {
         return { ...create(data) };
       },
       where(filter) {
-        const selected = () => rows.filter((row) => matches(row, filter));
-        return {
+        const predicates = [predicateFor(filter)];
+        const selected = () => rows.filter((row) => predicates.every((predicate) => predicate(row)));
+        const query = {
+          where(nextFilter) { predicates.push(predicateFor(nextFilter)); return this; },
           async first() { const row = selected()[0]; return row ? { ...row } : null; },
           async all() { return selected().map((row) => ({ ...row })); },
           orderBy() { return this; },
@@ -55,6 +62,7 @@ async function loadBot() {
             return selected().map((row) => { Object.assign(row, data); return { ...row }; });
           },
         };
+        return query;
       },
     };
   }
@@ -235,7 +243,7 @@ test("support opens persistent per-customer tickets and relays text and photos t
   const bot = await loadBot();
   const first = await bot.action("contact_support", 123);
   const second = await bot.action("contact_support", 456);
-  const startText = "🎧 Metro Secure Support\n\nမက်ဆေ့ချ်ကို လက်ခံရရှိပါပြီ။\nSupport team က အမြန်ဆုံး ပြန်လည်ဖြေကြားပေးပါမယ်။\n\nဒီ chat ထဲမှာပဲ ဆက်လက်မေးမြန်းနိုင်ပါတယ်။";
+  const startText = "🎧 Metro Secure Support\n\nမေးလိုတာကို အောက်မှာ တိုက်ရိုက်ရေးပို့ပါ။\nScreenshot / photo လည်း ပို့နိုင်ပါတယ်။\n\nSupport team က ဒီ chat ထဲမှာပဲ ပြန်လည်ဖြေကြားပေးပါမယ်။";
   assert.equal(first.replies.length, 1);
   assert.equal(first.replies[0][0], startText);
   assert.equal(second.replies[0][0], startText);
@@ -252,24 +260,51 @@ test("support opens persistent per-customer tickets and relays text and photos t
   assert.match(bot.sent.at(-1).args[1], /SUP-0001[\s\S]*Telegram ID: 123[\s\S]*Please help/);
   assert.equal(bot.sent.at(-1).args[2].reply_markup.inline_keyboard[0][0].callback_data,
     "support_reply_1");
+  assert.ok(bot.tables.SupportTicket[0].acknowledgedAt);
   const sensitiveText = bot.ctx(123);
   sensitiveText.message = { text: "Please inspect ss://private-key-data" };
   await bot.events.text(sensitiveText);
+  assert.equal(sensitiveText.replies.length, 0);
   assert.equal(bot.sent.at(-1).args[1].includes("ss://private-key-data"), false);
   const photo = bot.ctx(456);
   photo.message = { photo: [{ file_id: "support-image" }], caption: "Screenshot" };
   await bot.events.photo(photo);
   assert.equal(photo.replies[0][0], textMessage.replies[0][0]);
   assertNoCustomerTicketDetails(photo.replies[0][0]);
+  assert.ok(bot.tables.SupportTicket[1].acknowledgedAt);
   assert.equal(bot.sent.at(-1).type, "photo");
   assert.equal(bot.sent.at(-1).args[0], "999");
   assert.equal(bot.sent.at(-1).args[1], "support-image");
   assert.match(bot.sent.at(-1).args[2].caption, /SUP-0002[\s\S]*Screenshot/);
+  const laterPhoto = bot.ctx(456);
+  laterPhoto.message = { photo: [{ file_id: "later-support-image" }] };
+  await bot.events.photo(laterPhoto);
+  assert.equal(laterPhoto.replies.length, 0);
+  assert.equal(bot.sent.at(-1).args[1], "later-support-image");
+  const restarted = await loadBot(bot.tables);
+  const afterRestart = restarted.ctx(123);
+  afterRestart.message = { text: "After restart" };
+  await restarted.events.text(afterRestart);
+  assert.equal(afterRestart.replies.length, 0);
+  assert.match(restarted.sent.at(-1).args[1], /SUP-0001[\s\S]*After restart/);
   assert.equal(bot.tables.Order.length, 0);
   const repeat = await bot.action("contact_support", 123);
   assert.equal(repeat.replies[0][0], startText);
   assertNoCustomerTicketDetails(repeat.replies[0][0]);
   assert.equal(bot.tables.SupportTicket.length, 2);
+});
+
+test("simultaneous first support messages claim only one acknowledgement", async () => {
+  const bot = await loadBot();
+  await bot.action("contact_support");
+  const textMessage = bot.ctx();
+  textMessage.message = { text: "First question" };
+  const photoMessage = bot.ctx();
+  photoMessage.message = { photo: [{ file_id: "first-image" }] };
+  await Promise.all([bot.events.text(textMessage), bot.events.photo(photoMessage)]);
+  assert.equal(textMessage.replies.length + photoMessage.replies.length, 1);
+  assert.equal(bot.sent.length, 2);
+  assert.ok(bot.tables.SupportTicket[0].acknowledgedAt);
 });
 
 test("admin reply and close use ticket ownership and keep admin identity inside the bot", async () => {
@@ -309,6 +344,11 @@ test("admin reply and close use ticket ownership and keep admin identity inside 
   const reopened = await bot.action("contact_support", 456);
   assertNoCustomerTicketDetails(reopened.replies[0][0]);
   assert.equal(bot.tables.SupportTicket[2].id, 3);
+  const newTicketMessage = bot.ctx(456);
+  newTicketMessage.message = { text: "New question" };
+  await bot.events.text(newTicketMessage);
+  assert.equal(newTicketMessage.replies.length, 1);
+  assert.match(bot.sent.at(-1).args[1], /SUP-0003[\s\S]*New question/);
 });
 
 test("support mode keeps screenshots separate from payment proof and Cancel returns to payment mode", async () => {
@@ -335,6 +375,10 @@ test("support mode keeps screenshots separate from payment proof and Cancel retu
   await bot.action("contact_support");
   assert.equal(bot.tables.SupportTicket[0].customerInputActive, true);
   assert.equal(bot.tables.SupportTicket.length, 1);
+  const afterResume = bot.ctx();
+  afterResume.message = { text: "Another question" };
+  await bot.events.text(afterResume);
+  assert.equal(afterResume.replies.length, 0);
   await bot.action("payment_wallet_1");
   assert.equal(bot.tables.SupportTicket[0].customerInputActive, false);
 });

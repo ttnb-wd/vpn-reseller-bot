@@ -34,7 +34,7 @@ import type {
 } from '@prisma/orm-postgres/contract/types';
 
 export type StorageHash =
-  StorageHashBase<'d77fee1ef5dbd966402094a50e9a5c8ddd30c5ed600725be0de8f3f49fa487d0'>;
+  StorageHashBase<'f2c94b120fa40f02663f6be029f500fa2ea8326350b5f8984b056aa02c63918e'>;
 export type ExecutionHash = ExecutionHashBase<string>;
 export type ProfileHash =
   ProfileHashBase<'3916f444a8a17ad749191acf9e08dad97d1a327b88c2f1d45d12f240296aa8b2'>;
@@ -308,6 +308,7 @@ export type FieldOutputTypes = {
       readonly customerInputActive: CodecTypes['pg/bool@1']['output'];
       readonly adminReplySelected: CodecTypes['pg/bool@1']['output'];
       readonly adminReplySelectedAt: CodecTypes['pg/timestamptz-temporal@1']['output'] | null;
+      readonly acknowledgedAt: CodecTypes['pg/timestamptz-temporal@1']['output'] | null;
       readonly createdAt: CodecTypes['pg/timestamptz-temporal@1']['output'];
       readonly updatedAt: CodecTypes['pg/timestamptz-temporal@1']['output'];
       readonly closedAt: CodecTypes['pg/timestamptz-temporal@1']['output'] | null;
@@ -383,6 +384,7 @@ export type FieldInputTypes = {
       readonly customerInputActive: CodecTypes['pg/bool@1']['input'];
       readonly adminReplySelected: CodecTypes['pg/bool@1']['input'];
       readonly adminReplySelectedAt: CodecTypes['pg/timestamptz-temporal@1']['input'] | null;
+      readonly acknowledgedAt: CodecTypes['pg/timestamptz-temporal@1']['input'] | null;
       readonly createdAt: CodecTypes['pg/timestamptz-temporal@1']['input'];
       readonly updatedAt: CodecTypes['pg/timestamptz-temporal@1']['input'];
       readonly closedAt: CodecTypes['pg/timestamptz-temporal@1']['input'] | null;
@@ -452,6 +454,7 @@ export type StorageColumnTypes = {
       readonly vpnKeyId: CodecTypes['pg/text@1']['output'] | null;
     };
     readonly supportTicket: {
+      readonly acknowledgedAt: CodecTypes['pg/timestamptz-temporal@1']['output'] | null;
       readonly adminReplySelected: CodecTypes['pg/bool@1']['output'];
       readonly adminReplySelectedAt: CodecTypes['pg/timestamptz-temporal@1']['output'] | null;
       readonly closedAt: CodecTypes['pg/timestamptz-temporal@1']['output'] | null;
@@ -527,6 +530,7 @@ export type StorageColumnInputTypes = {
       readonly vpnKeyId: CodecTypes['pg/text@1']['input'] | null;
     };
     readonly supportTicket: {
+      readonly acknowledgedAt: CodecTypes['pg/timestamptz-temporal@1']['input'] | null;
       readonly adminReplySelected: CodecTypes['pg/bool@1']['input'];
       readonly adminReplySelectedAt: CodecTypes['pg/timestamptz-temporal@1']['input'] | null;
       readonly closedAt: CodecTypes['pg/timestamptz-temporal@1']['input'] | null;
@@ -559,6 +563,7 @@ export namespace Models {
     customerInputActive: CodecTypes['pg/bool@1']['output'];
     adminReplySelected: CodecTypes['pg/bool@1']['output'];
     adminReplySelectedAt: CodecTypes['pg/timestamptz-temporal@1']['output'] | null;
+    acknowledgedAt: CodecTypes['pg/timestamptz-temporal@1']['output'] | null;
     createdAt: CodecTypes['pg/timestamptz-temporal@1']['output'];
     updatedAt: CodecTypes['pg/timestamptz-temporal@1']['output'];
     closedAt: CodecTypes['pg/timestamptz-temporal@1']['output'] | null;
@@ -1105,6 +1110,11 @@ type ContractBase = Omit<
                   };
                 };
                 readonly adminReplySelectedAt: {
+                  readonly nativeType: 'timestamptz';
+                  readonly codecId: 'pg/timestamptz-temporal@1';
+                  readonly nullable: true;
+                };
+                readonly acknowledgedAt: {
                   readonly nativeType: 'timestamptz';
                   readonly codecId: 'pg/timestamptz-temporal@1';
                   readonly nullable: true;
@@ -1668,6 +1678,13 @@ type ContractBase = Omit<
                   readonly codecId: 'pg/timestamptz-temporal@1';
                 };
               };
+              readonly acknowledgedAt: {
+                readonly nullable: true;
+                readonly type: {
+                  readonly kind: 'scalar';
+                  readonly codecId: 'pg/timestamptz-temporal@1';
+                };
+              };
               readonly createdAt: {
                 readonly nullable: false;
                 readonly type: {
@@ -1714,6 +1731,7 @@ type ContractBase = Omit<
                 readonly customerInputActive: { readonly column: 'customerInputActive' };
                 readonly adminReplySelected: { readonly column: 'adminReplySelected' };
                 readonly adminReplySelectedAt: { readonly column: 'adminReplySelectedAt' };
+                readonly acknowledgedAt: { readonly column: 'acknowledgedAt' };
                 readonly createdAt: { readonly column: 'createdAt' };
                 readonly updatedAt: { readonly column: 'updatedAt' };
                 readonly closedAt: { readonly column: 'closedAt' };

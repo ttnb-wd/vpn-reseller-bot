@@ -739,6 +739,13 @@
           },
           "SupportTicket": {
             "fields": {
+              "acknowledgedAt": {
+                "nullable": true,
+                "type": {
+                  "codecId": "pg/timestamptz-temporal@1",
+                  "kind": "scalar"
+                }
+              },
               "adminReplySelected": {
                 "nullable": false,
                 "type": {
@@ -823,6 +830,9 @@
             },
             "storage": {
               "fields": {
+                "acknowledgedAt": {
+                  "column": "acknowledgedAt"
+                },
                 "adminReplySelected": {
                   "column": "adminReplySelected"
                 },
@@ -1344,6 +1354,11 @@
             },
             "supportTicket": {
               "columns": {
+                "acknowledgedAt": {
+                  "codecId": "pg/timestamptz-temporal@1",
+                  "nativeType": "timestamptz",
+                  "nullable": true
+                },
                 "adminReplySelected": {
                   "codecId": "pg/bool@1",
                   "default": {
@@ -1455,7 +1470,7 @@
         "kind": "postgres-schema"
       }
     },
-    "storageHash": "d77fee1ef5dbd966402094a50e9a5c8ddd30c5ed600725be0de8f3f49fa487d0"
+    "storageHash": "f2c94b120fa40f02663f6be029f500fa2ea8326350b5f8984b056aa02c63918e"
   },
   "capabilities": {
     "postgres": {
