@@ -113,7 +113,8 @@ async function getUsersData(client, params = {}) {
   const status = ["active", "expired", "inactive"].includes(params.status) ? params.status : "all";
   const query = await customerQuery(client, q, status, now);
   const { count } = await query.aggregate((aggregate) => ({ count: aggregate.count() }));
-  const totalPages = Math.max(1, Math.ceil(count / USERS_PER_PAGE));
+  const pageSize = params.pageSize === 7 ? 7 : USERS_PER_PAGE;
+  const totalPages = Math.max(1, Math.ceil(count / pageSize));
   const page = Math.min(parsePage(params.page), totalPages);
   const customers = await query
     .select("id", "telegramId", "username", "firstName", "createdAt")
@@ -122,8 +123,8 @@ async function getUsersData(client, params = {}) {
       .include("package", (pkg) => pkg.select("name")))
     .include("orders", (orders) => orders.count())
     .orderBy([(customer) => customer.createdAt.desc(), (customer) => customer.id.desc()])
-    .offset((page - 1) * USERS_PER_PAGE)
-    .limit(USERS_PER_PAGE)
+    .offset((page - 1) * pageSize)
+    .limit(pageSize)
     .all();
 
   return { customers, count, page, totalPages, q, status, now };
@@ -161,7 +162,8 @@ async function getOrdersData(client, params = {}) {
   }
   if (status !== "all") query = query.where({ status });
   const { count } = await query.aggregate((aggregate) => ({ count: aggregate.count() }));
-  const totalPages = Math.max(1, Math.ceil(count / ORDERS_PER_PAGE));
+  const pageSize = params.pageSize === 7 ? 7 : ORDERS_PER_PAGE;
+  const totalPages = Math.max(1, Math.ceil(count / pageSize));
   const page = Math.min(parsePage(params.page), totalPages);
   const orders = await query
     .select("id", "orderNumber", "plan", "durationMonths", "price", "paymentMethod",
@@ -169,8 +171,8 @@ async function getOrdersData(client, params = {}) {
     .include("customer", (customer) => customer.select("telegramId", "username", "firstName"))
     .include("package", (pkg) => pkg.select("name"))
     .orderBy([(order) => order.createdAt.desc(), (order) => order.id.desc()])
-    .offset((page - 1) * ORDERS_PER_PAGE)
-    .limit(ORDERS_PER_PAGE)
+    .offset((page - 1) * pageSize)
+    .limit(pageSize)
     .all();
   return { orders, count, page, totalPages, q, status };
 }
@@ -206,7 +208,8 @@ async function getPaymentsData(client, params = {}) {
     query = query.where({ status: "PAYMENT_REJECTED" });
   }
   const { count } = await query.aggregate((aggregate) => ({ count: aggregate.count() }));
-  const totalPages = Math.max(1, Math.ceil(count / ORDERS_PER_PAGE));
+  const pageSize = params.pageSize === 7 ? 7 : ORDERS_PER_PAGE;
+  const totalPages = Math.max(1, Math.ceil(count / pageSize));
   const page = Math.min(parsePage(params.page), totalPages);
   const orders = await query
     .select("id", "orderNumber", "plan", "price", "paymentMethod", "paymentReference",
@@ -214,8 +217,8 @@ async function getPaymentsData(client, params = {}) {
     .include("customer", (customer) => customer.select("telegramId", "username", "firstName"))
     .include("package", (pkg) => pkg.select("name"))
     .orderBy([(order) => order.createdAt.desc(), (order) => order.id.desc()])
-    .offset((page - 1) * ORDERS_PER_PAGE)
-    .limit(ORDERS_PER_PAGE)
+    .offset((page - 1) * pageSize)
+    .limit(pageSize)
     .all();
   return { orders, count, page, totalPages, filter };
 }
@@ -269,14 +272,15 @@ async function getVpnKeysData(client, params = {}) {
 async function getPackagesData(client, params = {}) {
   const query = client.public.Package;
   const { count } = await query.aggregate((aggregate) => ({ count: aggregate.count() }));
-  const totalPages = Math.max(1, Math.ceil(count / PACKAGES_PER_PAGE));
+  const pageSize = params.pageSize === 7 ? 7 : PACKAGES_PER_PAGE;
+  const totalPages = Math.max(1, Math.ceil(count / pageSize));
   const page = Math.min(parsePage(params.page), totalPages);
   const packages = await query
     .select("id", "name", "dataLimitGb", "durationDays", "priceMmk", "active",
       "sortOrder", "createdAt", "updatedAt")
     .orderBy([(pkg) => pkg.sortOrder.asc(), (pkg) => pkg.id.asc()])
-    .offset((page - 1) * PACKAGES_PER_PAGE)
-    .limit(PACKAGES_PER_PAGE)
+    .offset((page - 1) * pageSize)
+    .limit(pageSize)
     .all();
   return { packages, count, page, totalPages };
 }

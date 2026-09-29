@@ -11,6 +11,8 @@ const { createDatabase } = require("./db");
 const { PAYMENT_METHODS } = require("./payment-config");
 const { validateAdminConfig, createAdminRouter } = require("./admin-auth");
 const { createSupportService } = require("./support");
+const { createTelegramAdmin } = require("./telegram-admin");
+const { buildCustomerMenu } = require("./customer-menu");
 
 const {
   createAccessKey,
@@ -373,7 +375,7 @@ function logStartupFailure(error) {
 }
 
 function isAdmin(ctx) {
-  return String(ctx.from?.id) === ADMIN_TELEGRAM_ID;
+  return ctx.from?.id != null && String(ctx.from.id) === ADMIN_TELEGRAM_ID;
 }
 
 function formatInstant(instant) {
@@ -441,7 +443,7 @@ async function getUsableVpnSubscription(ctx) {
   if (!customer || !subscription) {
     await ctx.reply(
       "🌐 My VPN\n\nVPN package မရှိသေးပါ။ Buy VPN ကိုနှိပ်ပြီး package ရွေးပါ။\nငွေပေးချေပြီး Admin အတည်ပြုရင် စသုံးနိုင်ပါမယ်။",
-      buildMainMenu()
+      buildMainMenu(ctx)
     );
     return null;
   }
@@ -489,7 +491,7 @@ async function sendExistingVpnKey(ctx, actionTitle) {
   if (!customer || !subscription) {
     await ctx.reply(
       "🌐 My VPN\n\nVPN package မရှိသေးပါ။ Buy VPN ကိုနှိပ်ပြီး package ရွေးပါ။\nငွေပေးချေပြီး Admin အတည်ပြုရင် စသုံးနိုင်ပါမယ်။",
-      buildMainMenu()
+      buildMainMenu(ctx)
     );
     return;
   }
@@ -544,12 +546,10 @@ function formatOrderStatus(status) {
 }
 
 // Keep text and keyboards separate so these screens can later use photo captions.
-function buildMainMenu() {
-  return Markup.inlineKeyboard([
-    [Markup.button.callback("🛡️ Buy VPN", "buy_vpn"), Markup.button.callback("🌐 My VPN", "my_vpn")],
-    [Markup.button.callback("🗂️ My Orders", "my_orders"), Markup.button.callback("🛰️ Setup VPN", "setup_vpn")],
-    [Markup.button.callback("🎧 Help", "help")],
-  ]);
+let telegramAdmin;
+function buildMainMenu(ctx) {
+  return buildCustomerMenu(Boolean(ctx && isAdmin(ctx) && ctx.chat?.type === "private"),
+    telegramAdmin?.customerAdminRows());
 }
 
 function compactButtonRows(buttons) {
@@ -941,7 +941,7 @@ async function sendMainMenu(ctx) {
       "VPN စသုံးဖို့ အဆင့် ၃ ဆင့်ပဲ လိုပါတယ်။\n" +
       "1️⃣ Package ရွေးပါ\n2️⃣ ငွေပေးချေပြီး screenshot ပို့ပါ\n3️⃣ Admin အတည်ပြုပြီးရင် VPN Setup လုပ်ပါ\n\n" +
       "စဝယ်ဖို့ Buy VPN ကိုနှိပ်ပါ။ Package အသေးစိတ်ကို အရင်ကြည့်နိုင်ပါတယ်။\nဝယ်ပြီးသားဆိုရင် My VPN မှာ စစ်ကြည့်ပါ။",
-    buildMainMenu()
+    buildMainMenu(ctx)
   );
 }
 
@@ -1042,7 +1042,7 @@ async function createPackageOrder(
     // The existing unique orderNumber constraint makes concurrent presses atomic.
     const confirmation = ctx.callbackQuery?.message;
     if (!confirmation?.chat?.id || !confirmation.message_id) {
-      return await ctx.reply("မှာယူမှုကို ပြန်စဖို့ Buy VPN ကိုနှိပ်ပြီး package ပြန်ရွေးပါ။", buildMainMenu());
+      return await ctx.reply("မှာယူမှုကို ပြန်စဖို့ Buy VPN ကိုနှိပ်ပြီး package ပြန်ရွေးပါ။", buildMainMenu(ctx));
     }
     const purchaseId = crypto.createHash("sha256").update(JSON.stringify([
       String(ctx.from.id), confirmation.chat.id, confirmation.message_id,
@@ -1061,7 +1061,7 @@ async function createPackageOrder(
     if (order.status !== "PENDING_PAYMENT") {
       await ctx.reply(
         `🗂️ မှာယူမှု: ${order.orderNumber}\nအခြေအနေ: ${formatOrderStatus(order.status)}\n\nဒီမှာယူမှုကို ထပ်အတည်ပြုစရာ မလိုပါ။ အသေးစိတ်ကြည့်ဖို့ My Orders ကိုနှိပ်ပါ။`,
-        buildMainMenu()
+        buildMainMenu(ctx)
       );
       return order;
     }
@@ -1117,6 +1117,8 @@ async function startBot() {
     db, bot, adminTelegramId: ADMIN_TELEGRAM_ID, isAdmin,
     helpKeyboard: buildHelpKeyboard,
   });
+  telegramAdmin = createTelegramAdmin({ bot, db, adminTelegramId: ADMIN_TELEGRAM_ID,
+    supportService });
 
   // =========================
   // START
@@ -1146,7 +1148,7 @@ async function startBot() {
       if (!customer || !subscription) {
         return await ctx.reply(
           "🌐 My VPN\n\nVPN package မရှိသေးပါ။ Buy VPN ကိုနှိပ်ပြီး package ရွေးပါ။\nငွေပေးချေပြီး Admin အတည်ပြုရင် စသုံးနိုင်ပါမယ်။",
-          buildMainMenu()
+          buildMainMenu(ctx)
         );
       }
 
@@ -1548,7 +1550,10 @@ async function startBot() {
       await ctx.reply("Main Menu ကို မဖော်ပြနိုင်သေးပါ။ ခဏနေ ပြန်နှိပ်ပါ။");
     }
   });
-  bot.action(/^support_reply_(\d+)$/, supportService.selectReply);
+  bot.action(/^support_reply_(\d+)$/, async (ctx) => {
+    if (isAdmin(ctx)) telegramAdmin.clearInput();
+    return supportService.selectReply(ctx);
+  });
   bot.action(/^support_close_(\d+)$/, supportService.close);
 
   bot.action("payment_help", async (ctx) => {
@@ -1829,6 +1834,7 @@ async function startBot() {
 
   bot.on("text", async (ctx) => {
     try {
+      if (await telegramAdmin.handleText(ctx)) return;
       await supportService.handleText(ctx);
     } catch {
       console.error("Support text relay failed.");
@@ -2617,7 +2623,7 @@ async function startBot() {
 
         await ctx.reply(
           `🗂️ မှာယူမှု ပယ်ဖျက်ပြီးပါပြီ\n\nမှာယူမှု: ${order.orderNumber}\n\nအသစ်ဝယ်ချင်ရင် Buy VPN ကိုနှိပ်ပြီး package ပြန်ရွေးပါ။\nငွေလွှဲပြီးသားဆိုရင် Help မှ ဆက်သွယ်ပါ။`,
-          buildMainMenu()
+          buildMainMenu(ctx)
         );
       } catch (error) {
         console.error("Cancel order failed.");
@@ -2650,7 +2656,7 @@ async function startBot() {
 
         if (!customer) {
           return await ctx.reply(
-            "🗂️ My Orders\n\nမှာယူထားတာ မရှိသေးပါ။\nBuy VPN ကိုနှိပ်ပြီး package ရွေးပါ။ အတည်ပြုပြီးတဲ့ မှာယူမှုတွေကို ဒီနေရာမှာ ပြန်ကြည့်နိုင်ပါတယ်။", buildMainMenu()
+            "🗂️ My Orders\n\nမှာယူထားတာ မရှိသေးပါ။\nBuy VPN ကိုနှိပ်ပြီး package ရွေးပါ။ အတည်ပြုပြီးတဲ့ မှာယူမှုတွေကို ဒီနေရာမှာ ပြန်ကြည့်နိုင်ပါတယ်။", buildMainMenu(ctx)
           );
         }
 
@@ -2667,7 +2673,7 @@ async function startBot() {
 
         if (!orders.length) {
           return await ctx.reply(
-            "🗂️ My Orders\n\nမှာယူထားတာ မရှိသေးပါ။\nBuy VPN ကိုနှိပ်ပြီး package ရွေးပါ။ အတည်ပြုပြီးတဲ့ မှာယူမှုတွေကို ဒီနေရာမှာ ပြန်ကြည့်နိုင်ပါတယ်။", buildMainMenu()
+            "🗂️ My Orders\n\nမှာယူထားတာ မရှိသေးပါ။\nBuy VPN ကိုနှိပ်ပြီး package ရွေးပါ။ အတည်ပြုပြီးတဲ့ မှာယူမှုတွေကို ဒီနေရာမှာ ပြန်ကြည့်နိုင်ပါတယ်။", buildMainMenu(ctx)
           );
         }
 
@@ -2713,7 +2719,7 @@ async function startBot() {
 
         await ctx.reply(
           message,
-          buildMainMenu()
+          buildMainMenu(ctx)
         );
       } catch (error) {
         console.error("Could not load orders.");

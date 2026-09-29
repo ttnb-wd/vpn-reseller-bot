@@ -265,7 +265,13 @@ function createSupportService({ db, bot, adminTelegramId, isAdmin, helpKeyboard 
         updatedAt: Temporal.Now.instant() });
   }
 
-  return { contact, cancel, selectReply, close, handleText, handlePhoto, pauseCustomer };
+  async function clearAdminReply() {
+    await db.public.SupportTicket.where({ adminReplySelected: true })
+      .updateAll({ adminReplySelected: false, adminReplySelectedAt: null });
+  }
+
+  return { contact, cancel, selectReply, close, handleText, handlePhoto, pauseCustomer,
+    clearAdminReply };
 }
 
 module.exports = { createSupportService, ticketNumber };
