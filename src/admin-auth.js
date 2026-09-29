@@ -2,8 +2,15 @@ const crypto = require("crypto");
 const bcrypt = require("bcryptjs");
 const express = require("express");
 const { getDatabaseClient } = require("./db");
-const { getDashboardData, getUsersData, getUserDetail } = require("./admin-data");
-const { renderDashboard, renderUsers, renderUserDetail } = require("./admin-ui");
+const {
+  getDashboardData, getUsersData, getUserDetail,
+  getOrdersData, getOrderDetail, getOrderProof, getPaymentsData,
+} = require("./admin-data");
+const {
+  renderDashboard, renderUsers, renderUserDetail,
+  renderOrders, renderOrderDetail, renderPayments,
+} = require("./admin-ui");
+const { loadTelegramPaymentProof } = require("./admin-proof");
 
 const COOKIE_NAME = "metro_admin_session";
 const SESSION_MAX_AGE_MS = 30 * 60 * 1000;
@@ -289,7 +296,15 @@ function createAdminRouter(config) {
   router.use(requireAdmin);
 
   const getClient = config.getClient || getDatabaseClient;
-  const dataApi = config.dataApi || { getDashboardData, getUsersData, getUserDetail };
+  const dataApi = config.dataApi || {
+    getDashboardData, getUsersData, getUserDetail,
+    getOrdersData, getOrderDetail, getOrderProof, getPaymentsData,
+  };
+  const proofLoader = config.proofLoader || loadTelegramPaymentProof;
+
+  function validOrderId(value) {
+    return /^[1-9]\d{0,9}$/.test(value) && Number(value) <= 2147483647;
+  }
 
   router.get("/", async (req, res) => {
     try {
@@ -322,6 +337,62 @@ function createAdminRouter(config) {
     } catch {
       console.error("Admin user detail query failed.");
       return res.status(503).type("text").send("Admin data is temporarily unavailable.");
+    }
+  });
+
+  router.get("/orders", async (req, res) => {
+    try {
+      const data = await dataApi.getOrdersData(getClient(), req.query);
+      return renderOrders(res, config.email, issueFormToken(res), data);
+    } catch {
+      console.error("Admin orders query failed.");
+      return res.status(503).type("text").send("Admin data is temporarily unavailable.");
+    }
+  });
+
+  router.get("/orders/:id", async (req, res) => {
+    if (!validOrderId(req.params.id)) return res.sendStatus(404);
+    try {
+      const order = await dataApi.getOrderDetail(getClient(), Number(req.params.id));
+      if (!order) return res.sendStatus(404);
+      return renderOrderDetail(res, config.email, issueFormToken(res), order);
+    } catch {
+      console.error("Admin order detail query failed.");
+      return res.status(503).type("text").send("Admin data is temporarily unavailable.");
+    }
+  });
+
+  router.get("/payments", async (req, res) => {
+    try {
+      const data = await dataApi.getPaymentsData(getClient(), req.query);
+      return renderPayments(res, config.email, issueFormToken(res), data);
+    } catch {
+      console.error("Admin payments query failed.");
+      return res.status(503).type("text").send("Admin data is temporarily unavailable.");
+    }
+  });
+
+  router.get("/payment-proof/:orderId", async (req, res) => {
+    if (!validOrderId(req.params.orderId)) return res.sendStatus(404);
+    try {
+      const order = await dataApi.getOrderProof(getClient(), Number(req.params.orderId));
+      if (!order?.paymentProof) return res.sendStatus(404);
+      const proof = await proofLoader(order.paymentProof);
+      if (!proof) return res.sendStatus(404);
+      const extensions = { "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp" };
+      const extension = extensions[proof.contentType];
+      if (!extension || !Buffer.isBuffer(proof.bytes)) throw new Error("Invalid proof response.");
+      res.set({
+        "Cache-Control": "private, no-store, max-age=0",
+        "Content-Security-Policy": "default-src 'none'; sandbox",
+        "Content-Disposition": `inline; filename="payment-proof.${extension}"`,
+        "Referrer-Policy": "no-referrer",
+        "X-Content-Type-Options": "nosniff",
+      });
+      return res.type(proof.contentType).send(proof.bytes);
+    } catch {
+      console.error("Admin payment proof fetch failed.");
+      return res.status(502).type("text").send("Payment proof is temporarily unavailable.");
     }
   });
 

@@ -107,7 +107,8 @@ test("dashboard and users routes require login; dashboard renders real supplied 
   assert.equal(html.includes("<script>order</script>"), false);
   assert.equal(html.includes("ss://"), false);
   assert.match(html, /href="\/admin\/users"/);
-  assert.doesNotMatch(html, /href="\/admin\/orders"/);
+  assert.match(html, /href="\/admin\/orders"/);
+  assert.match(html, /href="\/admin\/payments"/);
 });
 
 test("users search, status filter, and pagination preserve parameters and escape data", async (t) => {

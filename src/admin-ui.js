@@ -57,6 +57,42 @@ function field(label, value) {
   return `<div><dt>${escapeHtml(label)}</dt><dd>${value}</dd></div>`;
 }
 
+function customerName(customer) {
+  return customer?.username ? `@${customer.username}`
+    : customer?.firstName || customer?.telegramId || "-";
+}
+
+function duration(months) {
+  const count = Number(months);
+  return Number.isInteger(count) && count > 0
+    ? `${formatNumber(count)} month${count === 1 ? "" : "s"}` : "-";
+}
+
+function proofAvailable(order) {
+  return typeof order.paymentProof === "string" && Boolean(order.paymentProof.trim());
+}
+
+function listUrl(path, options) {
+  const params = new URLSearchParams();
+  if (options.q) params.set("q", options.q);
+  if (options.status && (options.status !== "all" || path === "/admin/payments")) {
+    params.set("status", options.status);
+  }
+  if (options.page > 1) params.set("page", String(options.page));
+  const query = params.toString();
+  return `${path}${query ? `?${query}` : ""}`;
+}
+
+function pager(path, data, status) {
+  const options = { q: data.q, status, page: data.page - 1 };
+  const previous = data.page > 1
+    ? `<a href="${escapeHtml(listUrl(path, options))}">← Previous</a>` : "<span>← Previous</span>";
+  const next = data.page < data.totalPages
+    ? `<a href="${escapeHtml(listUrl(path, { ...options, page: data.page + 1 }))}">Next →</a>`
+    : "<span>Next →</span>";
+  return `<div class="pager">${previous}<span>Page ${formatNumber(data.page)} of ${formatNumber(data.totalPages)}</span>${next}</div>`;
+}
+
 function renderLayout(res, title, email, section, formToken, content) {
   const nonce = crypto.randomBytes(16).toString("base64");
   res.set({
@@ -125,6 +161,8 @@ function renderLayout(res, title, email, section, formToken, content) {
   dd { margin: 0; overflow-wrap: anywhere; font-size: .9rem; }
   .detail-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr)); gap: .85rem; }
   .empty { color: #aec5d6; padding: 1rem 0; }
+  .proof-preview { display: block; max-width: 100%; max-height: 360px; width: auto; height: auto; margin: .8rem 0; border: 1px solid #2b5670; border-radius: 10px; object-fit: contain; }
+  .actions { display: flex; flex-wrap: wrap; align-items: center; gap: .7rem; margin-top: 1rem; }
   @media (max-width: 600px) { .shell { width: min(100% - 1.2rem, 1200px); } .panel { padding: .9rem; } .account { width: 100%; justify-content: space-between; } }
 </style></head><body><div class="shell">
   <header class="top"><div><div class="brand">Metro Secure</div><h1>Metro Secure Admin</h1></div>
@@ -132,7 +170,9 @@ function renderLayout(res, title, email, section, formToken, content) {
   <nav aria-label="Admin sections">
     <a href="/admin"${section === "dashboard" ? ' class="current" aria-current="page"' : ""}>Dashboard</a>
     <a href="/admin/users"${section === "users" ? ' class="current" aria-current="page"' : ""}>Users</a>
-    <span class="disabled">Orders</span><span class="disabled">Payments</span><span class="disabled">VPN Keys</span>
+    <a href="/admin/orders"${section === "orders" ? ' class="current" aria-current="page"' : ""}>Orders</a>
+    <a href="/admin/payments"${section === "payments" ? ' class="current" aria-current="page"' : ""}>Payments</a>
+    <span class="disabled">VPN Keys</span>
     <span class="disabled">Packages</span><span class="disabled">Usage</span><span class="disabled">Settings</span>
   </nav>
   <main>${content}</main>
@@ -230,4 +270,79 @@ function renderUserDetail(res, email, formToken, customer) {
       <tbody>${orderRows}</tbody></table></div>` : '<p class="empty">No orders yet.</p>'}</section>`);
 }
 
-module.exports = { renderDashboard, renderUsers, renderUserDetail };
+function renderOrders(res, email, formToken, data) {
+  const filters = [
+    ["all", "All"], ["PENDING_PAYMENT", "Pending"], ["PROCESSING", "Processing"],
+    ["PAID", "Paid"], ["PAYMENT_REJECTED", "Rejected"], ["CANCELLED", "Cancelled"],
+  ];
+  const cards = data.orders.map((order) => `<article class="user-card">
+    <div class="user-head"><h3><a href="/admin/orders/${order.id}">${text(order.orderNumber)}</a></h3>${badge(order.status)}</div>
+    <dl>
+      ${field("Customer", text(customerName(order.customer)))}${field("Telegram ID", text(order.customer?.telegramId))}
+      ${field("Package", text(order.package?.name || order.plan))}${field("Duration", duration(order.durationMonths))}
+      ${field("Price", `${formatNumber(order.price)} MMK`)}${field("Payment method", text(order.paymentMethod))}
+      ${field("Payment reference", text(order.paymentReference))}${field("Created at", formatDate(order.createdAt))}
+      ${field("Paid at", formatDate(order.paidAt))}${field("Started at", formatDate(order.startedAt))}
+      ${field("Expires at", formatDate(order.expiresAt))}
+    </dl></article>`).join("");
+  return renderLayout(res, "Orders", email, "orders", formToken, `
+    <h2>Orders</h2><p class="intro">${formatNumber(data.count)} order${data.count === 1 ? "" : "s"}</p>
+    <form class="toolbar" method="get" action="/admin/orders"><div><label for="order-search">Order number, Telegram ID, or username</label>
+      <input id="order-search" name="q" value="${escapeHtml(data.q)}" maxlength="100" placeholder="Search orders"></div>
+      ${data.status !== "all" ? `<input type="hidden" name="status" value="${escapeHtml(data.status)}">` : ""}<button type="submit">Search</button></form>
+    <div class="filters" aria-label="Order status">${filters.map(([status, label]) =>
+      `<a href="${escapeHtml(listUrl("/admin/orders", { q: data.q, status, page: 1 }))}"${data.status === status ? ' class="selected" aria-current="page"' : ""}>${label}</a>`).join("")}</div>
+    <div class="users">${cards || '<p class="empty">No orders match this search.</p>'}</div>
+    ${pager("/admin/orders", data, data.status)}`);
+}
+
+function renderOrderDetail(res, email, formToken, order) {
+  const proofPath = `/admin/payment-proof/${order.id}`;
+  const proof = proofAvailable(order)
+    ? `<img class="proof-preview" src="${proofPath}" alt="Payment proof for order ${escapeHtml(order.orderNumber)}" loading="lazy">
+       <div class="actions"><a class="button" href="${proofPath}" target="_blank" rel="noopener noreferrer">View Full Slip</a></div>`
+    : '<p class="empty">No payment proof uploaded.</p>';
+  return renderLayout(res, "Order detail", email, "orders", formToken, `
+    <p><a href="/admin/orders">← Back to orders</a></p><h2>Order ${text(order.orderNumber)}</h2>
+    <div class="detail-grid">
+      <section class="panel"><h3>Customer</h3><dl>
+        ${field("Telegram ID", text(order.customer?.telegramId))}
+        ${field("Username", order.customer?.username ? text(`@${order.customer.username}`) : "-")}
+        ${field("First name", text(order.customer?.firstName))}
+      </dl></section>
+      <section class="panel"><h3>Order</h3><dl>
+        ${field("Order number", text(order.orderNumber))}${field("Package", text(order.package?.name || order.plan))}
+        ${field("Duration", duration(order.durationMonths))}${field("Price", `${formatNumber(order.price)} MMK`)}
+        ${field("Status", badge(order.status))}${field("Payment method", text(order.paymentMethod))}
+        ${field("Payment reference", text(order.paymentReference))}${field("Created at", formatDate(order.createdAt))}
+        ${field("Paid at", formatDate(order.paidAt))}${field("Started at", formatDate(order.startedAt))}
+        ${field("Expires at", formatDate(order.expiresAt))}${field("VPN key ID", keyId(order.vpnKeyId))}
+      </dl></section>
+    </div>
+    <section class="panel"><h3>Payment Proof</h3>${proof}</section>`);
+}
+
+function renderPayments(res, email, formToken, data) {
+  const filters = [["pending", "Pending"], ["paid", "Approved / Paid"], ["rejected", "Rejected"], ["all", "All"]];
+  const cards = data.orders.map((order) => `<article class="user-card">
+    <div class="user-head"><h3><a href="/admin/orders/${order.id}">${text(order.orderNumber)}</a></h3>${badge(order.status)}</div>
+    <dl>
+      ${field("Customer", text(customerName(order.customer)))}${field("Telegram ID", text(order.customer?.telegramId))}
+      ${field("Package", text(order.package?.name || order.plan))}${field("Amount", `${formatNumber(order.price)} MMK`)}
+      ${field("Payment method", text(order.paymentMethod))}${field("Payment reference", text(order.paymentReference))}
+      ${field("Paid at", formatDate(order.paidAt))}${field("Proof available", proofAvailable(order) ? "Yes" : "No")}
+    </dl><div class="actions"><a href="/admin/orders/${order.id}">View order</a>
+      ${proofAvailable(order) ? `<a href="/admin/payment-proof/${order.id}" target="_blank" rel="noopener noreferrer">View slip</a>` : ""}</div>
+  </article>`).join("");
+  return renderLayout(res, "Payments", email, "payments", formToken, `
+    <h2>Payments</h2><p class="intro">${formatNumber(data.count)} payment-related order${data.count === 1 ? "" : "s"}</p>
+    <div class="filters" aria-label="Payment status">${filters.map(([status, label]) =>
+      `<a href="${escapeHtml(listUrl("/admin/payments", { status, page: 1 }))}"${data.filter === status ? ' class="selected" aria-current="page"' : ""}>${label}</a>`).join("")}</div>
+    <div class="users">${cards || '<p class="empty">No payments in this view.</p>'}</div>
+    ${pager("/admin/payments", data, data.filter)}`);
+}
+
+module.exports = {
+  renderDashboard, renderUsers, renderUserDetail,
+  renderOrders, renderOrderDetail, renderPayments,
+};

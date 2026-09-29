@@ -1,7 +1,9 @@
 const { Temporal } = require("@js-temporal/polyfill");
 
 const USERS_PER_PAGE = 20;
+const ORDERS_PER_PAGE = 20;
 const RECENT_ORDERS = 8;
+const ORDER_STATUSES = ["PENDING_PAYMENT", "PROCESSING", "PAID", "PAYMENT_REJECTED", "CANCELLED"];
 
 function activeSubscriptions(client, now) {
   return client.public.Subscription
@@ -138,4 +140,83 @@ async function getUserDetail(client, id) {
     .first();
 }
 
-module.exports = { getDashboardData, getUsersData, getUserDetail };
+async function getOrdersData(client, params = {}) {
+  const { or } = await import("@prisma/orm-postgres/orm-client");
+  const q = typeof params.q === "string" ? params.q.trim().slice(0, 100) : "";
+  const status = ORDER_STATUSES.includes(params.status) ? params.status : "all";
+  let query = client.public.Order;
+  if (q) {
+    const pattern = searchPattern(q);
+    query = query.where((order) => or(
+      order.orderNumber.ilike(pattern),
+      order.customer.some((customer) => or(
+        customer.telegramId.ilike(pattern),
+        customer.username.ilike(pattern),
+      )),
+    ));
+  }
+  if (status !== "all") query = query.where({ status });
+  const { count } = await query.aggregate((aggregate) => ({ count: aggregate.count() }));
+  const totalPages = Math.max(1, Math.ceil(count / ORDERS_PER_PAGE));
+  const page = Math.min(parsePage(params.page), totalPages);
+  const orders = await query
+    .select("id", "orderNumber", "plan", "durationMonths", "price", "paymentMethod",
+      "paymentReference", "status", "createdAt", "paidAt", "startedAt", "expiresAt")
+    .include("customer", (customer) => customer.select("telegramId", "username", "firstName"))
+    .include("package", (pkg) => pkg.select("name"))
+    .orderBy([(order) => order.createdAt.desc(), (order) => order.id.desc()])
+    .offset((page - 1) * ORDERS_PER_PAGE)
+    .limit(ORDERS_PER_PAGE)
+    .all();
+  return { orders, count, page, totalPages, q, status };
+}
+
+async function getOrderDetail(client, id) {
+  return client.public.Order
+    .where({ id })
+    .select("id", "orderNumber", "plan", "durationMonths", "price", "status",
+      "paymentMethod", "paymentReference", "paymentProof", "createdAt", "paidAt",
+      "startedAt", "expiresAt", "vpnKeyId")
+    .include("customer", (customer) => customer.select("telegramId", "username", "firstName"))
+    .include("package", (pkg) => pkg.select("name"))
+    .first();
+}
+
+async function getOrderProof(client, id) {
+  return client.public.Order.where({ id }).select("paymentProof").first();
+}
+
+async function getPaymentsData(client, params = {}) {
+  const { or } = await import("@prisma/orm-postgres/orm-client");
+  const filter = ["pending", "paid", "rejected", "all"].includes(params.status)
+    ? params.status : "pending";
+  let query = client.public.Order.where((order) => or(
+    order.paymentMethod.isNotNull(), order.paymentProof.isNotNull(),
+  ));
+  if (filter === "pending") {
+    query = query.where({ status: "PENDING_PAYMENT" })
+      .where((order) => order.paymentProof.isNotNull());
+  } else if (filter === "paid") {
+    query = query.where({ status: "PAID" });
+  } else if (filter === "rejected") {
+    query = query.where({ status: "PAYMENT_REJECTED" });
+  }
+  const { count } = await query.aggregate((aggregate) => ({ count: aggregate.count() }));
+  const totalPages = Math.max(1, Math.ceil(count / ORDERS_PER_PAGE));
+  const page = Math.min(parsePage(params.page), totalPages);
+  const orders = await query
+    .select("id", "orderNumber", "plan", "price", "paymentMethod", "paymentReference",
+      "paymentProof", "status", "paidAt")
+    .include("customer", (customer) => customer.select("telegramId", "username", "firstName"))
+    .include("package", (pkg) => pkg.select("name"))
+    .orderBy([(order) => order.createdAt.desc(), (order) => order.id.desc()])
+    .offset((page - 1) * ORDERS_PER_PAGE)
+    .limit(ORDERS_PER_PAGE)
+    .all();
+  return { orders, count, page, totalPages, filter };
+}
+
+module.exports = {
+  getDashboardData, getUsersData, getUserDetail,
+  getOrdersData, getOrderDetail, getOrderProof, getPaymentsData,
+};
