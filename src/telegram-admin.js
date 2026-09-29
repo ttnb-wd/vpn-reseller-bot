@@ -23,7 +23,7 @@ function status(sub) {
     ? new Date(sub.expiresAt).getTime() : Number(sub.expiresAt.epochMilliseconds);
   return Number.isFinite(expiry) && expiry <= Date.now() ? "Expired" : "Active";
 }
-const nav = (back) => [[button("← Back", back), button("🏠 Admin Menu", "menu")]];
+const nav = (back) => [[button("⬅️ Back", back), button("🏠 Admin Menu", "menu")]];
 function pager(page, pages, section) {
   const row = [];
   if (page > 1) row.push(button("◀ Previous", `${section}_${page - 1}`));
@@ -143,13 +143,15 @@ function createTelegramAdmin({ bot, db, adminTelegramId, supportService, dataApi
     const checked = dataApi.validatePackageInput(body);
     if (checked.errors.length) {
       await ctx.reply(`Invalid ${FIELDS[state.field]}: ${checked.errors.join(" ")}`,
-        keyboard([[button("❌ Cancel", `cancel_${state.id}_${state.page}`)]]));
+        keyboard([[button("⬅️ Back", `edit_${state.id}_${state.page}`),
+          button("❌ Cancel", `cancel_${state.id}_${state.page}`)]]));
       return true;
     }
     input.set(adminId, { ...state, step: "confirm", value: raw });
     await show(ctx, `${FIELDS[state.field]}:\n${fieldValue(state.field, pkg[state.field])} → ${fieldValue(state.field, raw)}`,
       [[button("✅ Save", `save_${state.id}_${state.page}`),
-        button("❌ Cancel", `cancel_${state.id}_${state.page}`)]]);
+        button("❌ Cancel", `cancel_${state.id}_${state.page}`)],
+      [button("⬅️ Back", `edit_${state.id}_${state.page}`)]]);
     return true;
   }
   const menuShortcuts = new Map([

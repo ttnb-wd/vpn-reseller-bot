@@ -22,7 +22,7 @@ function ticketKeyboard(ticket) {
 
 function supportPromptKeyboard() {
   return Markup.inlineKeyboard([
-    [Markup.button.callback("🏠 Main Menu", "support_main_menu")],
+    [Markup.button.callback("⬅️ Back", "support_main_menu")],
     [Markup.button.callback("❌ Cancel", "support_cancel")],
   ]);
 }

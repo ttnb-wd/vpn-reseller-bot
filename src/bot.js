@@ -8,6 +8,7 @@ const { Telegraf, Markup, Input } = require("telegraf");
 const { Temporal } = require("@js-temporal/polyfill");
 
 const { createDatabase } = require("./db");
+const { createNavigation } = require("./navigation");
 const { PAYMENT_METHODS } = require("./payment-config");
 const { validateAdminConfig, createAdminRouter } = require("./admin-auth");
 const { createSupportService } = require("./support");
@@ -481,7 +482,7 @@ async function sendVpnSetup(ctx) {
       "Link သက်တမ်း ၁၀ မိနစ်အတွင်း ကုန်ပါမယ်။ ကုန်သွားရင် My VPN → Setup VPN ကိုပြန်နှိပ်ပါ။ Key ကို မမျှဝေပါနဲ့။",
     Markup.inlineKeyboard([
       [copyVpnKeyButton(subscription.vpnKey), Markup.button.url("🧭 Open Outline", createVpnConnectUrl(subscription))],
-      [Markup.button.callback("← Back to My VPN", "my_vpn")],
+      [Markup.button.callback("⬅️ Back", "my_vpn")],
     ])
   );
 }
@@ -548,6 +549,7 @@ function formatOrderStatus(status) {
 
 // Keep text and keyboards separate so these screens can later use photo captions.
 let telegramAdmin;
+let navigation;
 function buildMainMenu(ctx) {
   return buildCustomerMenu(Boolean(ctx && isAdmin(ctx) && ctx.chat?.type === "private"),
     telegramAdmin?.customerAdminRows());
@@ -601,7 +603,7 @@ function buildPackageKeyboard(packages, isRenewal = false) {
   ));
   return Markup.inlineKeyboard([
     ...compactButtonRows(buttons),
-    [Markup.button.callback("← Back", isRenewal ? "my_vpn" : "back_to_start")],
+    [Markup.button.callback("⬅️ Back", isRenewal ? "my_vpn" : "back_to_start")],
   ]);
 }
 
@@ -627,7 +629,7 @@ function buildPackageDetailKeyboard(pkg, isRenewal = false) {
     [3, 6].map((months) => Markup.button.callback(
       `⏳ ${Number(pkg.durationDays) * months} Days`, `${prefix}_${pkg.id}_${months}`
     )),
-    [Markup.button.callback("← Back to Packages", isRenewal ? "renew_vpn" : "buy_vpn")],
+    [Markup.button.callback("⬅️ Back", isRenewal ? "renew_vpn" : "buy_vpn")],
   ]);
 }
 
@@ -646,7 +648,7 @@ function buildConfirmationKeyboard(pkg, durationMonths, isRenewal = false) {
   return Markup.inlineKeyboard([
     [Markup.button.callback(isRenewal ? "Confirm Renewal" : "Confirm Purchase",
       `${isRenewal ? "confirm_renewal" : "confirm_package"}_${pkg.id}_${durationMonths}_${version}`)],
-    [Markup.button.callback("← Back", `${isRenewal ? "renew_package" : "package"}_${pkg.id}`)],
+    [Markup.button.callback("⬅️ Back", `${isRenewal ? "renew_package" : "package"}_${pkg.id}`)],
   ]);
 }
 
@@ -672,7 +674,7 @@ function formatActivation(pkg, dataLimitGb, expiresAt, isRenewal = false) {
 function buildHelpKeyboard() {
   return Markup.inlineKeyboard([
     [Markup.button.callback("💬 Contact Support", "contact_support")],
-    [Markup.button.callback("← Back", "back_to_start")],
+    [Markup.button.callback("⬅️ Back", "back_to_start")],
   ]);
 }
 
@@ -727,7 +729,7 @@ function packageVersion(pkg) {
 
 function unavailablePackageKeyboard(isRenewal = false) {
   return Markup.inlineKeyboard([[
-    Markup.button.callback("← Current Packages", isRenewal ? "renew_vpn" : "buy_vpn"),
+    Markup.button.callback("⬅️ Back", isRenewal ? "renew_vpn" : "buy_vpn"),
   ]]);
 }
 
@@ -945,6 +947,7 @@ function startUsageSync() {
 }
 
 async function sendMainMenu(ctx) {
+  navigation?.reset(ctx);
   await ctx.reply(
     "👋 Metro VPN မှ ကြိုဆိုပါတယ်\n\n" +
       "VPN စသုံးဖို့ အဆင့် ၃ ဆင့်ပဲ လိုပါတယ်။\n" +
@@ -1227,12 +1230,128 @@ async function startBot() {
 
   startupStage = "Telegram launch";
   bot = new Telegraf(process.env.BOT_TOKEN);
+  navigation = createNavigation();
+  const screenActions = [];
+  const originalAction = bot.action.bind(bot);
+  const originalStart = bot.start.bind(bot);
+  const textScreens = new Map([
+    ["🛡️ Buy VPN", "buy_vpn"], ["🌐 My VPN", "my_vpn"],
+    ["📊 Usage", "my_vpn"], ["♻️ Renew", "renew_vpn"],
+    ["⚡ Connect", "setup_vpn"], ["🎧 Support", "contact_support"],
+    ["📊 Admin Panel", "ta_dashboard"], ["👥 Users", "ta_users_1"],
+    ["🗂️ Orders", "ta_orders_1"], ["🧾 Payments", "ta_payments_1"],
+    ["💎 Packages", "ta_packages_1"],
+  ]);
+  function screenForAction(action) {
+    if (/^confirm_(?:package|renewal)_\d+_(?:1|3|6)(?:_[a-f0-9]{16})?$/.test(action)) {
+      return "unavailable_package";
+    }
+    if (/^(?:add_device|connection_link|setup_platform_(?:android|ios|windows|macos))$/.test(action)) {
+      return "setup_vpn";
+    }
+    if (/^(?:buy_vpn|my_vpn|setup_vpn|copy_vpn_key|renew_vpn|help|contact_support|my_orders|payment_help)$/.test(action) ||
+        /^(?:package|renew_package)_\d+$/.test(action) ||
+        /^(?:duration|renew_duration)_\d+_(?:1|3|6)$/.test(action) ||
+        /^payment_(?:bank|wallet)_\d+$/.test(action) ||
+        /^support_reply_\d+$/.test(action) ||
+        /^ta_(?:menu|dashboard|(?:users|orders|payments|packages)_\d+|(?:user|order|package|edit)_\d+_\d+|field_\d+_\d+_(?:name|priceMmk|dataLimitGb|durationDays|sortOrder))$/.test(action)) {
+      return action;
+    }
+    return null;
+  }
+  function screenForReply(defaultScreen, extra) {
+    if (/^payment_(?:bank|wallet)_\d+$/.test(defaultScreen || "")) return defaultScreen;
+    const buttons = extra?.reply_markup?.inline_keyboard?.flat() || [];
+    const payment = buttons.map((button) => /^payment_(?:bank|wallet)_(\d+)$/.exec(button.callback_data || ""))
+      .find(Boolean);
+    return payment ? `payment_select_${payment[1]}` : defaultScreen;
+  }
+  async function withNavigationReply(ctx, defaultScreen, handler, restoring = false) {
+    const originalReply = ctx.reply;
+    const ownedReply = Object.hasOwn(ctx, "reply");
+    ctx.reply = async (message, extra) => {
+      if (!restoring && ctx.navigationRestoring) return originalReply.call(ctx, message, extra);
+      const screen = screenForReply(defaultScreen, extra);
+      if (!screen || ctx.chat?.type !== "private" || extra?.reply_markup?.keyboard) {
+        return originalReply.call(ctx, message, extra);
+      }
+      const token = restoring ? navigation.currentToken(ctx) : navigation.enter(ctx, screen);
+      if (!token) return originalReply.call(ctx, message, extra);
+      const rows = (extra?.reply_markup?.inline_keyboard || []).map((row) =>
+        row.filter((button) => !/(?:^⬅️ Back$|^← Back(?: to .*)?$)/.test(button.text || ""))
+      ).filter((row) => row.length);
+      rows.push([Markup.button.callback("⬅️ Back", `nav_back_${token}`)]);
+      return originalReply.call(ctx, message, {
+        ...extra, reply_markup: { ...extra?.reply_markup, inline_keyboard: rows },
+      });
+    };
+    try { return await handler(); } finally {
+      if (ownedReply) ctx.reply = originalReply;
+      else delete ctx.reply;
+    }
+  }
+  bot.action = (trigger, handler) => {
+    screenActions.push({ trigger, handler });
+    return originalAction(trigger, (ctx) => {
+      const action = typeof trigger === "string" ? trigger : ctx.match?.[0];
+      return withNavigationReply(ctx, screenForAction(action || ""), () => handler(ctx));
+    });
+  };
+  bot.start = (handler) => originalStart((ctx) => {
+    navigation.reset(ctx);
+    return handler(ctx);
+  });
   const supportService = createSupportService({
     db, bot, adminTelegramId: ADMIN_TELEGRAM_ID, isAdmin,
     helpKeyboard: buildHelpKeyboard,
   });
   telegramAdmin = createTelegramAdmin({ bot, db, adminTelegramId: ADMIN_TELEGRAM_ID,
     supportService });
+  async function renderNavigationScreen(ctx, screen) {
+    if (screen === "main") return sendMainMenu(ctx);
+    if (/^payment_select_(\d+)$/.test(screen)) {
+      const id = Number(screen.slice("payment_select_".length));
+      const order = await db.public.Order.where({ id }).first();
+      const customer = order && await db.public.Customer.where({ id: order.customerId }).first();
+      if (!order || customer?.telegramId !== String(ctx.from.id) ||
+          order.status !== "PENDING_PAYMENT") return false;
+      await withNavigationReply(ctx, screen,
+        () => ctx.reply(formatPayment(order), buildPaymentKeyboard(order)), true);
+      return true;
+    }
+    const registered = screenActions.find(({ trigger }) => typeof trigger === "string"
+      ? trigger === screen : trigger.test(screen));
+    if (!registered) return false;
+    const replay = Object.create(ctx);
+    replay.answerCbQuery = async () => {};
+    replay.navigationRestore = true;
+    replay.match = typeof registered.trigger === "string" ? undefined : screen.match(registered.trigger);
+    await withNavigationReply(replay, screen, () => registered.handler(replay), true);
+    return true;
+  }
+  bot.action(/^nav_back_([A-Za-z0-9_-]{8})$/, async (ctx) => {
+    await ctx.answerCbQuery();
+    const previous = navigation.back(ctx, ctx.match[1]);
+    if (!previous) return ctx.reply("This Back button is no longer active. Open /start to continue.");
+    pendingProofs.delete(String(ctx.from.id));
+    telegramAdmin.clearInput();
+    if (previous.leaving === "contact_support") {
+      await supportService.pauseCustomer(ctx.from.id);
+      return sendMainMenu(ctx);
+    }
+    if (previous.leaving.startsWith("support_reply_")) await supportService.clearAdminReply();
+    try {
+      ctx.navigationRestoring = true;
+      if (await renderNavigationScreen(ctx, previous.screen) === false) {
+        await sendMainMenu(ctx);
+      }
+    } catch (error) {
+      logHandlerFailure("navigation.back", error);
+      await sendMainMenu(ctx);
+    } finally {
+      delete ctx.navigationRestoring;
+    }
+  });
   const shortcutActions = new Map();
   function registerShortcutAction(name, handler) {
     shortcutActions.set(name, handler);
@@ -1784,13 +1903,15 @@ async function startBot() {
         );
       }
 
-      await db.public.Order
-        .where({
-          id: orderId,
-        })
-        .update({
-          paymentMethod: method,
-        });
+      if (!ctx.navigationRestore) {
+        await db.public.Order
+          .where({
+            id: orderId,
+          })
+          .update({
+            paymentMethod: method,
+          });
+      }
 
       await ctx.reply(
         `🧾 Payment — ${payment.name}\n\n` +
@@ -1982,12 +2103,13 @@ async function startBot() {
       handler = "admin.supportReply";
       if (isAdmin(ctx) && await supportService.handleText(ctx)) return;
       handler = "admin.menu";
-      if (await telegramAdmin.handleMenuText(ctx)) return;
+      if (await withNavigationReply(ctx, textScreens.get(ctx.message?.text),
+        () => telegramAdmin.handleMenuText(ctx))) return;
       if (ctx.chat?.type === "private") {
         const label = ctx.message?.text;
         if (label === "⚡ Connect") {
           handler = "connect";
-          await sendVpnSetup(ctx);
+          await withNavigationReply(ctx, "setup_vpn", () => sendVpnSetup(ctx));
           return;
         }
         const shortcut = REPLY_SHORTCUTS.get(label);
@@ -1995,7 +2117,8 @@ async function startBot() {
           handler = shortcut;
           const textContext = Object.create(ctx);
           textContext.answerCbQuery = async () => {};
-          await shortcutActions.get(shortcut)(textContext);
+          await withNavigationReply(textContext, shortcut,
+            () => shortcutActions.get(shortcut)(textContext));
           return;
         }
       }

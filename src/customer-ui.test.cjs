@@ -211,6 +211,11 @@ async function loadBot(existingTables = null, outlineKeys = new Map(), options =
 
 function buttons(reply) { return reply[1].reply_markup.inline_keyboard; }
 function plain(value) { return JSON.parse(JSON.stringify(value)); }
+function backCode(reply) {
+  const matches = buttons(reply).flat().filter((button) => button.text === "⬅️ Back");
+  assert.equal(matches.length, 1);
+  return matches[0].callback_data;
+}
 function assertNoCustomerTicketDetails(message) {
   assert.doesNotMatch(message, /SUP-|\bTicket\b|ticket/i);
 }
@@ -336,6 +341,165 @@ test("one polling launch stops and closes resources on SIGTERM or SIGINT", async
   }
 });
 
+test("customer Back follows package, confirmation, and payment screens", async () => {
+  const bot = await loadBot();
+  const start = bot.ctx();
+  await bot.events.start(start);
+  assert.equal(JSON.stringify(start.replies).includes("⬅️ Back"), false);
+  assert.deepEqual(plain(start.replies[1][1].reply_markup.keyboard), [
+    ["🛡️ Buy VPN", "🌐 My VPN"], ["📊 Usage", "♻️ Renew"], ["⚡ Connect", "🎧 Support"],
+  ]);
+  const list = await bot.action("buy_vpn");
+  assert.match(backCode(list.replies.at(-1)), /^nav_back_/);
+  const detail = await bot.action("package_19");
+  const detailBack = await bot.action(backCode(detail.replies[0]));
+  assert.match(detailBack.replies[0][0], /Choose Your VPN Package/);
+  await bot.action("package_19");
+  const confirmation = await bot.action("duration_19_1");
+  const confirmationBack = await bot.action(backCode(confirmation.replies[0]));
+  assert.match(confirmationBack.replies.at(-1)[0], /Choose Your VPN Package/);
+  await bot.action("package_19");
+  const secondConfirmation = await bot.action("duration_19_1");
+  const payment = await bot.action(buttons(secondConfirmation.replies[0])[0][0].callback_data);
+  assert.match(payment.replies[0][0], /Payment/);
+  const paymentBack = await bot.action(backCode(payment.replies[0]));
+  assert.match(paymentBack.replies[0][0], /အတည်ပြုပါ/);
+  const paymentAgain = await bot.action(buttons(paymentBack.replies[0])[0][0].callback_data);
+  const methodCode = buttons(paymentAgain.replies[0])[0][0].callback_data;
+  const instructions = await bot.action(methodCode);
+  assert.match(instructions.replies[0][0], /အကောင့်နံပါတ်/);
+  const paymentHelp = await bot.action("payment_help");
+  const helpBack = await bot.action(backCode(paymentHelp.replies[0]));
+  assert.match(helpBack.replies[0][0], /အကောင့်နံပါတ်/);
+  const methodBack = await bot.action(backCode(helpBack.replies[0]));
+  assert.match(methodBack.replies[0][0], /Payment/);
+  assert.equal(bot.tables.Order.length, 1);
+  const proof = bot.ctx();
+  proof.message = { photo: [{ file_id: "proof-after-back", file_size: 1000 }] };
+  await bot.events.photo(proof);
+  assert.equal(bot.tables.Order[0].paymentProof, undefined);
+});
+
+test("My VPN, Usage, Connect, Renew, and Support Back keep their entry context", async () => {
+  const bot = await loadBot();
+  const start = bot.ctx();
+  await bot.events.start(start);
+  bot.tables.Subscription.push({ id: 1, customerId: 1, packageId: 19, plan: "Standard",
+    status: "ACTIVE", vpnKeyId: "real-1", vpnKey: "ss://synthetic@192.0.2.1:1234",
+    dataUsedGb: 7, dataLimitGb: 213, revokedAt: null,
+    expiresAt: Temporal.Now.instant().add({ hours: 24 }) });
+  const myVpn = await bot.action("my_vpn");
+  assert.match(backCode(myVpn.replies[0]), /^nav_back_/);
+  const setup = await bot.action("setup_vpn");
+  const setupBack = await bot.action(backCode(setup.replies[0]));
+  assert.match(setupBack.replies[0][0], /🌐 My VPN/);
+  const vpnBack = await bot.action(backCode(setupBack.replies[0]));
+  assert.match(vpnBack.replies[0][0], /ကြိုဆိုပါတယ်/);
+  const connectText = bot.ctx();
+  connectText.message = { text: "⚡ Connect" };
+  await bot.events.text(connectText);
+  const directConnectBack = await bot.action(backCode(connectText.replies[0]));
+  assert.match(directConnectBack.replies[0][0], /ကြိုဆိုပါတယ်/);
+  const usageText = bot.ctx();
+  usageText.message = { text: "📊 Usage" };
+  await bot.events.text(usageText);
+  assert.match(backCode(usageText.replies[0]), /^nav_back_/);
+  assert.match((await bot.action(backCode(usageText.replies[0]))).replies[0][0], /ကြိုဆိုပါတယ်/);
+  const renew = await bot.action("renew_vpn");
+  assert.match(backCode(renew.replies[0]), /^nav_back_/);
+  await bot.action("renew_package_19");
+  const renewConfirm = await bot.action("renew_duration_19_1");
+  assert.match((await bot.action(backCode(renewConfirm.replies[0]))).replies[0][0], /VPN သက်တမ်းတိုးပါ/);
+  const support = await bot.action("contact_support");
+  const supportBack = await bot.action(backCode(support.replies[0]));
+  assert.match(supportBack.replies[0][0], /ကြိုဆိုပါတယ်/);
+  assert.equal(bot.tables.SupportTicket[0].customerInputActive, false);
+  const sentBefore = bot.sent.length;
+  const ordinary = bot.ctx(); ordinary.message = { text: "not a support reply" };
+  await bot.events.text(ordinary);
+  assert.equal(bot.sent.length, sentBefore);
+});
+
+test("admin Back returns to lists and prior pages, clears edit input, and rejects stale users", async () => {
+  const user = { id: 3, telegramId: "123", username: "buyer", firstName: "Buyer",
+    subscription: null };
+  const order = { id: 4, orderNumber: "ORD-4", customerId: 3, customer: user,
+    plan: "Basic", price: "5000", status: "PAID", createdAt: new Date() };
+  const pkg = { id: 8, name: "Basic", priceMmk: "5000", dataLimitGb: 100,
+    durationDays: 31, active: true, sortOrder: 1 };
+  const adminDataApi = {
+    getDashboardData: async () => ({ totalCustomers: 1 }),
+    getUsersData: async (_db, { page }) => ({ customers: [user], count: 14,
+      page, totalPages: 2 }),
+    getUserDetail: async () => user,
+    getOrdersData: async (_db, { page }) => ({ orders: [order], count: 14,
+      page, totalPages: 2 }),
+    getOrderDetail: async () => order,
+    getPaymentsData: async () => ({ orders: [order], count: 1, page: 1, totalPages: 1 }),
+    getPackagesData: async () => ({ packages: [pkg], count: 1, page: 1, totalPages: 1 }),
+    getPackageDetail: async () => pkg,
+  };
+  const bot = await loadBot(null, new Map(), { adminDataApi });
+  const originalWhere = bot.client.public.Order.where;
+  bot.client.public.Order.where = (filter) => ({ ...originalWhere(filter),
+    aggregate: async () => ({ count: 1 }) });
+  const start = bot.ctx(999);
+  await bot.events.start(start);
+  assert.equal(JSON.stringify(start.replies).includes("⬅️ Back"), false);
+  const dashboard = await bot.action("ta_dashboard", 999);
+  assert.match((await bot.action(backCode(dashboard.replies[0]), 999)).replies[0][0],
+    /ကြိုဆိုပါတယ်/);
+  await bot.action("ta_dashboard", 999);
+  const usersPage1 = await bot.action("ta_users_1", 999);
+  const usersPage2 = await bot.action("ta_users_2", 999);
+  assert.match((await bot.action(backCode(usersPage2.replies[0]), 999)).replies[0][0],
+    /Users \(14\) • 1\/2/);
+  const userDetail = await bot.action("ta_user_3_1", 999);
+  assert.match((await bot.action(backCode(userDetail.replies[0]), 999)).replies[0][0],
+    /Users \(14\)/);
+  const orderList = await bot.action("ta_orders_1", 999);
+  const orderDetail = await bot.action("ta_order_4_1", 999);
+  assert.match((await bot.action(backCode(orderDetail.replies[0]), 999)).replies[0][0],
+    /Orders \(14\)/);
+  assert.match(backCode(orderList.replies[0]), /^nav_back_/);
+  const payments = await bot.action("ta_payments_1", 999);
+  const paymentDetail = await bot.action("ta_order_4_1", 999);
+  assert.match((await bot.action(backCode(paymentDetail.replies[0]), 999)).replies[0][0],
+    /Payments \(1\)/);
+  assert.match(backCode(payments.replies[0]), /^nav_back_/);
+  await bot.action("ta_packages_1", 999);
+  await bot.action("ta_package_8_1", 999);
+  const edit = await bot.action("ta_edit_8_1", 999);
+  assert.match((await bot.action(backCode(edit.replies[0]), 999)).replies[0][0],
+    /Packages \(1\)/);
+  await bot.action("ta_package_8_1", 999);
+  await bot.action("ta_edit_8_1", 999);
+  const input = await bot.action("ta_field_8_1_name", 999);
+  const fieldBack = await bot.action(backCode(input.replies[0]), 999);
+  assert.match(fieldBack.replies[0][0], /Edit Basic/);
+  const ordinary = bot.ctx(999); ordinary.message = { text: "Should not edit" };
+  await bot.events.text(ordinary);
+  assert.equal(pkg.name, "Basic");
+  const stale = await bot.action(backCode(input.replies[0]), 999);
+  assert.match(stale.replies[0][0], /no longer active/);
+  const forbidden = await bot.action(backCode(fieldBack.replies[0]), 123);
+  assert.match(forbidden.replies[0][0], /no longer active/);
+  assert.equal(JSON.stringify(forbidden.replies).includes("Customer ID"), false);
+});
+
+test("admin support-reply Back clears the selected reply state", async () => {
+  const bot = await loadBot();
+  await bot.events.start(bot.ctx(999));
+  await bot.events.start(bot.ctx(123));
+  await bot.action("contact_support", 123);
+  const ticket = bot.tables.SupportTicket[0];
+  const reply = await bot.action(`support_reply_${ticket.id}`, 999);
+  assert.equal(ticket.adminReplySelected, true);
+  assert.match(backCode(reply.replies[0]), /^nav_back_/);
+  await bot.action(backCode(reply.replies[0]), 999);
+  assert.equal(ticket.adminReplySelected, false);
+});
+
 test("a Telegram menu API failure does not prevent polling or customer actions", async () => {
   for (const failure of ["menuWriteFails", "menuReadFails"]) {
     const bot = await loadBot(null, new Map(), { [failure]: true });
@@ -447,7 +611,8 @@ test("support opens persistent per-customer tickets and relays text and photos t
   assert.equal(first.replies.length, 1);
   assert.equal(first.replies[0][0], startText);
   assert.equal(second.replies[0][0], startText);
-  assert.equal(buttons(first.replies[0])[0][0].callback_data, "support_main_menu");
+  assert.match(buttons(first.replies[0]).flat().find((button) => button.text === "⬅️ Back").callback_data,
+    /^nav_back_/);
   assertNoCustomerTicketDetails(first.replies[0][0]);
   assertNoCustomerTicketDetails(second.replies[0][0]);
   assert.equal(bot.tables.SupportTicket.length, 2);
@@ -720,7 +885,7 @@ test("admin package edits appear on the next Buy VPN read and disabled packages 
   for (const callback of ["package_7", "duration_7_1", oldCallback]) {
     const result = await bot.action(callback);
     assert.match(result.replies[0][0], /Package အသစ်ရွေးပေးပါ/);
-    assert.equal(buttons(result.replies[0])[0][0].callback_data, "buy_vpn");
+    assert.match(backCode(result.replies[0]), /^nav_back_/);
   }
   assert.equal(bot.tables.Order.length, 0);
 });
@@ -821,7 +986,7 @@ test("payment proof, approval, My VPN, setup and renewal retain a single real ke
   const myVpn = await bot.action("my_vpn");
   assert.match(myVpn.replies[0][0], /35 GB \/ 213 GB/);
   assert.equal(myVpn.replies[0][0].includes(key), false);
-  assert.deepEqual(plain(buttons(myVpn.replies[0]).map((row) => row.length)), [2, 2]);
+  assert.deepEqual(plain(buttons(myVpn.replies[0]).map((row) => row.length)), [2, 2, 1]);
   for (const callback of ["setup_vpn", "add_device", "connection_link", "setup_platform_ios"]) {
     const setup = await bot.action(callback);
     assert.equal(buttons(setup.replies[0])[0][0].copy_text.text, key);
