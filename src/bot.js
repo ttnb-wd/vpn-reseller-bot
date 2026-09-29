@@ -1094,9 +1094,14 @@ async function startBot() {
         );
       }
 
-      if (!isSubscriptionActive(subscription)) {
+      const subscriptionActive = isSubscriptionActive(subscription);
+      const statusLabel = subscriptionActive
+        ? "အသုံးပြုနိုင်ပါသည်"
+        : "အသုံးပြုမရပါ";
+
+      if (!subscriptionActive) {
         return await ctx.reply(
-          "⏳ VPN သက်တမ်းကုန်နေပါပြီ သို့မဟုတ် လက်ရှိသုံးမရပါ။\n\nRenew ကိုနှိပ်ပြီး Data နဲ့ သက်တမ်း တိုးနိုင်ပါတယ်။ မူလ VPN key ကိုပဲ ဆက်သုံးပါမယ်။\nအကူအညီလိုရင် Help ကိုနှိပ်ပါ။",
+          `🌐 My VPN\n\nအခြေအနေ: ${statusLabel}\n\nVPN ကို လက်ရှိ အသုံးပြုမရပါ။ သက်တမ်းတိုးဖို့ ♻️ Renew ကိုနှိပ်ပါ။`,
           renewBuyKeyboard()
         );
       }
@@ -1108,14 +1113,13 @@ async function startBot() {
       const hasReusableKey = Boolean(subscription.vpnKeyId &&
         isReusableAccessKey(subscription.vpnKeyId, subscription.vpnKey) &&
         isValidOutlineAccessKey(subscription.vpnKey));
-
       await ctx.reply(
         `🌐 My VPN\n\nPackage: ${packageLabel}\n` +
-          `📡 နောက်ဆုံး 30 ရက် သုံးပြီး / Data limit: ${formatUsageGb(subscription.dataUsedGb)} GB / ${formatNumber(subscription.dataLimitGb || 0)} GB\n` +
-          `⏳ သက်တမ်းကုန်ရက်: ${formatInstant(subscription.expiresAt)}\nအခြေအနေ: သက်တမ်းရှိနေပါသည်\n\n` +
-          "Outline ၏ နောက်ဆုံး 30 ရက် အသုံးပြုမှုကို ပြထားပါတယ်။ Data limit ကို Outline server က ထိန်းချုပ်ပါတယ်။\n" +
+          `📡 အသုံးပြုမှု: ${formatUsageGb(subscription.dataUsedGb)} GB / ${formatNumber(subscription.dataLimitGb || 0)} GB\n` +
+          `⏳ သက်တမ်းကုန်ရက်: ${formatInstant(subscription.expiresAt)}\nအခြေအနေ: ${statusLabel}\n\n` +
+          "အသုံးပြုမှုက နောက်ဆုံး 30 ရက်အတွင်း သုံးထားတဲ့ Data ဖြစ်ပါတယ်။\n\n" +
           (hasReusableKey
-            ? "စချိတ်ဆက်ဖို့ Setup VPN ကိုနှိပ်ပါ။ Data / သက်တမ်း တိုးချင်ရင် Renew ကိုနှိပ်ပြီး package ရွေးပါ။"
+            ? "VPN ချိတ်ဖို့ 🛰️ Setup VPN ကိုနှိပ်ပါ။\nData သို့မဟုတ် သက်တမ်းတိုးဖို့ ♻️ Renew ကိုနှိပ်ပါ။"
             : "VPN key ကို လောလောဆယ် ရယူမရပါ။ Help → Contact Support ကိုနှိပ်ပြီး အကူအညီတောင်းပါ။"),
         buildMyVpnKeyboard(subscription)
       );
