@@ -12,7 +12,8 @@ const { PAYMENT_METHODS } = require("./payment-config");
 const { validateAdminConfig, createAdminRouter } = require("./admin-auth");
 const { createSupportService } = require("./support");
 const { createTelegramAdmin } = require("./telegram-admin");
-const { buildCustomerMenu, buildPersistentCustomerKeyboard } = require("./customer-menu");
+const { buildCustomerMenu, buildPersistentCustomerKeyboard,
+  buildPersistentAdminKeyboard } = require("./customer-menu");
 const { createWindowLimiter } = require("./abuse-limits");
 const { createMiniAppRouter } = require("./mini-app");
 
@@ -990,7 +991,8 @@ async function sendMainMenu(ctx) {
     buildMainMenu(ctx)
   );
   if (ctx.chat?.type === "private") {
-    await ctx.reply("Choose an option below.", buildPersistentCustomerKeyboard());
+    await ctx.reply("Choose an option below.", isAdmin(ctx)
+      ? buildPersistentAdminKeyboard() : buildPersistentCustomerKeyboard());
   }
 }
 
@@ -2000,6 +2002,8 @@ async function startBot() {
   bot.on("text", async (ctx) => {
     try {
       if (await telegramAdmin.handleText(ctx)) return;
+      if (isAdmin(ctx) && await supportService.handleText(ctx)) return;
+      if (await telegramAdmin.handleMenuText(ctx)) return;
       if (ctx.chat?.type === "private") {
         const label = ctx.message?.text;
         if (label === "⚡ Connect") {
@@ -2015,8 +2019,12 @@ async function startBot() {
         }
       }
       await supportService.handleText(ctx);
-    } catch {
-      console.error("Support text relay failed.");
+    } catch (error) {
+      console.error("Telegram text routing failed:", {
+        name: safeDiagnosticCode(error?.name),
+        code: safeDiagnosticCode(error?.code),
+        message: sanitizeDiagnosticMessage(error?.message),
+      });
       await ctx.reply("Support စာကို မပို့နိုင်သေးပါ။ ခဏနေ ပြန်ပို့ပေးပါ။");
     }
   });
@@ -2927,8 +2935,13 @@ async function startBot() {
   // TELEGRAM ERROR HANDLER
   // =========================
 
-  bot.catch(() => {
-    console.error("Telegram bot handler failed.");
+  bot.catch((error, ctx) => {
+    console.error("Telegram bot handler failed:", {
+      updateType: safeDiagnosticCode(ctx?.updateType),
+      name: safeDiagnosticCode(error?.name),
+      code: safeDiagnosticCode(error?.code),
+      message: sanitizeDiagnosticMessage(error?.message),
+    });
   });
 
   // =========================
@@ -2947,22 +2960,26 @@ async function startBot() {
   });
   console.log("Server listening on port " + PORT);
 
-  startupStage = "Telegram launch";
-  await bot.launch();
   startupStage = "Telegram menu button";
   const metroMenuButton = buildMetroMenuButton();
-  await bot.telegram.setChatMenuButton({ menuButton: metroMenuButton });
-  const configuredMenuButton = await bot.telegram.getChatMenuButton();
-  if (configuredMenuButton?.type !== "web_app" ||
-      configuredMenuButton.text !== metroMenuButton.text ||
-      configuredMenuButton.web_app?.url !== metroMenuButton.web_app.url) {
-    throw new Error("Telegram default menu button did not match Metro Mini App configuration.");
+  try {
+    await bot.telegram.setChatMenuButton({ menuButton: metroMenuButton });
+    const configuredMenuButton = await bot.telegram.getChatMenuButton();
+    if (configuredMenuButton?.type !== "web_app" ||
+        configuredMenuButton.text !== metroMenuButton.text ||
+        configuredMenuButton.web_app?.url !== metroMenuButton.web_app.url) {
+      console.error("Telegram menu button verification did not match Metro /app.");
+    }
+  } catch (error) {
+    console.error("Telegram menu button setup failed:", {
+      name: safeDiagnosticCode(error?.name),
+      code: safeDiagnosticCode(error?.code),
+      message: sanitizeDiagnosticMessage(error?.message),
+    });
   }
   startUsageSync();
 
-  console.log(
-    "VPN Bot is running..."
-  );
+  console.log("Bot handlers registered. Starting Telegram polling...");
 
   // =========================
   // SHUTDOWN
@@ -2994,6 +3011,12 @@ async function startBot() {
     "SIGTERM",
     () => shutdown("SIGTERM")
   );
+
+  startupStage = "Telegram polling";
+  void bot.launch().catch((error) => {
+    logStartupFailure(error);
+    process.exit(1);
+  });
 }
 
 startBot().catch((error) => {

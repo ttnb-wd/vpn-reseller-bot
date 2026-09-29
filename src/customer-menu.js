@@ -17,4 +17,13 @@ function buildPersistentCustomerKeyboard() {
   ]).resize().persistent().oneTime(false).placeholder("Select an option");
 }
 
-module.exports = { buildCustomerMenu, buildPersistentCustomerKeyboard };
+function buildPersistentAdminKeyboard() {
+  return Markup.keyboard([
+    ...buildPersistentCustomerKeyboard().reply_markup.keyboard,
+    ["📊 Admin Panel"],
+    ["👥 Users", "🗂️ Orders"],
+    ["🧾 Payments", "💎 Packages"],
+  ]).resize().persistent().oneTime(false).placeholder("Select an option");
+}
+
+module.exports = { buildCustomerMenu, buildPersistentCustomerKeyboard, buildPersistentAdminKeyboard };

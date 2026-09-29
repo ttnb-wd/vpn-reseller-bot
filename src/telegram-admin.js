@@ -151,6 +151,20 @@ function createTelegramAdmin({ bot, db, adminTelegramId, supportService, dataApi
         button("❌ Cancel", `cancel_${state.id}_${state.page}`)]]);
     return true;
   }
+  const menuShortcuts = new Map([
+    ["📊 Admin Panel", dashboard],
+    ["👥 Users", (ctx) => users(ctx, 1)],
+    ["🗂️ Orders", (ctx) => orders(ctx, 1)],
+    ["🧾 Payments", (ctx) => payments(ctx, 1)],
+    ["💎 Packages", (ctx) => packages(ctx, 1)],
+  ]);
+  async function handleMenuText(ctx) {
+    const shortcut = menuShortcuts.get(ctx.message?.text);
+    if (!shortcut || !isAdmin(ctx)) return false;
+    input.delete(adminId);
+    await shortcut(ctx);
+    return true;
+  }
   async function save(ctx, id, page) {
     const state = input.get(adminId);
     if (!state || state.kind !== "ADMIN_PACKAGE_EDIT" || state.id !== id ||
@@ -207,7 +221,7 @@ function createTelegramAdmin({ bot, db, adminTelegramId, supportService, dataApi
     }
   }
   bot.action(/^ta_(.+)$/, action);
-  return { customerAdminRows, handleText, clearInput: () => input.delete(adminId),
+  return { customerAdminRows, handleText, handleMenuText, clearInput: () => input.delete(adminId),
     isEditing: () => input.has(adminId) };
 }
 

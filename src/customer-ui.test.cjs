@@ -10,7 +10,7 @@ const { updatePackage } = require("./admin-data");
 
 // Exercise the real registered handlers using synthetic data, without polling
 // Telegram or connecting to production PostgreSQL / Outline.
-async function loadBot(existingTables = null, outlineKeys = new Map()) {
+async function loadBot(existingTables = null, outlineKeys = new Map(), options = {}) {
   const file = path.join(__dirname, "bot.js");
   const source = readFileSync(file, "utf8");
   const localRequire = createRequire(file);
@@ -71,6 +71,8 @@ async function loadBot(existingTables = null, outlineKeys = new Map()) {
   const sent = [];
   const menuButtonCalls = [];
   const menuButtonReads = [];
+  const launchCalls = [];
+  const errors = [];
   const keyCalls = [];
   const limitCalls = [];
   const missingKeys = new Set();
@@ -90,9 +92,14 @@ async function loadBot(existingTables = null, outlineKeys = new Map()) {
       this.telegram = {
         async sendMessage(...args) { sent.push({ type: "message", args }); },
         async sendPhoto(...args) { sent.push({ type: "photo", args }); },
-        async setChatMenuButton(options) { menuButtonCalls.push(options); return true; },
-        async getChatMenuButton(options) {
-          menuButtonReads.push(options);
+        async setChatMenuButton(request) {
+          menuButtonCalls.push(request);
+          if (options.menuWriteFails) throw new Error("Temporary Telegram menu failure");
+          return true;
+        },
+        async getChatMenuButton(request) {
+          menuButtonReads.push(request);
+          if (options.menuReadFails) throw new Error("Temporary Telegram menu failure");
           return menuButtonCalls.at(-1)?.menuButton;
         },
       };
@@ -102,7 +109,10 @@ async function loadBot(existingTables = null, outlineKeys = new Map()) {
     action(pattern, fn) { handlers.push({ pattern, fn }); }
     on(event, fn) { events[event] = fn; }
     catch() {}
-    async launch() {}
+    async launch() {
+      launchCalls.push(true);
+      if (options.pollingStaysActive) await new Promise(() => {});
+    }
   }
   const context = vm.createContext({
     __dirname: __dirname,
@@ -114,6 +124,11 @@ async function loadBot(existingTables = null, outlineKeys = new Map()) {
       if (name === "./admin-auth") return {
         validateAdminConfig() { return { email: "admin@example.test" }; },
         createAdminRouter() { return () => {}; },
+      };
+      if (name === "./telegram-admin" && options.adminDataApi) return {
+        createTelegramAdmin(args) {
+          return localRequire(name).createTelegramAdmin({ ...args, dataApi: options.adminDataApi });
+        },
       };
       if (name === "./outline") return {
         validateOutlineConfig() {}, async testOutlineConnection() {},
@@ -143,7 +158,7 @@ async function loadBot(existingTables = null, outlineKeys = new Map()) {
       once() {},
     },
     Buffer, URL, setTimeout, clearTimeout, setInterval() {},
-    console: { log() {}, error() {}, warn() {} }, module: { exports: {} },
+    console: { log() {}, error(...args) { errors.push(args); }, warn() {} }, module: { exports: {} },
   });
   vm.runInContext(source.slice(0, source.lastIndexOf("\nstartBot().catch(")) + `
     module.exports = { startBot, recoverStuckProcessingOrders, syncAccessKeyUsage };
@@ -170,6 +185,7 @@ async function loadBot(existingTables = null, outlineKeys = new Map()) {
     return call;
   }
   return { tables, client, events, handlers, sent, menuButtonCalls, menuButtonReads,
+    launchCalls, errors,
     keyCalls, limitCalls, missingKeys, ctx, action,
     recover: context.module.exports.recoverStuckProcessingOrders,
     syncUsage: context.module.exports.syncAccessKeyUsage,
@@ -269,6 +285,60 @@ test("welcome, packages, confirmation and help only read customer data", async (
   assert.match((await bot.action("payment_help")).replies[0][0], /ငွေပမာဏအတိအကျ/);
   assert.equal(bot.tables.Order.length, 0);
   assert.equal(bot.keyCalls.length, 0);
+});
+
+test("polling remains active while the native menu is configured and callbacks still run", async () => {
+  const bot = await loadBot(null, new Map(), { pollingStaysActive: true });
+  assert.equal(bot.launchCalls.length, 1);
+  assert.equal(bot.menuButtonCalls.length, 1);
+  assert.equal(bot.menuButtonReads.length, 1);
+  assert.match((await bot.action("buy_vpn")).replies[0][0], /Choose Your VPN Package/);
+  const adminWelcome = bot.ctx(999);
+  await bot.events.start(adminWelcome);
+  const keyboard = adminWelcome.replies[1][1].reply_markup;
+  assert.deepEqual(plain(keyboard.keyboard.slice(0, 3)), [
+    ["🛡️ Buy VPN", "🌐 My VPN"], ["📊 Usage", "♻️ Renew"], ["⚡ Connect", "🎧 Support"],
+  ]);
+  assert.deepEqual(plain(keyboard.keyboard.slice(3)), [
+    ["📊 Admin Panel"], ["👥 Users", "🗂️ Orders"], ["🧾 Payments", "💎 Packages"],
+  ]);
+  assert.equal(keyboard.input_field_placeholder, "Select an option");
+});
+
+test("a Telegram menu API failure does not prevent polling or customer actions", async () => {
+  for (const failure of ["menuWriteFails", "menuReadFails"]) {
+    const bot = await loadBot(null, new Map(), { [failure]: true });
+    assert.equal(bot.launchCalls.length, 1);
+    assert.match((await bot.action("buy_vpn")).replies[0][0], /Choose Your VPN Package/);
+    assert.match(bot.errors[0][0], /Telegram menu button setup failed/);
+  }
+});
+
+test("admin text reaches private admin screens without blocking customer text", async () => {
+  const emptyPage = { customers: [], orders: [], packages: [], count: 0, page: 1, totalPages: 1 };
+  const bot = await loadBot(null, new Map(), { adminDataApi: {
+    async getDashboardData() { return { totalCustomers: 0, activeSubscriptions: 0,
+      expiredSubscriptions: 0, pendingPayments: 0, totalOrders: 0,
+      activeVpnKeys: 0, totalDataUsedGb: 0 }; },
+    async getUsersData() { return emptyPage; },
+    async getOrdersData() { return emptyPage; },
+    async getPaymentsData() { return emptyPage; },
+    async getPackagesData() { return emptyPage; },
+  } });
+  for (const [label, heading] of [
+    ["📊 Admin Panel", "Metro Secure Admin"], ["👥 Users", "Users (0)"],
+    ["🗂️ Orders", "Orders (0)"], ["🧾 Payments", "Payments (0)"],
+    ["💎 Packages", "Packages (0)"],
+  ]) {
+    const admin = bot.ctx(999);
+    admin.message = { text: label };
+    await bot.events.text(admin);
+    assert.match(admin.replies[0][0], new RegExp(heading.replace(/[()]/g, "\\$&")));
+  }
+  const customer = bot.ctx(123);
+  customer.message = { text: "🛡️ Buy VPN" };
+  await bot.events.text(customer);
+  assert.match(customer.replies[0][0], /Choose Your VPN Package/);
 });
 
 test("persistent reply buttons keep the existing customer actions functional", async () => {

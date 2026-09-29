@@ -74,6 +74,30 @@ test("admin buttons are available only for exact Telegram ID; forged callback is
   assert.equal(await f.service.handleText(f.ctx(222, "6000")), false);
 });
 
+test("admin reply labels use existing data actions only in the admin private chat", async () => {
+  const f = fixture();
+  const shortcuts = [
+    ["📊 Admin Panel", /Metro Secure Admin/],
+    ["👥 Users", /Users \(14\)/],
+    ["🗂️ Orders", /Orders \(14\)/],
+    ["🧾 Payments", /Payments \(1\)/],
+    ["💎 Packages", /Packages \(1\)/],
+  ];
+  for (const [label, response] of shortcuts) {
+    assert.equal(await f.service.handleMenuText(f.ctx(222, label)), false);
+    assert.equal(await f.service.handleMenuText({ ...f.ctx(111, label),
+      chat: { id: -100, type: "supergroup" } }), false);
+    assert.equal(await f.service.handleMenuText(f.ctx(111, label)), true);
+    assert.match(f.sent.at(-1).text, response);
+  }
+  assert.equal(await f.service.handleMenuText(f.ctx(111, "ordinary text")), false);
+  assert.equal(f.calls.dashboard, 1);
+  assert.equal(f.calls.users.length, 1);
+  assert.equal(f.calls.orders.length, 1);
+  assert.equal(f.calls.payments.length, 1);
+  assert.equal(f.calls.packages, 1);
+});
+
 test("dashboard refresh and lists read current data with seven-row pagination", async () => {
   const f = fixture();
   assert.match((await f.tap("dashboard")).text, /Users: 1/);
