@@ -205,3 +205,91 @@ test("Render proxy login accepts the configured external origin and rejects cros
     headers: { ...proxyHeaders, Cookie: cookie },
   })).status, 303);
 });
+
+test("Render login accepts configured origins and signed same-origin null Origin submissions", async (t) => {
+  const renderOrigin = "https://vpn-reseller-bot-1.onrender.com";
+  const site = await startServer(true, {
+    expectedOrigin: `${renderOrigin}/`,
+  });
+  t.after(site.close);
+  const proxyHeaders = { "X-Forwarded-Proto": "https", "X-Forwarded-Host": "internal.proxy.test" };
+  const request = (options = {}) => fetch(site.base + "/admin/login", {
+    redirect: "manual", ...options,
+  });
+  const page = await request({ headers: proxyHeaders });
+  assert.equal(page.status, 200);
+  const html = await page.text();
+  const token = html.match(/name="_csrf" value="([^"]+)"/)?.[1];
+  assert.ok(token);
+  const formCookie = page.headers.get("set-cookie").split(";")[0];
+
+  const nullWithoutToken = await request({
+    method: "POST",
+    headers: { ...proxyHeaders, Origin: "null", "Sec-Fetch-Site": "same-origin" },
+    body: new URLSearchParams({ email, password }),
+  });
+  assert.equal(nullWithoutToken.status, 403);
+  const nullCrossSite = await request({
+    method: "POST",
+    headers: { ...proxyHeaders, Origin: "null", "Sec-Fetch-Site": "cross-site", Cookie: formCookie },
+    body: new URLSearchParams({ email, password, _csrf: token }),
+  });
+  assert.equal(nullCrossSite.status, 403);
+  const nullSameOrigin = await request({
+    method: "POST",
+    headers: {
+      ...proxyHeaders, Origin: "null", "Sec-Fetch-Site": "same-origin",
+      "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document", Cookie: formCookie,
+    },
+    body: new URLSearchParams({ email, password, _csrf: token }),
+  });
+  assert.equal(nullSameOrigin.status, 303);
+  assert.equal(nullSameOrigin.headers.get("location"), "/admin");
+
+  const missingOrigin = await request({
+    method: "POST", headers: { ...proxyHeaders },
+    body: new URLSearchParams({ email, password }),
+  });
+  assert.equal(missingOrigin.status, 403);
+  const foreignOrigin = await request({
+    method: "POST",
+    headers: { ...proxyHeaders, Origin: "https://foreign.example.test", Cookie: formCookie },
+    body: new URLSearchParams({ email, password, _csrf: token }),
+  });
+  assert.equal(foreignOrigin.status, 403);
+  const slashOrigin = await request({
+    method: "POST", headers: { ...proxyHeaders, Origin: `${renderOrigin}/` },
+    body: new URLSearchParams({ email, password }),
+  });
+  assert.equal(slashOrigin.status, 303);
+  assert.equal(slashOrigin.headers.get("location"), "/admin");
+  const defaultPortOrigin = await request({
+    method: "POST", headers: { ...proxyHeaders, Origin: `${renderOrigin}:443/` },
+    body: new URLSearchParams({ email, password }),
+  });
+  assert.equal(defaultPortOrigin.status, 303);
+
+  const tokenLogin = await request({
+    method: "POST", headers: { ...proxyHeaders, Cookie: formCookie },
+    body: new URLSearchParams({ email, password, _csrf: token }),
+  });
+  assert.equal(tokenLogin.status, 303);
+  assert.equal(tokenLogin.headers.get("location"), "/admin");
+  const sessionCookie = tokenLogin.headers.get("set-cookie").split(";")[0];
+  const home = await fetch(site.base + "/admin", {
+    headers: { ...proxyHeaders, Cookie: sessionCookie },
+  });
+  assert.equal(home.status, 200);
+  const logoutToken = (await home.text()).match(/name="_csrf" value="([^"]+)"/)?.[1];
+  const logoutCookie = home.headers.get("set-cookie").split(";")[0];
+  const logout = await fetch(site.base + "/admin/logout", {
+    method: "POST", redirect: "manual",
+    headers: { ...proxyHeaders, Cookie: `${sessionCookie}; ${logoutCookie}` },
+    body: new URLSearchParams({ _csrf: logoutToken }),
+  });
+  assert.equal(logout.status, 303);
+  assert.equal(logout.headers.get("location"), "/admin/login");
+  assert.equal((await fetch(site.base + "/admin", {
+    redirect: "manual", headers: { ...proxyHeaders, Cookie: sessionCookie },
+  })).status, 303);
+});

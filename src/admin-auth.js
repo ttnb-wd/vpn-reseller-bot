@@ -8,6 +8,19 @@ const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const MAX_FAILED_LOGINS = 5;
 const MAX_TRACKED_IPS = 10000;
 const MAX_SESSIONS = 1000;
+const FORM_TOKEN_MAX_AGE_MS = 15 * 60 * 1000;
+
+function normalizeOrigin(value) {
+  if (typeof value !== "string" || !value.trim()) return null;
+  try {
+    const url = new URL(value.trim());
+    if (!(["https:", "http:"].includes(url.protocol)) || url.username || url.password ||
+        url.pathname !== "/" || url.search || url.hash) return null;
+    return url.origin;
+  } catch {
+    return null;
+  }
+}
 
 function renderOriginFromEnv(env) {
   try {
@@ -100,7 +113,7 @@ function renderPage(title, body, nonce) {
 </html>`;
 }
 
-function renderLogin(res, message) {
+function renderLogin(res, message, formToken) {
   const nonce = crypto.randomBytes(16).toString("base64");
   setPageHeaders(res, nonce);
   return res.type("html").send(renderPage("Sign In", `
@@ -109,6 +122,7 @@ function renderLogin(res, message) {
       <h1>Metro Secure Admin</h1>
       ${message ? `<p class="error" role="alert">${escapeHtml(message)}</p>` : ""}
       <form method="post" action="/admin/login">
+        <input type="hidden" name="_csrf" value="${formToken}">
         <label for="email">Email</label>
         <input id="email" name="email" type="email" autocomplete="username" required maxlength="254">
         <label for="password">Password</label>
@@ -118,13 +132,13 @@ function renderLogin(res, message) {
     </section>`, nonce));
 }
 
-function renderAdminHome(res, email) {
+function renderAdminHome(res, email, formToken) {
   const nonce = crypto.randomBytes(16).toString("base64");
   setPageHeaders(res, nonce);
   return res.type("html").send(renderPage("Home", `
     <section class="card">
       <div class="topline"><div><div class="eyebrow">Metro Secure</div><h1>Metro Secure Admin</h1></div>
-        <form method="post" action="/admin/logout"><button type="submit">Logout</button></form></div>
+        <form method="post" action="/admin/logout"><input type="hidden" name="_csrf" value="${formToken}"><button type="submit">Logout</button></form></div>
       <p class="identity">Logged in as: <strong>${escapeHtml(email)}</strong></p>
       <div class="nav" aria-label="Admin sections">
         <span class="current" aria-current="page">Dashboard</span><span>Users</span>
@@ -142,6 +156,12 @@ function createAdminRouter(config) {
   const cookieOptions = {
     httpOnly: true, secure: config.production, sameSite: "lax", path: "/admin",
   };
+  const formCookieName = config.production ? "__Host-metro_admin_form" : "metro_admin_form";
+  const formCookieBaseOptions = {
+    httpOnly: true, secure: config.production, sameSite: "lax",
+    path: config.production ? "/" : "/admin",
+  };
+  const formCookieOptions = { ...formCookieBaseOptions, maxAge: FORM_TOKEN_MAX_AGE_MS };
 
   function prune(map, now) {
     for (const [key, expiresAt] of map) {
@@ -151,6 +171,33 @@ function createAdminRouter(config) {
 
   function sign(sessionId) {
     return crypto.createHmac("sha256", config.sessionSecret).update(sessionId).digest("base64url");
+  }
+
+  function signFormToken(token) {
+    return crypto.createHmac("sha256", config.sessionSecret)
+      .update(`admin-form:${token}`).digest("base64url");
+  }
+
+  function issueFormToken(res) {
+    const token = `${(Date.now() + FORM_TOKEN_MAX_AGE_MS).toString(36)}.${crypto.randomBytes(32).toString("base64url")}`;
+    res.cookie(formCookieName, `${token}.${signFormToken(token)}`, formCookieOptions);
+    return token;
+  }
+
+  function hasValidFormToken(req) {
+    const token = req.body?._csrf;
+    if (typeof token !== "string" || !/^[0-9a-z]{1,12}\.[A-Za-z0-9_-]{43}$/.test(token)) return false;
+    const cookie = (req.headers.cookie || "").split(";")
+      .map((part) => part.trim())
+      .find((part) => part.startsWith(`${formCookieName}=`));
+    const value = cookie?.slice(formCookieName.length + 1);
+    if (!value || value.length !== token.length + 44 || !value.startsWith(`${token}.`)) return false;
+    const expiresAt = parseInt(token.split(".")[0], 36);
+    if (!Number.isSafeInteger(expiresAt) || expiresAt <= Date.now() ||
+        expiresAt > Date.now() + FORM_TOKEN_MAX_AGE_MS) return false;
+    const actual = Buffer.from(value.slice(token.length + 1));
+    const expected = Buffer.from(signFormToken(token));
+    return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
   }
 
   function readSessionId(req) {
@@ -176,16 +223,25 @@ function createAdminRouter(config) {
     next();
   }
 
-  function sameOrigin(req) {
-    const origin = req.get("Origin");
+  function validFormRequest(req) {
+    const originHeader = req.get("Origin");
+    // The signed form token covers browsers that omit Origin. Some browsers
+    // send the literal "null" even on same-origin form navigation; require
+    // their same-origin Fetch Metadata signal as well as the token.
+    if (!originHeader) return hasValidFormToken(req);
+    if (originHeader === "null") {
+      return req.get("Sec-Fetch-Site") === "same-origin" && hasValidFormToken(req);
+    }
+    const origin = normalizeOrigin(originHeader);
     if (!origin) return false;
     if (config.production) {
       // These origins come from server configuration, not client-supplied Host
       // or X-Forwarded-Host headers, which can differ behind Render's proxy.
-      return origin === config.expectedOrigin || origin === config.renderOrigin;
+      return origin === normalizeOrigin(config.expectedOrigin) ||
+        origin === normalizeOrigin(config.renderOrigin);
     }
     const host = req.get("Host");
-    return Boolean(host && origin === `${req.protocol}://${host}`);
+    return Boolean(host && origin === normalizeOrigin(`${req.protocol}://${host}`));
   }
 
   router.use((req, res, next) => {
@@ -198,11 +254,11 @@ function createAdminRouter(config) {
 
   router.get("/login", (req, res) => {
     if (readSessionId(req)) return res.redirect(303, "/admin");
-    return renderLogin(res);
+    return renderLogin(res, undefined, issueFormToken(res));
   });
 
   router.post("/login", express.urlencoded({ extended: false, limit: "4kb" }), async (req, res) => {
-    if (!sameOrigin(req)) return res.sendStatus(403);
+    if (!validFormRequest(req)) return res.sendStatus(403);
     if (readSessionId(req)) return res.redirect(303, "/admin");
 
     const now = Date.now();
@@ -213,7 +269,7 @@ function createAdminRouter(config) {
     const record = loginAttempts.get(ip) || { count: 0, resetAt: now + LOGIN_WINDOW_MS };
     if (record.count >= MAX_FAILED_LOGINS) {
       res.set("Retry-After", String(Math.ceil((record.resetAt - now) / 1000)));
-      return renderLogin(res.status(429), "Too many attempts. Please try again later.");
+      return renderLogin(res.status(429), "Too many attempts. Please try again later.", issueFormToken(res));
     }
 
     const email = typeof req.body?.email === "string" ? req.body.email.trim().toLowerCase() : "";
@@ -229,7 +285,7 @@ function createAdminRouter(config) {
       loginAttempts.delete(ip);
       loginAttempts.set(ip, record);
       if (loginAttempts.size > MAX_TRACKED_IPS) loginAttempts.delete(loginAttempts.keys().next().value);
-      return renderLogin(res.status(401), "Invalid email or password.");
+      return renderLogin(res.status(401), "Invalid email or password.", issueFormToken(res));
     }
 
     loginAttempts.delete(ip);
@@ -246,12 +302,13 @@ function createAdminRouter(config) {
   // Every route registered below this point requires a valid session.
   router.use(requireAdmin);
 
-  router.get("/", (req, res) => renderAdminHome(res, config.email));
+  router.get("/", (req, res) => renderAdminHome(res, config.email, issueFormToken(res)));
 
-  router.post("/logout", (req, res) => {
-    if (!sameOrigin(req)) return res.sendStatus(403);
+  router.post("/logout", express.urlencoded({ extended: false, limit: "4kb" }), (req, res) => {
+    if (!validFormRequest(req)) return res.sendStatus(403);
     sessions.delete(req.adminSessionId);
     res.clearCookie(COOKIE_NAME, cookieOptions);
+    res.clearCookie(formCookieName, formCookieBaseOptions);
     return res.redirect(303, "/admin/login");
   });
 
