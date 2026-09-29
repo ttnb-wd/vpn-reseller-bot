@@ -7,6 +7,20 @@ model Customer {
 
   orders       Order[]
   subscription Subscription?
+  supportTickets SupportTicket[]
+}
+
+model SupportTicket {
+  id                   Int      @id @default(autoincrement())
+  customerId           Int
+  customer             Customer @relation(fields: [customerId], references: [id])
+  status               String   @default("OPEN")
+  customerInputActive  Boolean  @default(true)
+  adminReplySelected   Boolean  @default(false)
+  adminReplySelectedAt DateTime?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @default(now())
+  closedAt             DateTime?
 }
 
 model Package {

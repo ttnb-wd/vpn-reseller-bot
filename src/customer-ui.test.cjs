@@ -15,7 +15,7 @@ async function loadBot() {
   const source = readFileSync(file, "utf8");
   const localRequire = createRequire(file);
   const tables = {
-    Customer: [], Order: [], Subscription: [],
+    Customer: [], Order: [], Subscription: [], SupportTicket: [],
     Package: [
       { id: 7, name: "Basic", dataLimitGb: 50, durationDays: 30, priceMmk: "3200", active: true, sortOrder: 1 },
       { id: 19, name: "Standard", dataLimitGb: 213, durationDays: 31, priceMmk: "7650", active: true, sortOrder: 2 },
@@ -219,10 +219,107 @@ test("welcome, packages, confirmation and help only read customer data", async (
   assert.match(confirm.replies[0][0], /မှာယူမှု အတည်ပြုပါ[\s\S]*639 GB[\s\S]*93 ရက်[\s\S]*22,950\n/);
   assert.match(buttons(confirm.replies[0])[0][0].callback_data, /^confirm_package_19_3_[a-f0-9]{16}$/);
   assert.match((await bot.action("package_99")).replies[0][0], /Package အသစ်ရွေးပေးပါ/);
-  assert.match((await bot.action("help")).replies[0][0], /Metro VPN အကူအညီ/);
+  const help = await bot.action("help");
+  assert.match(help.replies[0][0], /🎧 Help/);
+  assert.equal(buttons(help.replies[0])[0][0].callback_data, "contact_support");
+  assert.equal(JSON.stringify(help.replies).includes("tg://user"), false);
   assert.match((await bot.action("payment_help")).replies[0][0], /ငွေပမာဏအတိအကျ/);
   assert.equal(bot.tables.Order.length, 0);
   assert.equal(bot.keyCalls.length, 0);
+});
+
+test("support opens persistent per-customer tickets and relays text and photos to admin", async () => {
+  const bot = await loadBot();
+  const first = await bot.action("contact_support", 123);
+  const second = await bot.action("contact_support", 456);
+  assert.match(first.replies[1][0], /SUP-0001/);
+  assert.match(second.replies[1][0], /SUP-0002/);
+  assert.equal(bot.tables.SupportTicket.length, 2);
+  const textMessage = bot.ctx(123);
+  textMessage.message = { text: "Please help with my VPN" };
+  await bot.events.text(textMessage);
+  assert.equal(bot.sent.at(-1).args[0], "999");
+  assert.match(bot.sent.at(-1).args[1], /SUP-0001[\s\S]*Telegram ID: 123[\s\S]*Please help/);
+  assert.equal(bot.sent.at(-1).args[2].reply_markup.inline_keyboard[0][0].callback_data,
+    "support_reply_1");
+  const sensitiveText = bot.ctx(123);
+  sensitiveText.message = { text: "Please inspect ss://private-key-data" };
+  await bot.events.text(sensitiveText);
+  assert.equal(bot.sent.at(-1).args[1].includes("ss://private-key-data"), false);
+  const photo = bot.ctx(456);
+  photo.message = { photo: [{ file_id: "support-image" }], caption: "Screenshot" };
+  await bot.events.photo(photo);
+  assert.equal(bot.sent.at(-1).type, "photo");
+  assert.equal(bot.sent.at(-1).args[0], "999");
+  assert.equal(bot.sent.at(-1).args[1], "support-image");
+  assert.match(bot.sent.at(-1).args[2].caption, /SUP-0002[\s\S]*Screenshot/);
+  assert.equal(bot.tables.Order.length, 0);
+  const repeat = await bot.action("contact_support", 123);
+  assert.match(repeat.replies[1][0], /SUP-0001/);
+  assert.equal(bot.tables.SupportTicket.length, 2);
+});
+
+test("admin reply and close use ticket ownership and keep admin identity inside the bot", async () => {
+  const bot = await loadBot();
+  await bot.action("contact_support", 123);
+  await bot.action("contact_support", 456);
+  const unauthorized = await bot.action("support_reply_2", 123);
+  assert.equal(unauthorized.replies.length, 0);
+  assert.equal(bot.tables.SupportTicket[1].adminReplySelected, false);
+  await bot.action("support_reply_2", 999);
+  const adminText = bot.ctx(999);
+  adminText.message = { text: "We can help you here." };
+  await bot.events.text(adminText);
+  const customerReply = bot.sent.at(-1);
+  assert.equal(customerReply.args[0], "456");
+  assert.match(customerReply.args[1], /^🎧 Metro Secure Support\n\nWe can help/);
+  assert.equal(customerReply.args[1].includes("999"), false);
+  assert.equal(bot.tables.SupportTicket[1].adminReplySelected, false);
+  await bot.action("support_reply_1", 999);
+  const adminPhoto = bot.ctx(999);
+  adminPhoto.message = { photo: [{ file_id: "admin-image" }], caption: "Try this" };
+  await bot.events.photo(adminPhoto);
+  assert.equal(bot.sent.at(-1).args[0], "123");
+  assert.match(bot.sent.at(-1).args[2].caption, /Metro Secure Support[\s\S]*Try this/);
+  assert.equal(bot.sent.at(-1).args[2].caption.includes("999"), false);
+  const nonAdminClose = await bot.action("support_close_2", 123);
+  assert.equal(nonAdminClose.replies.length, 0);
+  assert.equal(bot.tables.SupportTicket[1].status, "OPEN");
+  await bot.action("support_close_2", 999);
+  assert.equal(bot.tables.SupportTicket[1].status, "CLOSED");
+  assert.ok(bot.tables.SupportTicket[1].closedAt);
+  assert.equal(bot.sent.at(-1).args[0], "456");
+  assert.match(bot.sent.at(-1).args[1], /Support ticket ပိတ်ပြီးပါပြီ/);
+  const reopened = await bot.action("contact_support", 456);
+  assert.match(reopened.replies[1][0], /SUP-0003/);
+});
+
+test("support mode keeps screenshots separate from payment proof and Cancel returns to payment mode", async () => {
+  const bot = await loadBot();
+  await bot.action(await confirmationButton(bot, 19));
+  await bot.action("payment_wallet_1");
+  await bot.action("contact_support");
+  const supportPhoto = bot.ctx();
+  supportPhoto.message = { photo: [{ file_id: "support-proof" }], caption: "Question" };
+  await bot.events.photo(supportPhoto);
+  assert.equal(bot.tables.Order[0].paymentProof, undefined);
+  assert.equal(bot.sent.at(-1).args[0], "999");
+  await bot.action("support_cancel");
+  assert.equal(bot.tables.SupportTicket[0].customerInputActive, false);
+  const sentBefore = bot.sent.length;
+  const idleText = bot.ctx();
+  idleText.message = { text: "This should stay outside support" };
+  await bot.events.text(idleText);
+  assert.equal(bot.sent.length, sentBefore);
+  const paymentPhoto = bot.ctx();
+  paymentPhoto.message = { photo: [{ file_id: "actual-payment-proof" }] };
+  await bot.events.photo(paymentPhoto);
+  assert.equal(bot.tables.Order[0].paymentProof, "actual-payment-proof");
+  await bot.action("contact_support");
+  assert.equal(bot.tables.SupportTicket[0].customerInputActive, true);
+  assert.equal(bot.tables.SupportTicket.length, 1);
+  await bot.action("payment_wallet_1");
+  assert.equal(bot.tables.SupportTicket[0].customerInputActive, false);
 });
 
 test("admin package edits appear on the next Buy VPN read and disabled packages reject old buttons", async () => {

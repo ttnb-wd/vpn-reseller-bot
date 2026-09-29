@@ -10,6 +10,7 @@ const { Temporal } = require("@js-temporal/polyfill");
 const { createDatabase } = require("./db");
 const { PAYMENT_METHODS } = require("./payment-config");
 const { validateAdminConfig, createAdminRouter } = require("./admin-auth");
+const { createSupportService } = require("./support");
 
 const {
   createAccessKey,
@@ -661,10 +662,8 @@ function formatActivation(pkg, dataLimitGb, expiresAt, isRenewal = false) {
 
 function buildHelpKeyboard() {
   return Markup.inlineKeyboard([
-    [Markup.button.callback("🛰️ VPN Setup", "setup_vpn"), Markup.button.callback("🧾 Payment Help", "payment_help")],
-    [Markup.button.callback("🌐 My VPN", "my_vpn"),
-      Markup.button.url("Contact Support", `tg://user?id=${ADMIN_TELEGRAM_ID}`)],
-    [Markup.button.callback("← Main Menu", "back_to_start")],
+    [Markup.button.callback("💬 Contact Support", "contact_support")],
+    [Markup.button.callback("← Back", "back_to_start")],
   ]);
 }
 
@@ -1114,6 +1113,10 @@ async function startBot() {
 
   startupStage = "Telegram launch";
   bot = new Telegraf(process.env.BOT_TOKEN);
+  const supportService = createSupportService({
+    db, bot, adminTelegramId: ADMIN_TELEGRAM_ID, isAdmin,
+    helpKeyboard: buildHelpKeyboard,
+  });
 
   // =========================
   // START
@@ -1528,10 +1531,15 @@ async function startBot() {
   bot.action("help", async (ctx) => {
     await ctx.answerCbQuery();
     await ctx.reply(
-      "🎧 Metro VPN အကူအညီ\n\nလိုအပ်တဲ့ ခလုတ်ကိုနှိပ်ပါ။\n• VPN Setup — VPN ချိတ်ဆက်နည်း\n• Payment Help — ငွေလွှဲနဲ့ screenshot ပို့နည်း\n• My VPN — Data နဲ့ သက်တမ်းစစ်ရန်\n• Contact Support — တိုက်ရိုက်အကူအညီတောင်းရန်\n\nသက်ဆိုင်ရာ လမ်းညွှန်ကို ပြပေးပါမယ်။ ငွေပေးချေမှုအတွက် ဆက်သွယ်ရင် မှာယူမှုနံပါတ်ပါ ပေးပါ။",
+      "🎧 Help\n\nအကူအညီလိုအပ်ပါက Support ကို တိုက်ရိုက်ဆက်သွယ်နိုင်ပါတယ်။",
       buildHelpKeyboard()
     );
   });
+
+  bot.action("contact_support", supportService.contact);
+  bot.action("support_cancel", supportService.cancel);
+  bot.action(/^support_reply_(\d+)$/, supportService.selectReply);
+  bot.action(/^support_close_(\d+)$/, supportService.close);
 
   bot.action("payment_help", async (ctx) => {
     await ctx.answerCbQuery();
@@ -1647,6 +1655,7 @@ async function startBot() {
         buildPaymentKeyboard(order)
       );
 
+      await supportService.pauseCustomer(ctx.from.id);
       pendingProofs.set(
         String(ctx.from.id),
         orderId
@@ -1665,6 +1674,12 @@ async function startBot() {
   // =========================
 
   bot.on("photo", async (ctx) => {
+    try {
+      if (await supportService.handlePhoto(ctx)) return;
+    } catch {
+      console.error("Support photo relay failed.");
+      return ctx.reply("Support ပုံကို မပို့နိုင်သေးပါ။ ခဏနေ ပြန်ပို့ပေးပါ။");
+    }
     const userId =
       String(ctx.from.id);
 
@@ -1799,6 +1814,15 @@ async function startBot() {
       await ctx.reply(
         "ငွေလွှဲပုံပို့တာကို အပြီးသတ်မလုပ်နိုင်သေးပါ။ ထပ်ငွေမလွှဲပါနဲ့။\nမူလ Payment စာက Help ကိုနှိပ်ပြီး မှာယူမှုနံပါတ်နဲ့အတူ Contact Support မှ ဆက်သွယ်ပါ။"
       );
+    }
+  });
+
+  bot.on("text", async (ctx) => {
+    try {
+      await supportService.handleText(ctx);
+    } catch {
+      console.error("Support text relay failed.");
+      await ctx.reply("Support စာကို မပို့နိုင်သေးပါ။ ခဏနေ ပြန်ပို့ပေးပါ။");
     }
   });
 
