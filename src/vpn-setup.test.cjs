@@ -1,4 +1,5 @@
 const assert = require("node:assert/strict");
+const crypto = require("node:crypto");
 const { readFileSync } = require("node:fs");
 const { createRequire } = require("node:module");
 const path = require("node:path");
@@ -20,6 +21,7 @@ function loadBot() {
   const env = {
     PUBLIC_BASE_URL: "https://vpn.example.test",
     CONNECT_TOKEN_SECRET: "synthetic-test-secret-".repeat(3),
+    BOT_TOKEN: "123456:synthetic-bot-token",
   };
   const context = vm.createContext({
     __dirname: __dirname,
@@ -122,6 +124,10 @@ test("existing-key HTTPS setup", async (t) => {
   let databaseError = false;
   bot.setDatabase({ public: {
     Customer: { where: () => ({ first: async () => ({ id: 98765 }) }) },
+    Package: { where: () => ({ all: async () => [{
+      id: 7, name: "Basic", active: true, sortOrder: 1,
+      dataLimitGb: 100, durationDays: 31, priceMmk: 5000,
+    }] }) },
     Subscription: { where: (filter) => ({ first: async () => {
       queryCount++;
       if (databaseError) throw new Error("Private database details");
@@ -180,6 +186,37 @@ test("existing-key HTTPS setup", async (t) => {
       const result = await fetch(origin + file);
       assert.equal(result.status, 404, file);
     }
+  });
+
+  await t.test("/app opens the same signed Mini App and reads current account data", async () => {
+    const redirect = await fetch(origin + "/app", { redirect: "manual" });
+    assert.equal(redirect.status, 302);
+    assert.equal(redirect.headers.get("location"), "app/");
+    const page = await fetch(origin + "/app/");
+    assert.equal(page.status, 200);
+    assert.match(await page.text(), /metro-secure-icon\.png/);
+    assert.equal((await fetch(origin + "/app/metro-secure-icon.png")).status, 200);
+    const denied = await fetch(origin + "/app/api/overview", {
+      method: "POST", headers: { "content-type": "application/json" }, body: "{}",
+    });
+    assert.equal(denied.status, 401);
+    const fields = new URLSearchParams({
+      auth_date: String(Math.floor(Date.now() / 1000)),
+      user: JSON.stringify({ id: 123, first_name: "Test" }),
+    });
+    const secret = crypto.createHmac("sha256", "WebAppData").update(bot.env.BOT_TOKEN).digest();
+    const check = [...fields.entries()].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
+      .map(([key, value]) => `${key}=${value}`).join("\n");
+    fields.set("hash", crypto.createHmac("sha256", secret).update(check).digest("hex"));
+    const overview = await fetch(origin + "/app/api/overview", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ initData: fields.toString() }),
+    });
+    assert.equal(overview.status, 200);
+    const data = await overview.json();
+    assert.equal(data.account.status, "ACTIVE");
+    assert.equal(data.packages[0].name, "Basic");
+    assert.equal(JSON.stringify(data).includes(subscription.vpnKey), false);
   });
 
   await t.test("tampered, malformed, wrong-secret and expired tokens are rejected before DB lookup", async () => {

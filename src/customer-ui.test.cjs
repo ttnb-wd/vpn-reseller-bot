@@ -69,6 +69,7 @@ async function loadBot(existingTables = null, outlineKeys = new Map()) {
   const handlers = [];
   const events = {};
   const sent = [];
+  const menuButtonCalls = [];
   const keyCalls = [];
   const limitCalls = [];
   const missingKeys = new Set();
@@ -88,6 +89,7 @@ async function loadBot(existingTables = null, outlineKeys = new Map()) {
       this.telegram = {
         async sendMessage(...args) { sent.push({ type: "message", args }); },
         async sendPhoto(...args) { sent.push({ type: "photo", args }); },
+        async setChatMenuButton(options) { menuButtonCalls.push(options); return true; },
       };
     }
     start(fn) { events.start = fn; }
@@ -162,7 +164,7 @@ async function loadBot(existingTables = null, outlineKeys = new Map()) {
     await found[0].fn(call);
     return call;
   }
-  return { tables, client, events, handlers, sent, keyCalls, limitCalls, missingKeys, ctx, action,
+  return { tables, client, events, handlers, sent, menuButtonCalls, keyCalls, limitCalls, missingKeys, ctx, action,
     recover: context.module.exports.recoverStuckProcessingOrders,
     syncUsage: context.module.exports.syncAccessKeyUsage,
     setUsage(value, ids) { usageByKeyId = value; existingKeyIds = new Set(ids); },
@@ -217,6 +219,10 @@ test("usage sync records real 30-day key usage and skips unsafe or missing metri
 
 test("welcome, packages, confirmation and help only read customer data", async () => {
   const bot = await loadBot();
+  assert.deepEqual(plain(bot.menuButtonCalls), [{ menuButton: {
+    type: "web_app", text: "Metro", web_app: { url: "https://vpn.example.test/app" },
+  } }]);
+  assert.equal(new URL(bot.menuButtonCalls[0].menuButton.web_app.url).search, "");
   const welcome = bot.ctx();
   await bot.events.start(welcome);
   assert.match(welcome.replies[0][0], /Metro VPN မှ ကြိုဆိုပါတယ်/);
@@ -224,6 +230,12 @@ test("welcome, packages, confirmation and help only read customer data", async (
     ["🛡️ Buy VPN", "🌐 My VPN"], ["🗂️ My Orders", "🛰️ Setup VPN"], ["🎧 Help"], ["🧭 Open Metro"],
   ]);
   assert.equal(buttons(welcome.replies[0])[3][0].web_app.url, "https://vpn.example.test/mini-app/");
+  assert.deepEqual(plain(welcome.replies[1][1].reply_markup.keyboard), [
+    ["🛡️ Buy VPN", "🌐 My VPN"], ["📊 Usage", "♻️ Renew"], ["⚡ Connect", "🎧 Support"],
+  ]);
+  assert.equal(welcome.replies[1][1].reply_markup.input_field_placeholder, "Select an option");
+  assert.equal(welcome.replies[1][1].reply_markup.is_persistent, true);
+  assert.equal(JSON.stringify(welcome.replies[1][1]).includes("Metro"), false);
   const packages = await bot.action("buy_vpn");
   assert.deepEqual(plain(buttons(packages.replies[0])[0].map((b) => b.callback_data)), ["package_7", "package_19"]);
   assert.equal(buttons(packages.replies[0])[1][0].text, "💎 Premium");
@@ -243,6 +255,30 @@ test("welcome, packages, confirmation and help only read customer data", async (
   assert.match((await bot.action("payment_help")).replies[0][0], /ငွေပမာဏအတိအကျ/);
   assert.equal(bot.tables.Order.length, 0);
   assert.equal(bot.keyCalls.length, 0);
+});
+
+test("persistent reply buttons keep the existing customer actions functional", async () => {
+  const bot = await loadBot();
+  bot.tables.Customer.push({ id: 1, telegramId: "123" });
+  bot.tables.Subscription.push({
+    id: 1, customerId: 1, plan: "Basic", status: "ACTIVE", dataUsedGb: 35,
+    dataLimitGb: 100, vpnKeyId: "real-1",
+    vpnKey: "ss://synthetic@192.0.2.1:1234",
+    expiresAt: Temporal.Now.instant().add({ hours: 24 * 20 }), revokedAt: null,
+  });
+  async function press(text) {
+    const ctx = bot.ctx();
+    ctx.message = { text };
+    await bot.events.text(ctx);
+    return ctx;
+  }
+  assert.match((await press("🛡️ Buy VPN")).replies[0][0], /Choose Your VPN Package/);
+  assert.match((await press("🌐 My VPN")).replies[0][0], /35 GB \/ 100 GB/);
+  assert.match((await press("📊 Usage")).replies[0][0], /35 GB \/ 100 GB/);
+  assert.match((await press("♻️ Renew")).replies[0][0], /VPN သက်တမ်းတိုးပါ/);
+  assert.match((await press("⚡ Connect")).replies[0][0], /Setup VPN/);
+  assert.match((await press("🎧 Support")).replies[0][0], /Metro Secure Support/);
+  assert.equal(bot.tables.SupportTicket.length, 1);
 });
 
 test("support opens persistent per-customer tickets and relays text and photos to admin", async () => {
@@ -452,7 +488,7 @@ test("Main Menu pauses support while retaining the ticket and starts a fresh ack
   const ordersBefore = bot.tables.Order.length;
   const subscriptionsBefore = bot.tables.Subscription.length;
   const menu = await bot.action("support_main_menu", 123);
-  assert.equal(menu.replies.length, 1);
+  assert.equal(menu.replies.length, 2);
   assert.match(menu.replies[0][0], /Metro VPN မှ ကြိုဆိုပါတယ်/);
   assert.equal(buttons(menu.replies[0])[0][0].callback_data, "buy_vpn");
   assert.equal(ticket.status, "OPEN");

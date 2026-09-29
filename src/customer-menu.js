@@ -10,4 +10,12 @@ function buildCustomerMenu(isAdmin, adminRows = [], miniAppUrl = null) {
   ]);
 }
 
-module.exports = { buildCustomerMenu };
+function buildPersistentCustomerKeyboard() {
+  return Markup.keyboard([
+    ["🛡️ Buy VPN", "🌐 My VPN"],
+    ["📊 Usage", "♻️ Renew"],
+    ["⚡ Connect", "🎧 Support"],
+  ]).resize().persistent().placeholder("Select an option");
+}
+
+module.exports = { buildCustomerMenu, buildPersistentCustomerKeyboard };

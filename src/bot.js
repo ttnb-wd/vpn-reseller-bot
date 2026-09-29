@@ -12,7 +12,7 @@ const { PAYMENT_METHODS } = require("./payment-config");
 const { validateAdminConfig, createAdminRouter } = require("./admin-auth");
 const { createSupportService } = require("./support");
 const { createTelegramAdmin } = require("./telegram-admin");
-const { buildCustomerMenu } = require("./customer-menu");
+const { buildCustomerMenu, buildPersistentCustomerKeyboard } = require("./customer-menu");
 const { createWindowLimiter } = require("./abuse-limits");
 const { createMiniAppRouter } = require("./mini-app");
 
@@ -76,6 +76,11 @@ const PROCESSING_TIMEOUT_MINUTES = 15;
 
 const RECOVERY_INTERVAL_MS = 5 * 60 * 1000;
 const USAGE_SYNC_INTERVAL_MS = 15 * 60 * 1000;
+const REPLY_SHORTCUTS = new Map([
+  ["🛡️ Buy VPN", "buy_vpn"], ["🌐 My VPN", "my_vpn"],
+  ["📊 Usage", "my_vpn"], ["♻️ Renew", "renew_vpn"],
+  ["🎧 Support", "contact_support"],
+]);
 
 const GB_IN_BYTES = 1024 * 1024 * 1024;
 const WELCOME_IMAGE = path.join(__dirname, "..", "assets", "images", "welcome-metro-secure.png");
@@ -585,6 +590,14 @@ function buildMainMenu(ctx) {
     telegramAdmin?.customerAdminRows(), `${getConnectConfig().baseUrl}/mini-app/`);
 }
 
+function buildMetroMenuButton() {
+  return {
+    type: "web_app",
+    text: "Metro",
+    web_app: { url: `${getConnectConfig().baseUrl}/app` },
+  };
+}
+
 function compactButtonRows(buttons) {
   const rows = [];
   for (const button of buttons) {
@@ -976,6 +989,9 @@ async function sendMainMenu(ctx) {
       "စဝယ်ဖို့ Buy VPN ကိုနှိပ်ပါ။ Package အသေးစိတ်ကို အရင်ကြည့်နိုင်ပါတယ်။\nဝယ်ပြီးသားဆိုရင် My VPN မှာ စစ်ကြည့်ပါ။",
     buildMainMenu(ctx)
   );
+  if (ctx.chat?.type === "private") {
+    await ctx.reply("Choose an option below.", buildPersistentCustomerKeyboard());
+  }
 }
 
 async function getActivePackages() {
@@ -1146,7 +1162,7 @@ async function createPackageOrder(
   }
 }
 
-app.use("/mini-app", createMiniAppRouter({
+const miniAppRouter = createMiniAppRouter({
   botToken: process.env.BOT_TOKEN,
   async getAccount(telegramId) {
     const { subscription } = await findCustomerSubscription(telegramId);
@@ -1181,6 +1197,12 @@ app.use("/mini-app", createMiniAppRouter({
   },
   async sendBotFlow(telegramId, flow, packageId) {
     if (!allowMiniFlow(telegramId)) throw new Error("Too many requests");
+    if (flow === "support") {
+      await bot.telegram.sendMessage(telegramId,
+        "🎧 Help\n\nTap Contact Support to message the Metro Secure team.",
+        buildHelpKeyboard());
+      return;
+    }
     const packages = await getActivePackages();
     if (!packages.length) throw new Error("No packages");
     const selected = packageId === undefined ? null : packages.find((pkg) => pkg.id === packageId);
@@ -1196,7 +1218,13 @@ app.use("/mini-app", createMiniAppRouter({
       selected ? buildPackageDetailKeyboard(selected, isRenewal) :
         buildPackageKeyboard(packages, isRenewal));
   },
-}));
+});
+app.get("/app", (req, res, next) => {
+  if (req.path === "/app") return res.redirect(302, "app/");
+  next();
+});
+app.use("/app", miniAppRouter);
+app.use("/mini-app", miniAppRouter);
 
 async function startBot() {
   console.log("Starting VPN Bot...");
@@ -1241,6 +1269,11 @@ async function startBot() {
   });
   telegramAdmin = createTelegramAdmin({ bot, db, adminTelegramId: ADMIN_TELEGRAM_ID,
     supportService });
+  const shortcutActions = new Map();
+  function registerShortcutAction(name, handler) {
+    shortcutActions.set(name, handler);
+    bot.action(name, handler);
+  }
 
   // =========================
   // START
@@ -1261,7 +1294,7 @@ async function startBot() {
   // MY VPN
   // =========================
 
-  bot.action("my_vpn", async (ctx) => {
+  registerShortcutAction("my_vpn", async (ctx) => {
     await ctx.answerCbQuery();
 
     try {
@@ -1362,7 +1395,7 @@ async function startBot() {
   // RENEW VPN
   // =========================
 
-  bot.action(
+  registerShortcutAction(
     "renew_vpn",
     async (ctx) => {
       await ctx.answerCbQuery();
@@ -1508,7 +1541,7 @@ async function startBot() {
   // BUY VPN
   // =========================
 
-  bot.action(
+  registerShortcutAction(
     "buy_vpn",
     async (ctx) => {
       await ctx.answerCbQuery();
@@ -1652,7 +1685,7 @@ async function startBot() {
   // HELP
   // =========================
 
-  bot.action("help", async (ctx) => {
+  registerShortcutAction("help", async (ctx) => {
     await ctx.answerCbQuery();
     await ctx.reply(
       "🎧 Help\n\nအကူအညီလိုအပ်ပါက Support ကို တိုက်ရိုက်ဆက်သွယ်နိုင်ပါတယ်။",
@@ -1660,7 +1693,7 @@ async function startBot() {
     );
   });
 
-  bot.action("contact_support", supportService.contact);
+  registerShortcutAction("contact_support", supportService.contact);
   bot.action("support_cancel", supportService.cancel);
   bot.action("support_main_menu", async (ctx) => {
     await ctx.answerCbQuery();
@@ -1967,6 +2000,20 @@ async function startBot() {
   bot.on("text", async (ctx) => {
     try {
       if (await telegramAdmin.handleText(ctx)) return;
+      if (ctx.chat?.type === "private") {
+        const label = ctx.message?.text;
+        if (label === "⚡ Connect") {
+          await sendVpnSetup(ctx);
+          return;
+        }
+        const shortcut = REPLY_SHORTCUTS.get(label);
+        if (shortcut) {
+          const textContext = Object.create(ctx);
+          textContext.answerCbQuery = async () => {};
+          await shortcutActions.get(shortcut)(textContext);
+          return;
+        }
+      }
       await supportService.handleText(ctx);
     } catch {
       console.error("Support text relay failed.");
@@ -2902,6 +2949,8 @@ async function startBot() {
 
   startupStage = "Telegram launch";
   await bot.launch();
+  startupStage = "Telegram menu button";
+  await bot.telegram.setChatMenuButton({ menuButton: buildMetroMenuButton() });
   startUsageSync();
 
   console.log(

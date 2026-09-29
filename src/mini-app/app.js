@@ -63,7 +63,7 @@
     } catch (error) { message(error.message, true); }
   }
   async function openFlow(flow, packageId) {
-    message("Opening checkout in the bot…");
+    message(flow === "support" ? "Opening support in the bot…" : "Opening checkout in the bot…");
     try {
       await api("flow", { flow, packageId });
       message("Continue in your Telegram chat with Metro Secure.");
@@ -73,6 +73,7 @@
   $("connect-button").addEventListener("click", connect);
   $("vpn-connect-button").addEventListener("click", connect);
   $("renew-button").addEventListener("click", () => openFlow("renew"));
+  $("support-button").addEventListener("click", () => openFlow("support"));
   for (const button of document.querySelectorAll(".nav-button")) button.addEventListener("click", () => {
     for (const tab of ["home", "vpn", "packages"]) $(tab + "-panel").classList.toggle("hidden", button.dataset.tab !== tab);
     for (const nav of document.querySelectorAll(".nav-button")) nav.classList.toggle("active", nav === button);

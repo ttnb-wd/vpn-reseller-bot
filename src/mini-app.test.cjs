@@ -47,6 +47,7 @@ test("Mini App serves live account data and gates connect and checkout by Telegr
     assert.equal(page.headers.get("x-frame-options"), null);
     const html = await page.text();
     assert.match(html, /Metro Secure/);
+    assert.match(html, /id="support-button"/);
     assert.equal([...html.matchAll(/metro-secure-icon\.png/g)].length, 5);
     assert.doesNotMatch(html, /🌐|<svg\b/);
     const icon = await fetch(`${base}/metro-secure-icon.png`);
@@ -65,8 +66,10 @@ test("Mini App serves live account data and gates connect and checkout by Telegr
     assert.equal(JSON.stringify(data).includes("ss://"), false);
     assert.equal((await post("connect", { initData: signedData() })).status, 200);
     assert.equal((await post("flow", { initData: signedData(), flow: "renew", packageId: 7 })).status, 200);
+    assert.equal((await post("flow", { initData: signedData(), flow: "support" })).status, 200);
     assert.equal((await post("flow", { initData: signedData(), flow: "arbitrary" })).status, 400);
-    assert.deepEqual(calls, [["account", 42], ["connect", 42], ["flow", 42, "renew", 7]]);
+    assert.deepEqual(calls, [["account", 42], ["connect", 42],
+      ["flow", 42, "renew", 7], ["flow", 42, "support", undefined]]);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }

@@ -74,7 +74,7 @@ function createMiniAppRouter({ botToken, getAccount, getPackages, getConnectUrl,
   });
   router.post("/api/flow", async (req, res) => {
     const { flow, packageId } = req.body || {};
-    if (!["renew", "packages"].includes(flow) ||
+    if (!["renew", "packages", "support"].includes(flow) ||
         (packageId !== undefined && (!Number.isSafeInteger(packageId) || packageId <= 0))) {
       return res.status(400).json({ error: "Invalid selection." });
     }
