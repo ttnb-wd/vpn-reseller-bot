@@ -63,6 +63,9 @@ async function loadBot() {
   const keyCalls = [];
   const limitCalls = [];
   const missingKeys = new Set();
+  let usageByKeyId = {};
+  let existingKeyIds = new Set();
+  let metricsUnavailable = false;
   const fakeApp = {
     set() {}, get() {},
     listen() {
@@ -86,6 +89,7 @@ async function loadBot() {
     async launch() {}
   }
   const context = vm.createContext({
+    __dirname: __dirname,
     require(name) {
       if (name === "dotenv") return { config() {} };
       if (name === "express") return () => fakeApp;
@@ -93,6 +97,11 @@ async function loadBot() {
       if (name === "./db") return { async createDatabase() { return { client }; } };
       if (name === "./outline") return {
         validateOutlineConfig() {}, async testOutlineConnection() {},
+        async getAllAccessKeyUsage() {
+          if (metricsUnavailable) throw new Error("Private management URL");
+          return usageByKeyId;
+        },
+        async getExistingAccessKeyIds() { return existingKeyIds; },
         async createAccessKey(order) {
           keyCalls.push(order.id);
           return { id: `real-test-${keyCalls.length}`, accessUrl: `ss://synthetic@192.0.2.1:1234#${keyCalls.length}` };
@@ -113,16 +122,17 @@ async function loadBot() {
     console: { log() {}, error() {}, warn() {} }, module: { exports: {} },
   });
   vm.runInContext(source.slice(0, source.lastIndexOf("\nstartBot().catch(")) + `
-    module.exports = { startBot, recoverStuckProcessingOrders };
+    module.exports = { startBot, recoverStuckProcessingOrders, syncAccessKeyUsage };
   `, context, { filename: file });
   await context.module.exports.startBot();
+  await new Promise(setImmediate);
 
   function ctx(userId = 123, messageId = 1) {
     const replies = [];
     return {
       from: { id: userId, first_name: "Test" }, replies,
       callbackQuery: { message: { chat: { id: userId }, message_id: messageId } },
-      async answerCbQuery() {}, async editMessageCaption() {},
+      async answerCbQuery() {}, async editMessageCaption() {}, async replyWithPhoto() {},
       async reply(...args) { replies.push(args); },
     };
   }
@@ -135,11 +145,49 @@ async function loadBot() {
     return call;
   }
   return { tables, events, handlers, sent, keyCalls, limitCalls, missingKeys, ctx, action,
-    recover: context.module.exports.recoverStuckProcessingOrders };
+    recover: context.module.exports.recoverStuckProcessingOrders,
+    syncUsage: context.module.exports.syncAccessKeyUsage,
+    setUsage(value, ids) { usageByKeyId = value; existingKeyIds = new Set(ids); },
+    setMetricsUnavailable(value) { metricsUnavailable = value; } };
 }
 
 function buttons(reply) { return reply[1].reply_markup.inline_keyboard; }
 function plain(value) { return JSON.parse(JSON.stringify(value)); }
+
+test("usage sync records real 30-day key usage and skips unsafe or missing metrics", async () => {
+  const bot = await loadBot();
+  bot.tables.Customer.push({ id: 1, telegramId: "123" });
+  const subscription = {
+    id: 1, customerId: 1, packageId: 19, plan: "Standard", status: "ACTIVE",
+    vpnKeyId: "real-1", vpnKey: "ss://synthetic@192.0.2.1:1234",
+    dataUsedGb: 7, dataLimitGb: 213, revokedAt: null,
+    expiresAt: Temporal.Now.instant().add({ hours: 24 }),
+  };
+  bot.tables.Subscription.push(subscription);
+  bot.tables.Subscription.push({ ...subscription, id: 2, customerId: 2, vpnKeyId: "missing", dataUsedGb: 4 });
+  bot.tables.Subscription.push({ ...subscription, id: 3, customerId: 3, vpnKeyId: "mock-test", dataUsedGb: 4 });
+  bot.setUsage({ "real-1": 1.5 * 1024 ** 3 }, ["real-1"]);
+  await bot.syncUsage();
+  assert.equal(subscription.dataUsedGb, 1.5);
+  assert.equal(bot.tables.Subscription[1].dataUsedGb, 4);
+  assert.equal(bot.tables.Subscription[2].dataUsedGb, 4);
+  assert.equal(bot.keyCalls.length, 0);
+  const myVpn = await bot.action("my_vpn");
+  assert.match(myVpn.replies[0][0], /1\.5 GB \/ 213 GB/);
+  assert.match(myVpn.replies[0][0], /30 ရက်/);
+
+  bot.setUsage({ "real-1": Number.MAX_SAFE_INTEGER + 1 }, ["real-1"]);
+  await bot.syncUsage();
+  assert.equal(subscription.dataUsedGb, 1.5);
+  bot.setMetricsUnavailable(true);
+  await bot.syncUsage();
+  assert.equal(subscription.dataUsedGb, 1.5);
+  bot.setMetricsUnavailable(false);
+  bot.setUsage({}, ["real-1"]);
+  await bot.syncUsage();
+  assert.equal(subscription.dataUsedGb, 0);
+  assert.equal(bot.keyCalls.length, 0);
+});
 
 test("welcome, packages, confirmation and help only read customer data", async () => {
   const bot = await loadBot();

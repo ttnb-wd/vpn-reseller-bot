@@ -15,6 +15,8 @@ const {
   setAccessKeyDataLimit,
   validateOutlineConfig,
   testOutlineConnection,
+  getAllAccessKeyUsage,
+  getExistingAccessKeyIds,
   isAccessKeyNotFoundError,
 } = require("./outline");
 
@@ -39,12 +41,15 @@ const ADMIN_TELEGRAM_ID = String(
 );
 
 let db;
+let usageSyncTimer;
+let usageSyncRunning = false;
 
 const pendingProofs = new Map();
 
 const PROCESSING_TIMEOUT_MINUTES = 15;
 
 const RECOVERY_INTERVAL_MS = 5 * 60 * 1000;
+const USAGE_SYNC_INTERVAL_MS = 15 * 60 * 1000;
 
 const GB_IN_BYTES = 1024 * 1024 * 1024;
 const WELCOME_IMAGE = path.join(__dirname, "..", "assets", "images", "welcome-metro-secure.png");
@@ -503,6 +508,12 @@ function formatNumber(value) {
   return Number(value).toLocaleString("en-US");
 }
 
+function formatUsageGb(value) {
+  const gb = Number(value);
+  return (Number.isFinite(gb) && gb >= 0 ? gb : 0)
+    .toLocaleString("en-US", { maximumFractionDigits: 2 });
+}
+
 function formatMmk(value) {
   return formatNumber(value);
 }
@@ -836,6 +847,63 @@ function startProcessingRecovery() {
   );
 }
 
+async function syncAccessKeyUsage() {
+  if (!db || usageSyncRunning) return;
+  usageSyncRunning = true;
+
+  try {
+    const usageByKeyId = await getAllAccessKeyUsage();
+    const existingKeyIds = await getExistingAccessKeyIds();
+    const subscriptions = await db.public.Subscription.where({ status: "ACTIVE" }).all();
+    let updated = 0;
+    let skipped = 0;
+
+    for (const subscription of subscriptions) {
+      const keyId = subscription.vpnKeyId;
+      if (!keyId || String(keyId).startsWith("mock-") ||
+          subscription.revokedAt || !existingKeyIds.has(String(keyId))) {
+        skipped++;
+        continue;
+      }
+
+      // Outline omits existing keys with no traffic from the transfer map.
+      const bytes = Object.hasOwn(usageByKeyId, String(keyId))
+        ? usageByKeyId[String(keyId)] : 0;
+      if (!Number.isSafeInteger(bytes) || bytes < 0) {
+        skipped++;
+        continue;
+      }
+
+      try {
+        // Match the same 1024^3 GB unit used for Outline data limits.
+        const dataUsedGb = bytes / GB_IN_BYTES;
+        const changed = await db.public.Subscription
+          .where({ id: subscription.id, vpnKeyId: keyId, status: "ACTIVE" })
+          .updateAll({ dataUsedGb });
+        updated += changed.length;
+      } catch {
+        skipped++;
+      }
+    }
+
+    console.log(`Outline usage sync completed: ${updated} updated, ${skipped} skipped.`);
+  } catch (error) {
+    // Axios errors can contain the management URL and credentials. Log only a
+    // numeric HTTP status, never the error object or its request config.
+    console.error("Outline usage sync failed.", {
+      status: safeHttpStatus(error?.response?.status),
+    });
+  } finally {
+    usageSyncRunning = false;
+  }
+}
+
+function startUsageSync() {
+  void syncAccessKeyUsage();
+  usageSyncTimer = setInterval(() => { void syncAccessKeyUsage(); }, USAGE_SYNC_INTERVAL_MS);
+  console.log("Outline usage sync enabled (every 15 minutes).");
+}
+
 async function sendMainMenu(ctx) {
   await ctx.reply(
     "👋 Metro VPN မှ ကြိုဆိုပါတယ်\n\n" +
@@ -1043,9 +1111,9 @@ async function startBot() {
 
       await ctx.reply(
         `🌐 My VPN\n\nPackage: ${packageLabel}\n` +
-          `📡 သုံးပြီး / စုစုပေါင်း Data: ${formatNumber(subscription.dataUsedGb || 0)} GB / ${formatNumber(subscription.dataLimitGb || 0)} GB\n` +
+          `📡 နောက်ဆုံး 30 ရက် သုံးပြီး / Data limit: ${formatUsageGb(subscription.dataUsedGb)} GB / ${formatNumber(subscription.dataLimitGb || 0)} GB\n` +
           `⏳ သက်တမ်းကုန်ရက်: ${formatInstant(subscription.expiresAt)}\nအခြေအနေ: သက်တမ်းရှိနေပါသည်\n\n` +
-          "Data မှာ သုံးပြီးပမာဏနဲ့ စုစုပေါင်းခွင့်ပြုထားတဲ့ ပမာဏကို ပြထားပါတယ်။ သက်တမ်းကုန်ရက်အထိ ကျန် Data ကို သုံးနိုင်ပါတယ်။\n" +
+          "Outline ၏ နောက်ဆုံး 30 ရက် အသုံးပြုမှုကို ပြထားပါတယ်။ Data limit ကို Outline server က ထိန်းချုပ်ပါတယ်။\n" +
           (hasReusableKey
             ? "စချိတ်ဆက်ဖို့ Setup VPN ကိုနှိပ်ပါ။ Data / သက်တမ်း တိုးချင်ရင် Renew ကိုနှိပ်ပြီး package ရွေးပါ။"
             : "VPN key ကို လောလောဆယ် ရယူမရပါ။ Help → Contact Support ကိုနှိပ်ပြီး အကူအညီတောင်းပါ။"),
@@ -2606,6 +2674,7 @@ async function startBot() {
 
   startupStage = "Telegram launch";
   await bot.launch();
+  startUsageSync();
 
   console.log(
     "VPN Bot is running..."
@@ -2620,6 +2689,7 @@ async function startBot() {
       `${signal} received. Shutting down...`
     );
 
+    clearInterval(usageSyncTimer);
     bot.stop(signal);
 
     server.close(() => {

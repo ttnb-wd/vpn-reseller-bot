@@ -139,6 +139,27 @@ async function testOutlineConnection() {
   return response.data;
 }
 
+async function getAllAccessKeyUsage() {
+  // The management API exposes one transfer snapshot for all access keys.
+  const response = await getOutlineClient().get("/metrics/transfer");
+  const usage = response.data?.bytesTransferredByUserId;
+  if (!usage || typeof usage !== "object" || Array.isArray(usage)) {
+    throw new Error("Outline API returned invalid transfer metrics.");
+  }
+  return usage;
+}
+
+async function getExistingAccessKeyIds() {
+  // A key with no traffic can be absent from the metrics map. Check that it
+  // still exists before recording zero usage. Never return or log access URLs.
+  const response = await getOutlineClient().get("/access-keys");
+  const keys = response.data?.accessKeys;
+  if (!Array.isArray(keys)) {
+    throw new Error("Outline API returned an invalid access key list.");
+  }
+  return new Set(keys.filter((key) => typeof key?.id === "string").map((key) => key.id));
+}
+
 async function createAccessKey() {
   const response = await getOutlineClient().post("/access-keys");
   const accessKey = response.data;
@@ -189,6 +210,8 @@ async function deleteAccessKey(keyId) {
 module.exports = {
   validateOutlineConfig,
   testOutlineConnection,
+  getAllAccessKeyUsage,
+  getExistingAccessKeyIds,
   createAccessKey,
   setAccessKeyDataLimit,
   deleteAccessKey,

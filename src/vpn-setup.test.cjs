@@ -22,6 +22,7 @@ function loadBot() {
     CONNECT_TOKEN_SECRET: "synthetic-test-secret-".repeat(3),
   };
   const context = vm.createContext({
+    __dirname: __dirname,
     require(name) {
       if (name === "dotenv") return { config() {} };
       if (name === "./db") return { createDatabase() { throw new Error("Unexpected DB startup"); } };
