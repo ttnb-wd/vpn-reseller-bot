@@ -125,6 +125,12 @@ async function loadBot(existingTables = null, outlineKeys = new Map(), options =
         validateAdminConfig() { return { email: "admin@example.test" }; },
         createAdminRouter() { return () => {}; },
       };
+      if (name === "./safe-diagnostics") return {
+        ...localRequire(name),
+        logHandlerFailure(handler, error) {
+          errors.push(["Telegram handler failed:", localRequire(name).describeHandlerFailure(handler, error)]);
+        },
+      };
       if (name === "./telegram-admin" && options.adminDataApi) return {
         createTelegramAdmin(args) {
           return localRequire(name).createTelegramAdmin({ ...args, dataApi: options.adminDataApi });
@@ -363,6 +369,49 @@ test("persistent reply buttons keep the existing customer actions functional", a
   assert.match((await press("⚡ Connect")).replies[0][0], /Setup VPN/);
   assert.match((await press("🎧 Support")).replies[0][0], /Metro Secure Support/);
   assert.equal(bot.tables.SupportTicket.length, 1);
+});
+
+test("start registers a customer and empty VPN states stay customer friendly", async () => {
+  const bot = await loadBot();
+  const welcome = bot.ctx(456);
+  await bot.events.start(welcome);
+  assert.equal(bot.tables.Customer.find((row) => row.telegramId === "456")?.firstName, "Test");
+  const myVpn = await bot.action("my_vpn", 456);
+  assert.match(myVpn.replies[0][0], /VPN package မရှိသေးပါ/);
+  assert.doesNotMatch(myVpn.replies[0][0], /လောလောဆယ် မဖော်ပြနိုင်/);
+  const usage = bot.ctx(456);
+  usage.message = { text: "📊 Usage" };
+  await bot.events.text(usage);
+  assert.match(usage.replies[0][0], /VPN package မရှိသေးပါ/);
+  assert.match((await bot.action("renew_vpn", 456)).replies[0][0], /VPN package မရှိသေးလို့/);
+  const connect = bot.ctx(456);
+  connect.message = { text: "⚡ Connect" };
+  await bot.events.text(connect);
+  assert.match(connect.replies[0][0], /VPN package မရှိသေးပါ/);
+});
+
+test("Buy VPN uses live Package rows and handles an empty package table", async () => {
+  const bot = await loadBot();
+  assert.match((await bot.action("buy_vpn")).replies[0][0], /Choose Your VPN Package/);
+  bot.tables.Package.splice(0);
+  assert.match((await bot.action("buy_vpn")).replies[0][0], /ရွေးနိုင်တဲ့ package မရှိသေးပါ/);
+});
+
+test("database failures use safe fallbacks and log codes without secrets", async () => {
+  const bot = await loadBot();
+  const error = Object.assign(new Error("query failed postgres://user:password@db.invalid/x ss://private-key token=private"),
+    { code: "CONTRACT.MARKER_MISMATCH" });
+  bot.client.public.Customer.where = () => { throw error; };
+  const myVpn = await bot.action("my_vpn");
+  assert.match(myVpn.replies[0][0], /လောလောဆယ် မဖော်ပြနိုင်/);
+  bot.client.public.Package.where = () => { throw error; };
+  const buy = await bot.action("buy_vpn");
+  assert.match(buy.replies[0][0], /Package တွေကို မဖော်ပြနိုင်သေးပါ/);
+  const logged = JSON.stringify(bot.errors);
+  assert.match(logged, /my_vpn|buy_vpn/);
+  assert.match(logged, /CONTRACT\.MARKER_MISMATCH/);
+  assert.match(logged, /contract/);
+  assert.doesNotMatch(logged, /private-key|postgres:\/\/|token=private|password@/);
 });
 
 test("support opens persistent per-customer tickets and relays text and photos to admin", async () => {

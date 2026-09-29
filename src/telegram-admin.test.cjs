@@ -126,6 +126,14 @@ test("payments show proof availability and only admin can send stored photo to a
   assert.doesNotMatch(JSON.stringify(f.sent), /file-123|ss:\/\//);
 });
 
+test("admin Packages reads current database rows", async () => {
+  const f = fixture();
+  assert.match((await f.tap("packages_1")).text, /Basic[\s\S]*5,000/);
+  f.pkg.name = "Updated Basic";
+  assert.match((await f.tap("packages_1")).text, /Updated Basic/);
+  assert.equal(f.calls.packages, 2);
+});
+
 test("package edit validates, confirms, saves through shared helper and reads fresh row", async () => {
   const f = fixture();
   assert.match((await f.tap("packages_1")).text, /5,000/);

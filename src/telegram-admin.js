@@ -1,5 +1,6 @@
 const { Markup } = require("telegraf");
 const data = require("./admin-data");
+const { logHandlerFailure } = require("./safe-diagnostics");
 
 const FIELDS = { name: "Name", priceMmk: "Price", dataLimitGb: "Data Limit GB",
   durationDays: "Duration Days", sortOrder: "Sort Order" };
@@ -216,7 +217,7 @@ function createTelegramAdmin({ bot, db, adminTelegramId, supportService, dataApi
       if ((m = /^field_(\d+)_(\d+)_(name|priceMmk|dataLimitGb|durationDays|sortOrder)$/.exec(a)))
         return begin(ctx, Number(m[1]), Number(m[2]), m[3]);
     } catch (error) {
-      console.error("Telegram admin action failed:", error?.name);
+      logHandlerFailure("admin.action", error);
       await ctx.reply("Admin data is temporarily unavailable. Please try again.");
     }
   }

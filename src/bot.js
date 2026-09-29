@@ -16,6 +16,8 @@ const { buildCustomerMenu, buildPersistentCustomerKeyboard,
   buildPersistentAdminKeyboard } = require("./customer-menu");
 const { createWindowLimiter } = require("./abuse-limits");
 const { createMiniAppRouter } = require("./mini-app");
+const { safeDiagnosticCode, sanitizeDiagnosticMessage,
+  logHandlerFailure } = require("./safe-diagnostics");
 
 const {
   createOrderAccessKey,
@@ -327,51 +329,11 @@ app.get("/connect/:token", async (req, res) => {
 
 let startupStage = "production config validation";
 
-function safeDiagnosticCode(value) {
-  return typeof value === "string" && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(value)
-    ? value
-    : undefined;
-}
-
 function safeHttpStatus(value) {
   const status = Number(value);
   return Number.isInteger(status) && status >= 100 && status <= 599
     ? status
     : undefined;
-}
-
-function sanitizeDiagnosticMessage(value) {
-  if (typeof value !== "string") return undefined;
-
-  let message = value;
-  const secrets = [
-    process.env.OUTLINE_API_URL,
-    process.env.OUTLINE_API_CERT_SHA256,
-    process.env.BOT_TOKEN,
-    process.env.DATABASE_URL,
-    process.env.CONNECT_TOKEN_SECRET,
-    process.env.ADMIN_EMAIL,
-    process.env.ADMIN_PASSWORD_HASH,
-    process.env.ADMIN_SESSION_SECRET,
-  ];
-
-  try {
-    const managementPath = new URL(process.env.OUTLINE_API_URL).pathname;
-    if (managementPath.length > 1) secrets.push(managementPath);
-  } catch {
-    // Configuration validation reports malformed URLs separately.
-  }
-
-  for (const secret of secrets) {
-    if (secret) message = message.split(secret).join("[redacted]");
-  }
-
-  return message
-    .replace(/(?:https?|ss|postgres(?:ql)?):\/\/[^\s"'<>)]*/gi, "[redacted URL]")
-    .replace(/\b\d{5,}:[A-Za-z0-9_-]{20,}\b/g, "[redacted token]")
-    .replace(/(?:password|token|secret)\s*[:=]\s*[^\s,;]+/gi, "[redacted credential]")
-    .replace(/[\r\n\t]+/g, " ")
-    .slice(0, 240);
 }
 
 function logStartupFailure(error) {
@@ -1282,6 +1244,19 @@ async function startBot() {
   // =========================
 
   bot.start(async (ctx) => {
+    if (ctx.chat?.type === "private" && ctx.from?.id != null) {
+      try {
+        await db.public.Customer.upsert({
+          conflictOn: { telegramId: true },
+          create: { telegramId: String(ctx.from.id), username: ctx.from.username || null,
+            firstName: ctx.from.first_name || null },
+          update: { username: ctx.from.username || null,
+            firstName: ctx.from.first_name || null },
+        });
+      } catch (error) {
+        logHandlerFailure("start.customerRegistration", error);
+      }
+    }
     await ctx.replyWithPhoto(Input.fromLocalFile(WELCOME_IMAGE));
     await sendMainMenu(ctx);
   });
@@ -1335,8 +1310,8 @@ async function startBot() {
             : "VPN key ကို လောလောဆယ် ရယူမရပါ။ Help → Contact Support ကိုနှိပ်ပြီး အကူအညီတောင်းပါ။"),
         buildMyVpnKeyboard(subscription)
       );
-    } catch {
-      console.error("Could not load My VPN.");
+    } catch (error) {
+      logHandlerFailure("my_vpn", error);
 
       await ctx.reply(
         "VPN အချက်အလက်ကို လောလောဆယ် မဖော်ပြနိုင်ပါ။\nခဏစောင့်ပြီး My VPN ကို ပြန်နှိပ်ပါ။"
@@ -1358,8 +1333,8 @@ async function startBot() {
     await ctx.answerCbQuery();
     try {
       await sendVpnSetup(ctx);
-    } catch {
-      console.error("Could not load VPN setup.");
+    } catch (error) {
+      logHandlerFailure("setup_vpn", error);
       await ctx.reply("VPN Setup ကို လောလောဆယ် ဖွင့်မရပါ။\nMy VPN → Setup VPN ကို ပြန်နှိပ်ပါ။ ထပ်ဖြစ်ရင် /start → Help မှ ဆက်သွယ်ပါ။");
     }
   });
@@ -1369,8 +1344,8 @@ async function startBot() {
     try {
       // Old device-picker messages now issue the same direct helper link.
       await sendVpnSetup(ctx);
-    } catch {
-      console.error("Could not load platform VPN setup.");
+    } catch (error) {
+      logHandlerFailure("setup_platform", error);
       await ctx.reply("VPN Setup ကို လောလောဆယ် ဖွင့်မရပါ။\nMy VPN → Setup VPN ကို ပြန်နှိပ်ပါ။ ထပ်ဖြစ်ရင် /start → Help မှ ဆက်သွယ်ပါ။");
     }
   });
@@ -1386,8 +1361,8 @@ async function startBot() {
 
       try {
         await sendVpnSetup(ctx);
-      } catch {
-        console.error("Could not load VPN setup from the connection link.");
+      } catch (error) {
+        logHandlerFailure("connection_link", error);
         await ctx.reply("VPN Setup ကို လောလောဆယ် ဖွင့်မရပါ။\nMy VPN → Setup VPN ကို ပြန်နှိပ်ပါ။ ထပ်ဖြစ်ရင် /start → Help မှ ဆက်သွယ်ပါ။");
       }
     }
@@ -1445,7 +1420,7 @@ async function startBot() {
           buildPackageKeyboard(packages, true)
         );
       } catch (error) {
-        console.error("Renew package failed.");
+        logHandlerFailure("renew_vpn", error);
 
         await ctx.reply(
           "သက်တမ်းတိုးနိုင်တဲ့ package တွေကို မဖော်ပြနိုင်သေးပါ။\nခဏစောင့်ပြီး My VPN → Renew ကို ပြန်နှိပ်ပါ။"
@@ -1564,7 +1539,7 @@ async function startBot() {
           buildPackageKeyboard(packages)
         );
       } catch (error) {
-        console.error("Could not load packages.");
+        logHandlerFailure("buy_vpn", error);
 
         await ctx.reply(
           "Package တွေကို မဖော်ပြနိုင်သေးပါ။\nခဏစောင့်ပြီး Buy VPN ကို ပြန်နှိပ်ပါ။"
@@ -2000,31 +1975,34 @@ async function startBot() {
   });
 
   bot.on("text", async (ctx) => {
+    let handler = "text";
     try {
+      handler = "admin.packageInput";
       if (await telegramAdmin.handleText(ctx)) return;
+      handler = "admin.supportReply";
       if (isAdmin(ctx) && await supportService.handleText(ctx)) return;
+      handler = "admin.menu";
       if (await telegramAdmin.handleMenuText(ctx)) return;
       if (ctx.chat?.type === "private") {
         const label = ctx.message?.text;
         if (label === "⚡ Connect") {
+          handler = "connect";
           await sendVpnSetup(ctx);
           return;
         }
         const shortcut = REPLY_SHORTCUTS.get(label);
         if (shortcut) {
+          handler = shortcut;
           const textContext = Object.create(ctx);
           textContext.answerCbQuery = async () => {};
           await shortcutActions.get(shortcut)(textContext);
           return;
         }
       }
+      handler = "support.text";
       await supportService.handleText(ctx);
     } catch (error) {
-      console.error("Telegram text routing failed:", {
-        name: safeDiagnosticCode(error?.name),
-        code: safeDiagnosticCode(error?.code),
-        message: sanitizeDiagnosticMessage(error?.message),
-      });
+      logHandlerFailure(handler, error);
       await ctx.reply("Support စာကို မပို့နိုင်သေးပါ။ ခဏနေ ပြန်ပို့ပေးပါ။");
     }
   });
@@ -2936,12 +2914,7 @@ async function startBot() {
   // =========================
 
   bot.catch((error, ctx) => {
-    console.error("Telegram bot handler failed:", {
-      updateType: safeDiagnosticCode(ctx?.updateType),
-      name: safeDiagnosticCode(error?.name),
-      code: safeDiagnosticCode(error?.code),
-      message: sanitizeDiagnosticMessage(error?.message),
-    });
+    logHandlerFailure(`update.${safeDiagnosticCode(ctx?.updateType) || "unknown"}`, error);
   });
 
   // =========================
