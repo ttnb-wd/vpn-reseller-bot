@@ -349,7 +349,7 @@ test("existing-key HTTPS setup", async (t) => {
     assert.deepEqual(legacy.copies, [subscription.vpnKey]);
     const denied = runPage(html, { rejectClipboard: true });
     await denied.click("copy-key");
-    assert.match(denied.nodes.status.textContent, /Tap Copy VPN Key again/);
+    assert.match(denied.nodes.status.textContent, /Copy VPN Key ကို ပြန်နှိပ်ပေးပါ/);
     await denied.click("copy-key");
     assert.deepEqual(denied.copies, [subscription.vpnKey]);
   });

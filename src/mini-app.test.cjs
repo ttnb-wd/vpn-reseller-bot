@@ -6,7 +6,29 @@ const { test } = require("node:test");
 const express = require("express");
 const { verifyTelegramInitData, createMiniAppRouter } = require("./mini-app");
 const { dashboardView, formatUsageSync, remainingDays, formatRemainingDays,
-  formatUsagePercent, progressFillPercent } = require("./mini-app/app");
+  formatUsagePercent, progressFillPercent, formatPlanLabel,
+  orderStatusLabel, vpnStatusLabel } = require("./mini-app/app");
+
+test("Mini App keeps customer statuses, exact days and buttons friendly", () => {
+  assert.equal(formatPlanLabel("Basic - 30 Days"), "Basic - 30 ရက်");
+  assert.equal(formatPlanLabel("Basic - 60 Days"), "Basic - 60 ရက်");
+  for (const status of ["ACTIVE", "EXPIRED", "REVOKED", "DATA_LIMIT_REACHED", "INACTIVE", "NONE", "NEW_STATE"])
+    assert.doesNotMatch(vpnStatusLabel(status), /\b(?:ACTIVE|EXPIRED|REVOKED|DATA_LIMIT_REACHED|INACTIVE|NONE|NEW_STATE)\b/);
+  for (const status of ["PENDING_PAYMENT", "PAYMENT_SUBMITTED", "PROCESSING", "PAID", "PAYMENT_REJECTED", "CANCELLED", "EXPIRED", "NEW_STATE"])
+    assert.doesNotMatch(orderStatusLabel(status), /\b(?:PENDING_PAYMENT|PAYMENT_SUBMITTED|PROCESSING|PAID|PAYMENT_REJECTED|CANCELLED|EXPIRED|NEW_STATE)\b/);
+  assert.match(orderStatusLabel("PAYMENT_SUBMITTED"), /Slip ရပါပြီ/);
+  assert.match(vpnStatusLabel("EXPIRED"), /VPN သက်တမ်းကုန်သွားပါပြီ/);
+
+  const html = readFileSync(path.join(__dirname, "mini-app", "index.html"), "utf8");
+  const js = readFileSync(path.join(__dirname, "mini-app", "app.js"), "utf8");
+  const labels = [...html.matchAll(/<button\b[^>]*>([^<]*)<\/button>/g)].map((match) => match[1]);
+  labels.push(...[...js.matchAll(/\baction\("([^"]+)"/g)].map((match) => match[1]));
+  for (const label of labels) assert.doesNotMatch(label, /\p{Extended_Pictographic}|[↻←⌂⬡◆]/u);
+  assert.match(js, /api\("support\/send"/);
+  assert.match(js, /api\/order\/payment-proof-upload/);
+  assert.doesNotMatch(html + js, /Contact us in the bot|Send this through Telegram|Send Payment Proof in Bot/);
+  assert.match(js, /slip ပုံကို ဒီမှာတင်ပေးပါ/);
+});
 
 const token = "123456:synthetic-telegram-token";
 function signedData(userId = 42, authDate = Math.floor(Date.now() / 1000)) {
@@ -167,9 +189,9 @@ test("dashboard handles subscription and usage states", () => {
   assert.equal(dashboardView({ ...base, status: "DATA_LIMIT_REACHED",
     dataUsedGb: 100 }, now).status, "DATA_LIMIT_REACHED");
   assert.equal(dashboardView(base, now).warning, "");
-  assert.match(dashboardView({ ...base, dataUsedGb: 80 }, now).warning, /getting close/);
-  assert.match(dashboardView({ ...base, dataUsedGb: 95 }, now).warning, /Very little/);
-  assert.equal(dashboardView({ ...base, dataUsedGb: 100 }, now).warning, "Data limit reached");
+  assert.match(dashboardView({ ...base, dataUsedGb: 80 }, now).warning, /Data နည်းလာပါပြီ/);
+  assert.match(dashboardView({ ...base, dataUsedGb: 95 }, now).warning, /Data နည်းနည်းပဲ ကျန်တော့ပါတယ်/);
+  assert.equal(dashboardView({ ...base, dataUsedGb: 100 }, now).warning, "ဒီ package ရဲ့ data ကို အကုန်သုံးပြီးပါပြီ။ ဆက်သုံးချင်ရင် package ထပ်ဝယ်လို့ရပါတယ်။");
   assert.equal(dashboardView({ ...base, dataUsedGb: null }, now).percent, null);
 });
 
@@ -189,7 +211,7 @@ test("Mini App formats live subscription usage without rounding non-zero usage t
   assert.equal(formatUsagePercent(99.96), "<100%");
   assert.equal(formatUsagePercent(dashboardView({ dataUsedGb: 1e308,
     dataLimitGb: 1e-308 }).percent), "100%");
-  assert.equal(formatUsagePercent(null), "Usage unavailable");
+  assert.equal(formatUsagePercent(null), "အသုံးပြုမှုကို ကြည့်လို့မရသေးပါဘူး");
 });
 
 test("Mini App progress presents a visible fill for small usage while keeping the raw percentage", () => {
@@ -212,11 +234,11 @@ test("Home, My VPN, and Usage share the percentage formatter and thresholds use 
     assert.match(appJs, new RegExp(`set\\("${id}"[^;]*formatUsagePercent\\(v\\.percent\\)`));
   const base = { hasSubscription: true, status: "ACTIVE", dataLimitGb: 100 };
   assert.equal(dashboardView({ ...base, dataUsedGb: 79.95 }).warning, "");
-  assert.match(dashboardView({ ...base, dataUsedGb: 80 }).warning, /getting close/);
-  assert.match(dashboardView({ ...base, dataUsedGb: 94.95 }).warning, /getting close/);
-  assert.match(dashboardView({ ...base, dataUsedGb: 95 }).warning, /Very little/);
-  assert.match(dashboardView({ ...base, dataUsedGb: 99.95 }).warning, /Very little/);
-  assert.equal(dashboardView({ ...base, dataUsedGb: 100 }).warning, "Data limit reached");
+  assert.match(dashboardView({ ...base, dataUsedGb: 80 }).warning, /Data နည်းလာပါပြီ/);
+  assert.match(dashboardView({ ...base, dataUsedGb: 94.95 }).warning, /Data နည်းလာပါပြီ/);
+  assert.match(dashboardView({ ...base, dataUsedGb: 95 }).warning, /Data နည်းနည်းပဲ ကျန်တော့ပါတယ်/);
+  assert.match(dashboardView({ ...base, dataUsedGb: 99.95 }).warning, /Data နည်းနည်းပဲ ကျန်တော့ပါတယ်/);
+  assert.equal(dashboardView({ ...base, dataUsedGb: 100 }).warning, "ဒီ package ရဲ့ data ကို အကုန်သုံးပြီးပါပြီ။ ဆက်သုံးချင်ရင် package ထပ်ဝယ်လို့ရပါတယ်။");
 });
 
 test("Mini App derives exact remaining days from expiry and always labels them as days", () => {
@@ -230,19 +252,19 @@ test("Mini App derives exact remaining days from expiry and always labels them a
     assert.equal(remainingDays(expiresAt, now), expected);
     assert.equal(dashboardView({ hasSubscription: true, status: "ACTIVE", expiresAt }, now).days, expected);
   }
-  assert.equal(formatRemainingDays(60), "60 days remaining");
-  assert.equal(formatRemainingDays(1), "1 day remaining");
-  assert.equal(formatRemainingDays(0), "Expired");
+  assert.equal(formatRemainingDays(60), "60 ရက် ကျန်ပါတယ်");
+  assert.equal(formatRemainingDays(1), "1 ရက် ကျန်ပါတယ်");
+  assert.equal(formatRemainingDays(0), "သက်တမ်းကုန်ပါပြီ");
   assert.doesNotMatch(formatRemainingDays(60), /month/i);
   assert.equal(remainingDays(null, now), null);
 });
 
 test("usage sync timestamps render as relative text with a first-sync fallback", () => {
   const now = Date.parse("2026-09-30T12:00:00Z");
-  assert.equal(formatUsageSync(null, now), "Waiting for first sync");
-  assert.equal(formatUsageSync("2026-09-30T12:00:00Z", now), "Just now");
-  assert.equal(formatUsageSync("2026-09-30T11:59:15Z", now), "45 seconds ago");
-  assert.equal(formatUsageSync("2026-09-30T11:58:00Z", now), "2 minutes ago");
+  assert.equal(formatUsageSync(null, now), "မစစ်ရသေးပါဘူး");
+  assert.equal(formatUsageSync("2026-09-30T12:00:00Z", now), "အခုလေးတင်");
+  assert.equal(formatUsageSync("2026-09-30T11:59:15Z", now), "45 စက္ကန့်အကြာက");
+  assert.equal(formatUsageSync("2026-09-30T11:58:00Z", now), "2 မိနစ်အကြာက");
   assert.doesNotMatch(formatUsageSync("2026-09-28T12:00:00Z", now), /T12:00:00Z/);
 });
 
@@ -308,7 +330,7 @@ test("account lookup failure returns a safe message", async () => {
       body: JSON.stringify({ initData: signedData() }),
     });
     assert.equal(response.status, 503);
-    assert.deepEqual(await response.json(), { error: "We couldn't load your account." });
+    assert.deepEqual(await response.json(), { error: "အခုကြည့်လို့မရသေးပါဘူး။ ခဏနေရင် ပြန်စမ်းကြည့်ပေးပါ။" });
   } finally { await new Promise((resolve) => server.close(resolve)); }
 });
 

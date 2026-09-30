@@ -4,7 +4,7 @@ const { createWindowLimiter } = require("./abuse-limits");
 const { createSupportEvents } = require("./support-events");
 
 const REPLY_WINDOW_MINUTES = 15;
-const CUSTOMER_ACK = "✅ မက်ဆေ့ချ်ကို လက်ခံရရှိပါပြီ။\nSupport team က မကြာမီ ပြန်လည်ဖြေကြားပေးပါမယ်။";
+const CUSTOMER_ACK = "စာရပါပြီ။\nတတ်နိုင်သမျှ အမြန်ပြန်ဖြေပေးပါမယ်။";
 
 function ticketNumber(ticket) {
   return `SUP-${String(ticket.id).padStart(4, "0")}`;
@@ -24,7 +24,7 @@ function ticketKeyboard(ticket) {
 function supportPromptKeyboard() {
   return Markup.inlineKeyboard([
     [Markup.button.callback("⬅️ Back", "support_main_menu")],
-    [Markup.button.callback("❌ Cancel", "support_cancel")],
+    [Markup.button.callback("❌ ရပ်မယ်", "support_cancel")],
   ]);
 }
 
@@ -32,7 +32,7 @@ function createSupportService({ db, bot, adminTelegramId, isAdmin, helpKeyboard,
   supportEvents ||= createSupportEvents();
   const allowText = createWindowLimiter({ windowMs: 60000, max: 10 });
   const allowPhoto = createWindowLimiter({ windowMs: 60000, max: 4 });
-  const limitMessage = "You are sending support messages too quickly. Please wait a minute and try again.";
+  const limitMessage = "စာတွေ ဆက်တိုက်ပို့နေပါတယ်။ တစ်မိနစ်လောက်စောင့်ပြီး ပြန်ပို့ပေးပါ။";
   async function customerForTelegramId(telegramId) {
     return db.public.Customer.where({ telegramId: String(telegramId) }).first();
   }
@@ -90,9 +90,9 @@ function createSupportService({ db, bot, adminTelegramId, isAdmin, helpKeyboard,
 
   async function sendCustomerMessage(telegramId, text) {
     if (typeof text !== "string" || !text.trim() || text.length > 3000)
-      return { error: "Enter a message of up to 3000 characters.", status: 400 };
+      return { error: "ပို့ချင်တဲ့စာကို ရေးပေးပါ။ စာလုံးရေ 3000 ထက် မကျော်ရပါဘူး။", status: 400 };
     const target = await openOrResumeTicket(telegramId);
-    if (!target) return { error: "Your account is unavailable.", status: 403 };
+    if (!target) return { error: "အကောင့်ကို အခုကြည့်လို့မရသေးပါဘူး။ Support မှာ ဆက်သွယ်ပေးပါ။", status: 403 };
     if (!allowText(telegramId)) return { error: limitMessage, status: 429 };
     const content = safeText(text.trim());
     await relayCustomerText(target.customer, target.ticket, content);
@@ -127,12 +127,12 @@ function createSupportService({ db, bot, adminTelegramId, isAdmin, helpKeyboard,
       });
       await openOrResumeTicket(customer.telegramId, true);
       await ctx.reply(
-        "🎧 Metro Secure Support\n\nမေးလိုတာကို အောက်မှာ တိုက်ရိုက်ရေးပို့ပါ။\nScreenshot / photo လည်း ပို့နိုင်ပါတယ်။\n\nSupport team က ဒီ chat ထဲမှာပဲ ပြန်လည်ဖြေကြားပေးပါမယ်။",
+        "🎧 Metro Secure Support\n\nဘာအကူအညီလိုလဲ ရေးပို့ပေးပါ။ ပုံလည်း ပို့လို့ရပါတယ်။\nတတ်နိုင်သမျှ အမြန်ပြန်ဖြေပေးပါမယ်။",
         supportPromptKeyboard()
       );
     } catch {
       console.error("Support ticket opening failed.");
-      await ctx.reply("Support ကို လောလောဆယ် ဖွင့်မရသေးပါ။ ခဏနေ ပြန်ကြိုးစားပါ။");
+      await ctx.reply("Support ကို အခုဖွင့်လို့မရသေးပါဘူး။ ခဏနေရင် ပြန်စမ်းကြည့်ပေးပါ။");
     }
   }
 
@@ -140,11 +140,11 @@ function createSupportService({ db, bot, adminTelegramId, isAdmin, helpKeyboard,
     await ctx.answerCbQuery();
     try {
       await pauseCustomer(ctx.from.id);
-      await ctx.reply("🎧 Help\n\nSupport စာပို့ခြင်းကို ရပ်ထားပါပြီ။ လိုအပ်ရင် Contact Support ကို ပြန်နှိပ်နိုင်ပါတယ်။",
+      await ctx.reply("Support စာပို့တာကို ရပ်ထားပါပြီ။\nလိုအပ်ရင် Support ကို ပြန်နှိပ်လို့ရပါတယ်။",
         helpKeyboard());
     } catch {
       console.error("Support cancellation failed.");
-      await ctx.reply("Support ကို ရပ်မရသေးပါ။ ခဏနေ ပြန်ကြိုးစားပါ။");
+      await ctx.reply("အခုရပ်လို့မရသေးပါဘူး။ ခဏနေရင် ပြန်စမ်းကြည့်ပေးပါ။");
     }
   }
 
@@ -238,7 +238,7 @@ function createSupportService({ db, bot, adminTelegramId, isAdmin, helpKeyboard,
       });
       const customer = await db.public.Customer.where({ id: ticket.customerId }).first();
       if (customer) await bot.telegram.sendMessage(customer.telegramId,
-        "✅ Support ဆက်သွယ်မှုကို ပိတ်ပြီးပါပြီ။\n\nလိုအပ်ရင် Contact Support မှာ ပြန်လည်ဆက်သွယ်နိုင်ပါတယ်။");
+        "ဒီမေးခွန်းအတွက် Support ကို ပိတ်ထားပါပြီ။\nအကူအညီထပ်လိုရင် Support မှာ ပြန်ဆက်သွယ်လို့ရပါတယ်။");
       await ctx.reply(`${ticketNumber(ticket)} closed.`);
     } catch {
       console.error("Support ticket closing failed.");
@@ -293,7 +293,7 @@ function createSupportService({ db, bot, adminTelegramId, isAdmin, helpKeyboard,
         await bot.telegram.sendMessage(target.customer.telegramId,
           caption.slice(available), supportPromptKeyboard());
       }
-      await recordMessage(target.ticket, "support", caption || "Support sent an image.");
+      await recordMessage(target.ticket, "support", caption || "Support က ပုံပို့ထားပါတယ်။");
       await db.public.SupportTicket.where({ id: target.ticket.id, status: "OPEN" })
         .update({ adminReplySelected: false, adminReplySelectedAt: null,
           updatedAt: Temporal.Now.instant() });
@@ -305,11 +305,11 @@ function createSupportService({ db, bot, adminTelegramId, isAdmin, helpKeyboard,
     if (!allowPhoto(ctx.from.id)) { await ctx.reply(limitMessage); return true; }
     if (photo.file_size != null && (!Number.isSafeInteger(photo.file_size) ||
         photo.file_size <= 0 || photo.file_size > 20 * 1024 * 1024)) {
-      await ctx.reply("Please send a photo smaller than 20 MB.");
+      await ctx.reply("20 MB ထက်ငယ်တဲ့ ပုံကို ပို့ပေးပါ။");
       return true;
     }
     await relayCustomerPhoto(target.customer, target.ticket, photo, ctx.message.caption);
-    await recordMessage(target.ticket, "customer", safeText(ctx.message.caption) || "Customer sent an image.");
+    await recordMessage(target.ticket, "customer", safeText(ctx.message.caption) || "ပုံပို့ထားပါတယ်။");
     await db.public.SupportTicket.where({ id: target.ticket.id, status: "OPEN" })
       .update({ updatedAt: Temporal.Now.instant() });
     await acknowledgeFirstMessage(ctx, target.ticket);

@@ -393,7 +393,7 @@ test("reaching a purchased quota latches the existing key closed until renewal",
   assert.equal(account.status, "DATA_LIMIT_REACHED");
   assert.equal(account.lastUsageSyncedAt, subscription.lastUsageSyncedAt.toString());
   assert.equal(await bot.miniAppCallbacks.getConnectUrl(123), null);
-  assert.match((await bot.action("my_vpn")).replies[0][0], /Data Limit Reached/);
+  assert.match((await bot.action("my_vpn")).replies[0][0], /Data အကုန်သုံးပြီးပါပြီ/);
   bot.setUsage({ "real-quota-1": 1 * 1024 ** 3 }, ["real-quota-1"]);
   await bot.syncUsage();
   assert.equal(subscription.dataUsedGb, 50);
@@ -416,15 +416,15 @@ test("welcome, packages, confirmation and help only read customer data", async (
   assert.equal(menuUrl.hash, "");
   const welcome = bot.ctx();
   await bot.events.start(welcome);
-  assert.match(welcome.replies[0][0], /Metro VPN မှ ကြိုဆိုပါတယ်/);
+  assert.match(welcome.replies[0][0], /Metro Secure မှ ကြိုဆိုပါတယ်/);
   assert.deepEqual(plain(buttons(welcome.replies[0]).map((row) => row.map((b) => b.text))), [
-    ["🛡️ Buy VPN", "🌐 My VPN"], ["🗂️ My Orders", "🛰️ Setup VPN"], ["🎧 Help"],
+    ["🛡️ Buy VPN", "🌐 My VPN"], ["🗂️ My Orders", "🛰️ Setup VPN"], ["🎧 Support"],
   ]);
   assert.equal(JSON.stringify(welcome.replies).includes("Open Metro"), false);
   assert.deepEqual(plain(welcome.replies[1][1].reply_markup.keyboard), [
     ["🛡️ Buy VPN", "🌐 My VPN"], ["📊 Usage", "♻️ Renew"], ["⚡ Connect", "🎧 Support"],
   ]);
-  assert.equal(welcome.replies[1][1].reply_markup.input_field_placeholder, "Select an option");
+  assert.equal(welcome.replies[1][1].reply_markup.input_field_placeholder, "အောက်ကနေ ရွေးပေးပါ");
   assert.equal(welcome.replies[1][1].reply_markup.is_persistent, true);
   assert.equal(welcome.replies[1][1].reply_markup.resize_keyboard, true);
   assert.equal(welcome.replies[1][1].reply_markup.one_time_keyboard, false);
@@ -434,15 +434,15 @@ test("welcome, packages, confirmation and help only read customer data", async (
   assert.equal(buttons(packages.replies[0])[1][0].text, "💎 Premium");
   assert.equal(JSON.stringify(packages.replies).includes("Retired"), false);
   const detail = await bot.action("package_19");
-  assert.match(detail.replies[0][0], /STANDARD PLAN[\s\S]*213 GB[\s\S]*31 ရက်[\s\S]*7,650\n/);
+  assert.match(detail.replies[0][0], /Standard[\s\S]*213 GB[\s\S]*31 ရက်[\s\S]*7,650 ကျပ်\n/);
   assert.equal(buttons(detail.replies[0])[0][0].callback_data, "duration_19_1");
   assert.equal(buttons(detail.replies[0])[1].length, 2);
   const confirm = await bot.action("duration_19_3");
-  assert.match(confirm.replies[0][0], /မှာယူမှု အတည်ပြုပါ[\s\S]*639 GB[\s\S]*93 ရက်[\s\S]*22,950\n/);
+  assert.match(confirm.replies[0][0], /ဒီ package ကို ရွေးထားပါတယ်။[\s\S]*639 GB[\s\S]*93 ရက်[\s\S]*22,950 ကျပ်\n/);
   assert.match(buttons(confirm.replies[0])[0][0].callback_data, /^confirm_package_19_3_[a-f0-9]{16}$/);
   assert.match((await bot.action("package_99")).replies[0][0], /Package အသစ်ရွေးပေးပါ/);
   const help = await bot.action("help");
-  assert.match(help.replies[0][0], /🎧 Help/);
+  assert.match(help.replies[0][0], /🎧 Support/);
   assert.equal(buttons(help.replies[0])[0][0].callback_data, "contact_support");
   assert.equal(JSON.stringify(help.replies).includes("tg://user"), false);
   assert.match((await bot.action("payment_help")).replies[0][0], /ငွေပမာဏအတိအကျ/);
@@ -455,7 +455,7 @@ test("polling remains active while the native menu is configured and callbacks s
   assert.equal(bot.launchCalls.length, 1);
   assert.equal(bot.menuButtonCalls.length, 1);
   assert.equal(bot.menuButtonReads.length, 1);
-  assert.match((await bot.action("buy_vpn")).replies[0][0], /Choose Your VPN Package/);
+  assert.match((await bot.action("buy_vpn")).replies[0][0], /လိုအပ်တဲ့ VPN package ကို ရွေးပေးပါ။/);
   const adminWelcome = bot.ctx(999);
   await bot.events.start(adminWelcome);
   const keyboard = adminWelcome.replies[1][1].reply_markup;
@@ -465,7 +465,7 @@ test("polling remains active while the native menu is configured and callbacks s
   assert.deepEqual(plain(keyboard.keyboard.slice(3)), [
     ["📊 Admin Panel"], ["👥 Users", "🗂️ Orders"], ["🧾 Payments", "💎 Packages"],
   ]);
-  assert.equal(keyboard.input_field_placeholder, "Select an option");
+  assert.equal(keyboard.input_field_placeholder, "အောက်ကနေ ရွေးပေးပါ");
 });
 
 test("one polling launch stops and closes resources on SIGTERM or SIGINT", async () => {
@@ -495,17 +495,17 @@ test("customer Back follows package, confirmation, and payment screens", async (
   assert.match(backCode(list.replies.at(-1)), /^nav_back_/);
   const detail = await bot.action("package_19");
   const detailBack = await bot.action(backCode(detail.replies[0]));
-  assert.match(detailBack.replies[0][0], /Choose Your VPN Package/);
+  assert.match(detailBack.replies[0][0], /လိုအပ်တဲ့ VPN package ကို ရွေးပေးပါ။/);
   await bot.action("package_19");
   const confirmation = await bot.action("duration_19_1");
   const confirmationBack = await bot.action(backCode(confirmation.replies[0]));
-  assert.match(confirmationBack.replies.at(-1)[0], /Choose Your VPN Package/);
+  assert.match(confirmationBack.replies.at(-1)[0], /လိုအပ်တဲ့ VPN package ကို ရွေးပေးပါ။/);
   await bot.action("package_19");
   const secondConfirmation = await bot.action("duration_19_1");
   const payment = await bot.action(buttons(secondConfirmation.replies[0])[0][0].callback_data);
   assert.match(payment.replies[0][0], /Payment/);
   const paymentBack = await bot.action(backCode(payment.replies[0]));
-  assert.match(paymentBack.replies[0][0], /အတည်ပြုပါ/);
+  assert.match(paymentBack.replies[0][0], /ဒီ package ကို ရွေးထားပါတယ်။/);
   const paymentAgain = await bot.action(buttons(paymentBack.replies[0])[0][0].callback_data);
   const methodCode = buttons(paymentAgain.replies[0])[0][0].callback_data;
   const instructions = await bot.action(methodCode);
@@ -623,9 +623,9 @@ test("admin Back returns to lists and prior pages, clears edit input, and reject
   await bot.events.text(ordinary);
   assert.equal(pkg.name, "Basic");
   const stale = await bot.action(backCode(input.replies[0]), 999);
-  assert.match(stale.replies[0][0], /no longer active/);
+  assert.match(stale.replies[0][0], /ဒီခလုတ်က သုံးလို့မရတော့ပါဘူး/);
   const forbidden = await bot.action(backCode(fieldBack.replies[0]), 123);
-  assert.match(forbidden.replies[0][0], /no longer active/);
+  assert.match(forbidden.replies[0][0], /ဒီခလုတ်က သုံးလို့မရတော့ပါဘူး/);
   assert.equal(JSON.stringify(forbidden.replies).includes("Customer ID"), false);
 });
 
@@ -646,7 +646,7 @@ test("a Telegram menu API failure does not prevent polling or customer actions",
   for (const failure of ["menuWriteFails", "menuReadFails"]) {
     const bot = await loadBot(null, new Map(), { [failure]: true });
     assert.equal(bot.launchCalls.length, 1);
-    assert.match((await bot.action("buy_vpn")).replies[0][0], /Choose Your VPN Package/);
+    assert.match((await bot.action("buy_vpn")).replies[0][0], /လိုအပ်တဲ့ VPN package ကို ရွေးပေးပါ။/);
     assert.match(bot.errors[0][0], /Telegram menu button setup failed/);
   }
 });
@@ -675,7 +675,7 @@ test("admin text reaches private admin screens without blocking customer text", 
   const customer = bot.ctx(123);
   customer.message = { text: "🛡️ Buy VPN" };
   await bot.events.text(customer);
-  assert.match(customer.replies[0][0], /Choose Your VPN Package/);
+  assert.match(customer.replies[0][0], /လိုအပ်တဲ့ VPN package ကို ရွေးပေးပါ။/);
 });
 
 test("persistent reply buttons keep the existing customer actions functional", async () => {
@@ -693,7 +693,7 @@ test("persistent reply buttons keep the existing customer actions functional", a
     await bot.events.text(ctx);
     return ctx;
   }
-  assert.match((await press("🛡️ Buy VPN")).replies[0][0], /Choose Your VPN Package/);
+  assert.match((await press("🛡️ Buy VPN")).replies[0][0], /လိုအပ်တဲ့ VPN package ကို ရွေးပေးပါ။/);
   assert.match((await press("🌐 My VPN")).replies[0][0], /35 GB \/ 100 GB/);
   assert.match((await press("📊 Usage")).replies[0][0], /35 GB \/ 100 GB/);
   assert.match((await press("♻️ Renew")).replies[0][0], /VPN သက်တမ်းတိုးပါ/);
@@ -755,11 +755,13 @@ test("Mini App payment handoff keeps order ownership and uses the bot photo revi
   const selected = await bot.miniAppCallbacks.selectPaymentMethod(123, order.orderNumber, "mobile_wallet");
   assert.equal(selected.paymentMethod, "mobile_wallet");
   assert.equal(await bot.miniAppCallbacks.handoffProof(123, order.orderNumber), true);
-  assert.match(bot.sent.at(-1).args[1], /Send your payment screenshot/);
+  assert.match(bot.sent.at(-1).args[1], /ငွေလွှဲပြီးရင် slip ပုံကို/);
   const photo = bot.ctx(123);
   photo.message = { photo: [{ file_id: "synthetic-proof", file_size: 1024 }] };
   await bot.events.photo(photo);
   assert.equal(bot.tables.Order[0].paymentProof, "synthetic-proof");
+  const waitingOrder = await bot.action("my_orders");
+  assert.match(waitingOrder.replies[0][0], /Slip ရပါပြီ။ စစ်ဆေးပေးနေပါတယ်/);
   assert.equal(bot.keyCalls.length, 0);
 });
 
@@ -822,24 +824,24 @@ test("start registers a customer and empty VPN states stay customer friendly", a
   await bot.events.start(welcome);
   assert.equal(bot.tables.Customer.find((row) => row.telegramId === "456")?.firstName, "Test");
   const myVpn = await bot.action("my_vpn", 456);
-  assert.match(myVpn.replies[0][0], /VPN package မရှိသေးပါ/);
-  assert.doesNotMatch(myVpn.replies[0][0], /လောလောဆယ် မဖော်ပြနိုင်/);
+  assert.match(myVpn.replies[0][0], /လက်ရှိ VPN မရှိသေးပါဘူး/);
+  assert.doesNotMatch(myVpn.replies[0][0], /အခုကြည့်လို့မရသေးပါဘူး/);
   const usage = bot.ctx(456);
   usage.message = { text: "📊 Usage" };
   await bot.events.text(usage);
-  assert.match(usage.replies[0][0], /VPN package မရှိသေးပါ/);
-  assert.match((await bot.action("renew_vpn", 456)).replies[0][0], /VPN package မရှိသေးလို့/);
+  assert.match(usage.replies[0][0], /လက်ရှိ VPN မရှိသေးပါဘူး/);
+  assert.match((await bot.action("renew_vpn", 456)).replies[0][0], /လက်ရှိ VPN မရှိသေးပါဘူး/);
   const connect = bot.ctx(456);
   connect.message = { text: "⚡ Connect" };
   await bot.events.text(connect);
-  assert.match(connect.replies[0][0], /VPN package မရှိသေးပါ/);
+  assert.match(connect.replies[0][0], /လက်ရှိ VPN မရှိသေးပါဘူး/);
 });
 
 test("Buy VPN uses live Package rows and handles an empty package table", async () => {
   const bot = await loadBot();
-  assert.match((await bot.action("buy_vpn")).replies[0][0], /Choose Your VPN Package/);
+  assert.match((await bot.action("buy_vpn")).replies[0][0], /လိုအပ်တဲ့ VPN package ကို ရွေးပေးပါ။/);
   bot.tables.Package.splice(0);
-  assert.match((await bot.action("buy_vpn")).replies[0][0], /ရွေးနိုင်တဲ့ package မရှိသေးပါ/);
+  assert.match((await bot.action("buy_vpn")).replies[0][0], /package မရှိသေးပါဘူး/);
 });
 
 test("database failures use safe fallbacks and log codes without secrets", async () => {
@@ -848,10 +850,10 @@ test("database failures use safe fallbacks and log codes without secrets", async
     { code: "CONTRACT.MARKER_MISMATCH" });
   bot.client.public.Customer.where = () => { throw error; };
   const myVpn = await bot.action("my_vpn");
-  assert.match(myVpn.replies[0][0], /လောလောဆယ် မဖော်ပြနိုင်/);
+  assert.match(myVpn.replies[0][0], /အခုကြည့်လို့မရသေးပါဘူး/);
   bot.client.public.Package.where = () => { throw error; };
   const buy = await bot.action("buy_vpn");
-  assert.match(buy.replies[0][0], /Package တွေကို မဖော်ပြနိုင်သေးပါ/);
+  assert.match(buy.replies[0][0], /Package တွေကို အခုကြည့်လို့မရသေးပါဘူး/);
   const logged = JSON.stringify(bot.errors);
   assert.match(logged, /my_vpn|buy_vpn/);
   assert.match(logged, /CONTRACT\.MARKER_MISMATCH/);
@@ -863,7 +865,7 @@ test("support opens persistent per-customer tickets and relays text and photos t
   const bot = await loadBot();
   const first = await bot.action("contact_support", 123);
   const second = await bot.action("contact_support", 456);
-  const startText = "🎧 Metro Secure Support\n\nမေးလိုတာကို အောက်မှာ တိုက်ရိုက်ရေးပို့ပါ။\nScreenshot / photo လည်း ပို့နိုင်ပါတယ်။\n\nSupport team က ဒီ chat ထဲမှာပဲ ပြန်လည်ဖြေကြားပေးပါမယ်။";
+  const startText = "🎧 Metro Secure Support\n\nဘာအကူအညီလိုလဲ ရေးပို့ပေးပါ။ ပုံလည်း ပို့လို့ရပါတယ်။\nတတ်နိုင်သမျှ အမြန်ပြန်ဖြေပေးပါမယ်။";
   assert.equal(first.replies.length, 1);
   assert.equal(first.replies[0][0], startText);
   assert.equal(second.replies[0][0], startText);
@@ -876,7 +878,7 @@ test("support opens persistent per-customer tickets and relays text and photos t
   textMessage.message = { text: "Please help with my VPN" };
   await bot.events.text(textMessage);
   assert.equal(textMessage.replies[0][0],
-    "✅ မက်ဆေ့ချ်ကို လက်ခံရရှိပါပြီ။\nSupport team က မကြာမီ ပြန်လည်ဖြေကြားပေးပါမယ်။");
+    "စာရပါပြီ။\nတတ်နိုင်သမျှ အမြန်ပြန်ဖြေပေးပါမယ်။");
   assert.equal(buttons(textMessage.replies[0])[0][0].callback_data, "support_main_menu");
   assertNoCustomerTicketDetails(textMessage.replies[0][0]);
   assert.equal(bot.sent.at(-1).args[0], "999");
@@ -992,7 +994,7 @@ test("admin reply and close use ticket ownership and keep admin identity inside 
   assert.equal(bot.tables.SupportTicket[1].status, "CLOSED");
   assert.ok(bot.tables.SupportTicket[1].closedAt);
   assert.equal(bot.sent.at(-1).args[0], "456");
-  assert.match(bot.sent.at(-1).args[1], /Support ဆက်သွယ်မှုကို ပိတ်ပြီးပါပြီ/);
+  assert.match(bot.sent.at(-1).args[1], /ဒီမေးခွန်းအတွက် Support ကို ပိတ်ထားပါပြီ/);
   assertNoCustomerTicketDetails(bot.sent.at(-1).args[1]);
   const reopened = await bot.action("contact_support", 456);
   assertNoCustomerTicketDetails(reopened.replies[0][0]);
@@ -1049,7 +1051,7 @@ test("support flood is stopped before forwarding to admin", async () => {
   blocked.message = { text: "flood" };
   await bot.events.text(blocked);
   assert.equal(bot.sent.length, forwarded);
-  assert.match(blocked.replies[0][0], /too quickly/i);
+  assert.match(blocked.replies[0][0], /ဆက်တိုက်ပို့နေပါတယ်/i);
 });
 
 test("payment photo upload rechecks ownership and image size", async () => {
@@ -1094,7 +1096,7 @@ test("Main Menu pauses support while retaining the ticket and starts a fresh ack
   const subscriptionsBefore = bot.tables.Subscription.length;
   const menu = await bot.action("support_main_menu", 123);
   assert.equal(menu.replies.length, 2);
-  assert.match(menu.replies[0][0], /Metro VPN မှ ကြိုဆိုပါတယ်/);
+  assert.match(menu.replies[0][0], /Metro Secure မှ ကြိုဆိုပါတယ်/);
   assert.equal(buttons(menu.replies[0])[0][0].callback_data, "buy_vpn");
   assert.equal(ticket.status, "OPEN");
   assert.equal(ticket.customerInputActive, false);
@@ -1138,14 +1140,14 @@ test("Main Menu pauses support while retaining the ticket and starts a fresh ack
 test("admin package edits appear on the next Buy VPN read and disabled packages reject old buttons", async () => {
   const bot = await loadBot();
   const originalScreen = await bot.action("buy_vpn");
-  assert.match(originalScreen.replies[0][0], /🛡️ Basic • 50 GB • 30 Days • 3,200/);
+  assert.match(originalScreen.replies[0][0], /🛡️ Basic\n50 GB\n30 ရက်\n3,200 ကျပ်/);
   const oldCallback = await confirmationButton(bot, 7);
   await updatePackage(bot.client, 7, {
     name: "Basic", dataLimitGb: 150, durationDays: 29,
     priceMmk: "6000", active: true, sortOrder: 1,
   });
   const updatedScreen = await bot.action("buy_vpn");
-  assert.match(updatedScreen.replies[0][0], /🛡️ Basic • 150 GB • 29 Days • 6,000/);
+  assert.match(updatedScreen.replies[0][0], /🛡️ Basic\n150 GB\n29 ရက်\n6,000 ကျပ်/);
   assert.doesNotMatch(updatedScreen.replies[0][0], /\b(?:MMK|Ks)\b|\$6,000/);
   const stale = await bot.action(oldCallback);
   assert.match(stale.replies[0][0], /150 GB[\s\S]*29 ရက်[\s\S]*6,000/);
@@ -1194,7 +1196,7 @@ test("orders and approved entitlements keep snapshots when an admin edits the Pa
   assert.equal(subscription.dataLimitGb, 213);
   assert.equal(subscription.expiresAt.toString(), firstOrder.expiresAt.toString());
   const myVpn = await bot.action("my_vpn");
-  assert.match(myVpn.replies[0][0], /Package: Standard - 31 Days/);
+  assert.match(myVpn.replies[0][0], /Package: Standard - 31 ရက်/);
   assert.doesNotMatch(myVpn.replies[0][0], /Renamed/);
   const originalExpiry = subscription.expiresAt;
   await updatePackage(bot.client, 19, {
@@ -1264,11 +1266,11 @@ test("My Orders uses saved days and omits activated status without changing data
   bot.tables.Package[0].durationDays = 45;
   const result = await bot.action("my_orders");
   const message = result.replies[0][0];
-  assert.match(message, /ကာလ: 30 ရက်/);
-  assert.match(message, /ကာလ: 60 ရက်/);
-  assert.doesNotMatch(message, /ကာလ: .* လ|1 Month|2 Months/);
+  assert.match(message, /သက်တမ်း: 30 ရက်/);
+  assert.match(message, /သက်တမ်း: 60 ရက်/);
+  assert.doesNotMatch(message, /သက်တမ်း: .* လ|1 Month|2 Months/);
   assert.doesNotMatch(message, /အခြေအနေ: ငွေပေးချေပြီး/);
-  assert.match(message, /အခြေအနေ: VPN ဖွင့်ပေးနေသည်/);
+  assert.match(message, /အခြေအနေ: ခဏစောင့်ပေးပါ/);
   assert.equal(first.status, "PAID");
   assert.equal(first.totalDurationDays, 30);
   assert.equal(first.plan, "Basic - 1 Month");
@@ -1281,7 +1283,7 @@ test("repeated confirmations reuse one order and preserve its price and terminal
   assert.equal(bot.tables.Order.length, 1);
   const order = bot.tables.Order[0];
   const payment = await bot.action(callback, 123, 40);
-  assert.match(payment.replies[0][0], /🧾 Payment[\s\S]*7,650\n/);
+  assert.match(payment.replies[0][0], /Payment[\s\S]*7,650 ကျပ်\n/);
   assert.equal(buttons(payment.replies[0])[0].length, 2);
   for (const status of ["PAID", "PROCESSING", "CANCELLED", "PAYMENT_REJECTED"]) {
     order.status = status;
@@ -1318,7 +1320,7 @@ test("payment proof, approval, My VPN, setup and renewal retain a single real ke
   const subscription = bot.tables.Subscription[0];
   const key = subscription.vpnKey;
   const activated = bot.sent.find((sent) => sent.type === "message").args;
-  assert.match(activated[1], /VPN အဆင်သင့်ဖြစ်ပါပြီ/);
+  assert.match(activated[1], /VPN ကို စတင်အသုံးပြုလို့ရပါပြီ/);
   assert.equal(activated[1].includes(key), false);
   assert.equal(activated[2].reply_markup.inline_keyboard[0][1].copy_text.text, key);
   subscription.dataUsedGb = 35;

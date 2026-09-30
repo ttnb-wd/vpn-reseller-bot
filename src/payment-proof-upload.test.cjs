@@ -95,7 +95,7 @@ test("Mini App upload validates identity, ownership, type, size, idempotency and
     for (let i = 0; i < 4; i++) {
       const duplicate = await upload(form(signedData()));
       assert.equal(duplicate.status, 409);
-      assert.equal((await duplicate.json()).error, "Payment proof has already been submitted.");
+      assert.equal((await duplicate.json()).error, "Slip ရပြီးပါပြီ။ ထပ်တင်ဖို့ မလိုပါဘူး။");
     }
     assert.equal(sends, 1);
     assert.equal((await upload(form(signedData()))).status, 429);

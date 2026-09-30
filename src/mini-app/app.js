@@ -1,16 +1,34 @@
 const ACCOUNT_REFRESH_INTERVAL_MS = 60 * 1000;
 
+const ORDER_STATUS_LABELS = Object.freeze({
+  PENDING_PAYMENT: "ငွေပေးချေဖို့ စောင့်နေပါတယ်", PAYMENT_SUBMITTED: "Slip ရပါပြီ",
+  PROCESSING: "ခဏစောင့်ပေးပါ", PAID: "VPN သုံးလို့ရပါပြီ",
+  PAYMENT_REJECTED: "Slip ကို အတည်ပြုလို့မရသေးပါဘူး",
+  CANCELLED: "မှာယူမှုကို ပယ်ဖျက်ထားပါတယ်", EXPIRED: "သက်တမ်းကုန်ပါပြီ",
+});
+const VPN_STATUS_LABELS = Object.freeze({
+  ACTIVE: "သုံးလို့ရပါတယ်", DATA_LIMIT_REACHED: "Data အကုန်သုံးပြီးပါပြီ",
+  EXPIRED: "VPN သက်တမ်းကုန်သွားပါပြီ", REVOKED: "VPN ကို လောလောဆယ် သုံးလို့မရပါဘူး",
+  INACTIVE: "VPN ကို လောလောဆယ် သုံးလို့မရပါဘူး", NONE: "လက်ရှိ VPN မရှိသေးပါဘူး",
+});
+function orderStatusLabel(status) { return ORDER_STATUS_LABELS[status] || "မှာယူမှုကို ပြန်ကြည့်ပေးပါ"; }
+function vpnStatusLabel(status) { return VPN_STATUS_LABELS[status] || VPN_STATUS_LABELS.INACTIVE; }
+
+function formatPlanLabel(value) {
+  return String(value || "").replace(/(\d+) Days?\b/g, "$1 ရက်");
+}
+
 function formatUsageSync(value, now = Date.now()) {
-  if (!value) return "Waiting for first sync";
+  if (!value) return "မစစ်ရသေးပါဘူး";
   const timestamp = new Date(value).getTime();
-  if (!Number.isFinite(timestamp)) return "Waiting for first sync";
+  if (!Number.isFinite(timestamp)) return "မစစ်ရသေးပါဘူး";
   const seconds = Math.max(0, Math.floor((now - timestamp) / 1000));
-  if (seconds < 5) return "Just now";
-  if (seconds < 60) return `${seconds} ${seconds === 1 ? "second" : "seconds"} ago`;
+  if (seconds < 5) return "အခုလေးတင်";
+  if (seconds < 60) return `${seconds} စက္ကန့်အကြာက`;
   const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes} ${minutes === 1 ? "minute" : "minutes"} ago`;
+  if (minutes < 60) return `${minutes} မိနစ်အကြာက`;
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours} ${hours === 1 ? "hour" : "hours"} ago`;
+  if (hours < 24) return `${hours} နာရီအကြာက`;
   return new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short",
     year: "numeric", hour: "numeric", minute: "2-digit" }).format(new Date(timestamp));
 }
@@ -21,12 +39,12 @@ function remainingDays(expiresAt, now = Date.now()) {
 }
 
 function formatRemainingDays(value) {
-  return value === null ? "Unavailable" : value === 0 ? "Expired" :
-    `${value} ${value === 1 ? "day" : "days"} remaining`;
+  return value === null ? "မရသေးပါဘူး" : value === 0 ? "သက်တမ်းကုန်ပါပြီ" :
+    `${value} ရက် ကျန်ပါတယ်`;
 }
 
 function formatUsagePercent(percent) {
-  if (percent === null || Number.isNaN(percent)) return "Usage unavailable";
+  if (percent === null || Number.isNaN(percent)) return "အသုံးပြုမှုကို ကြည့်လို့မရသေးပါဘူး";
   if (percent <= 0) return "0%";
   if (percent < 0.05) return "<0.1%";
   if (percent < 99.95) return `${Number(percent.toFixed(1))}%`;
@@ -49,14 +67,14 @@ function dashboardView(account, now = Date.now()) {
   // The backend applies the shared subscription-state rule for every customer surface.
   const status = hasSubscription ? a.status : "NONE";
   const warning = percent === null || percent < 80 ? "" :
-    percent >= 100 ? "Data limit reached" :
-    percent >= 95 ? "Very little data remains. Renew your VPN to keep browsing." :
-      "You're getting close to your data limit.";
+    percent >= 100 ? "ဒီ package ရဲ့ data ကို အကုန်သုံးပြီးပါပြီ။ ဆက်သုံးချင်ရင် package ထပ်ဝယ်လို့ရပါတယ်။" :
+    percent >= 95 ? "Data နည်းနည်းပဲ ကျန်တော့ပါတယ်။ ဆက်သုံးဖို့ package ကို ကြိုတင်သက်တမ်းတိုးထားလို့ရပါတယ်။" :
+      "Data နည်းလာပါပြီ။ ဆက်သုံးဖို့ package ကို ကြိုတင်သက်တမ်းတိုးထားလို့ရပါတယ်။";
   return { status, limit, used, percent, remaining, days, warning };
 }
 if (typeof module !== "undefined") module.exports = {
   dashboardView, formatUsageSync, remainingDays, formatRemainingDays,
-  formatUsagePercent, progressFillPercent,
+  formatUsagePercent, progressFillPercent, formatPlanLabel, orderStatusLabel, vpnStatusLabel,
 };
 
 if (typeof document !== "undefined") (() => {
@@ -77,20 +95,14 @@ if (typeof document !== "undefined") (() => {
     set("message", value);
     $("message").classList.toggle("error", error);
   };
-  const gb = (value) => value === null ? "Unavailable" :
+  const gb = (value) => value === null ? "မရသေးပါဘူး" :
     `${new Intl.NumberFormat("en-US", { maximumFractionDigits: 1 }).format(value)} GB`;
   const date = (value) => {
     const parsed = value ? new Date(value) : null;
     return parsed && !Number.isNaN(parsed.getTime()) ?
-      new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" }).format(parsed) : "Unavailable";
+      new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" }).format(parsed) : "မရသေးပါဘူး";
   };
-  const money = (value) => `${new Intl.NumberFormat("en-US").format(Number(value))} MMK`;
-  const orderStatus = { PENDING_PAYMENT: "Pending Payment", PAYMENT_SUBMITTED: "Payment Submitted",
-    PROCESSING: "Processing", PAID: "Activated", PAYMENT_REJECTED: "Rejected",
-    CANCELLED: "Cancelled", EXPIRED: "Expired" };
-  const statusLabel = { ACTIVE: "🟢 Active", DATA_LIMIT_REACHED: "⛔ Data Limit Reached",
-    EXPIRED: "⛔ VPN Expired", REVOKED: "⛔ VPN Unavailable",
-    INACTIVE: "VPN Unavailable", NONE: "No Active VPN" };
+  const money = (value) => `${new Intl.NumberFormat("en-US").format(Number(value))} ကျပ်`;
   if (tg) { tg.ready(); tg.expand(); }
   async function api(endpoint, extra = {}) {
     const response = await fetch(`api/${endpoint}`, { method: "POST",
@@ -98,7 +110,7 @@ if (typeof document !== "undefined") (() => {
       body: JSON.stringify({ initData, ...extra }), cache: "no-store" });
     const data = await response.json();
     if (!response.ok) {
-      const error = new Error(data.error || "Please try again.");
+      const error = new Error(data.error || "ခဏနေရင် ပြန်စမ်းကြည့်ပေးပါ။");
       error.data = data;
       throw error;
     }
@@ -107,8 +119,8 @@ if (typeof document !== "undefined") (() => {
   function progress(id, percent) {
     $(id).querySelector("span").style.width = `${progressFillPercent(percent)}%`;
     $(id).setAttribute("aria-valuenow", String(percent === null ? 0 : Math.min(100, percent)));
-    $(id).setAttribute("aria-valuetext", percent === null ? "Usage unavailable" :
-      `${formatUsagePercent(percent)} used`);
+    $(id).setAttribute("aria-valuetext", percent === null ? "အသုံးပြုမှုကို ကြည့်လို့မရသေးပါဘူး" :
+      `${formatUsagePercent(percent)} သုံးထားပါတယ်`);
   }
   function navigate(tab) {
     if (state.tab === "support" && tab !== "support") stopSupportConnection();
@@ -146,16 +158,16 @@ if (typeof document !== "undefined") (() => {
     const target = $(id);
     target.replaceChildren();
     const title = document.createElement("h2");
-    title.textContent = view.status === "REVOKED" ? "VPN Unavailable" :
-      view.status === "EXPIRED" ? "VPN Expired" : "No active VPN yet";
+    title.textContent = view.status === "REVOKED" ? "VPN ကို လောလောဆယ် သုံးလို့မရပါဘူး" :
+      view.status === "EXPIRED" ? "VPN သက်တမ်းကုန်သွားပါပြီ" : "လက်ရှိ VPN မရှိသေးပါဘူး။";
     const detail = document.createElement("p");
-    detail.textContent = view.status === "REVOKED" ? "Contact Support" :
-      view.status === "EXPIRED" ? "Your subscription period has ended." :
-        "Choose a package to get started.";
+    detail.textContent = view.status === "REVOKED" ? "Support" :
+      view.status === "EXPIRED" ? "ဆက်သုံးချင်ရင် သက်တမ်းတိုးလို့ရပါတယ်။" :
+        "စသုံးချင်ရင် package တစ်ခု ရွေးလို့ရပါတယ်။";
     const button = document.createElement("button");
     button.type = "button"; button.className = "primary-button";
     button.textContent = view.status === "REVOKED" ? "Support" :
-      view.status === "EXPIRED" ? "Renew VPN" : "View Packages";
+      view.status === "EXPIRED" ? "သက်တမ်းတိုး" : "Package ရွေး";
     button.addEventListener("click", () => navigate(view.status === "REVOKED" ? "support" : "packages"));
     target.append(title, detail, button);
   }
@@ -164,17 +176,17 @@ if (typeof document !== "undefined") (() => {
     list.replaceChildren();
     if (!state.packages.length) {
       const p = document.createElement("p"); p.className = "muted";
-      p.textContent = "No packages are available right now."; list.append(p);
+      p.textContent = "လောလောဆယ် package မရှိသေးပါဘူး။ ခဏနေရင် ပြန်ကြည့်ပေးပါ။"; list.append(p);
     }
     for (const pkg of state.packages) {
       const card = document.createElement("article"); card.className = "card package-card";
       const title = document.createElement("h3"); title.textContent = pkg.name;
-      const detail = document.createElement("p"); detail.textContent = `${gb(pkg.dataLimitGb)} · ${pkg.durationDays} days`;
+      const detail = document.createElement("p"); detail.textContent = `${gb(pkg.dataLimitGb)} · ${pkg.durationDays} ရက်`;
       const price = document.createElement("strong"); price.textContent =
-        `${new Intl.NumberFormat("en-US").format(Number(pkg.priceMmk))} MMK`;
+        `${new Intl.NumberFormat("en-US").format(Number(pkg.priceMmk))} ကျပ်`;
       const button = document.createElement("button"); button.type = "button";
       button.className = "secondary-button";
-      button.textContent = dashboardView(state.account).status === "ACTIVE" ? "Renew" : "Buy";
+      button.textContent = dashboardView(state.account).status === "ACTIVE" ? "သက်တမ်းတိုး" : "ဝယ်မယ်";
       button.addEventListener("click", () => selectPackage(pkg.selectionToken));
       card.append(title, detail, price, button); list.append(card);
     }
@@ -202,13 +214,13 @@ if (typeof document !== "undefined") (() => {
   }
   async function refreshPackages() {
     const list = $("package-list");
-    list.replaceChildren(card(paragraph("Loading packages…")));
+    list.replaceChildren(card(paragraph("Package တွေကို ကြည့်ပေးနေပါတယ်…")));
     try {
       const { packages } = await api("packages");
       state.packages = packages; renderPackages();
     } catch {
-      list.replaceChildren(card(paragraph("We couldn't load packages."),
-        action("Try Again", refreshPackages)));
+      list.replaceChildren(card(paragraph("Package တွေကို အခုကြည့်လို့မရသေးပါဘူး။ ခဏနေရင် ပြန်စမ်းကြည့်ပေးပါ။"),
+        action("ပြန်စမ်းမယ်", refreshPackages)));
     }
   }
   function renderCheckout() {
@@ -219,121 +231,124 @@ if (typeof document !== "undefined") (() => {
     const pkg = flow.package;
     const order = state.order;
     const step = flow.step;
-    set("checkout-title", { detail: flow.renew ? "Renew VPN" : "Buy VPN",
-      methods: "Payment Method", instructions: "Payment Instructions",
-      upload: "Upload Payment Proof", submitted: "Payment Submitted",
-      progress: "Order in Progress", status: "Order Status" }[step] || "Checkout");
-    set("checkout-subtitle", step === "detail" ? "Review the current package before continuing." :
-      step === "methods" ? "Choose where to send your payment." :
-      step === "instructions" ? "Pay the exact amount, then upload your proof here." :
-      step === "upload" ? "Choose a clear screenshot of your payment." :
-      step === "submitted" ? "Your payment proof is waiting for review." :
-      "You can check this order again in Order History.");
+    set("checkout-title", { detail: flow.renew ? "သက်တမ်းတိုး" : "VPN ဝယ်မယ်",
+      methods: "ငွေပေးချေနည်း", instructions: "ငွေလွှဲဖို့ အချက်အလက်",
+      upload: "Slip တင်", submitted: "Slip ရပါပြီ",
+      progress: "မှာယူမှုကို စစ်ပေးနေပါတယ်", status: "မှာယူမှု အခြေအနေ" }[step] || "Payment");
+    set("checkout-subtitle", step === "detail" ? "ဒီ package ကို ရွေးထားပါတယ်။ အချက်အလက်တွေကို ကြည့်ပေးပါ။" :
+      step === "methods" ? "ငွေပေးချေမယ့်နည်းလမ်းကို ရွေးပေးပါ။" :
+      step === "instructions" ? "ငွေလွှဲပြီးရင် slip ပုံကို ဒီမှာတင်ပေးပါ။" :
+      step === "upload" ? "ရှင်းလင်းတဲ့ slip ပုံကို ရွေးပေးပါ။" :
+      step === "submitted" ? "စစ်ဆေးပြီးတာနဲ့ ပြန်အကြောင်းကြားပေးပါမယ်။" :
+      "ဝယ်ထားတာတွေထဲမှာ ဒီမှာယူမှုကို ပြန်ကြည့်လို့ရပါတယ်။");
     if (step === "detail" && pkg) {
-      body.append(card(title(pkg.name), line("Data allowance", gb(pkg.dataLimitGb)),
-        line("Duration", `${pkg.durationDays} days`), line("Price", money(pkg.priceMmk)),
-        line("Action", flow.renew ? "Renew" : "Buy"),
-        line("Current VPN", statusLabel[dashboardView(state.account).status]),
-        ...(pkg.changed ? [paragraph("Package details changed. Please review these current values before continuing.", "usage-warning")] : [])));
-      actions.append(action("Continue", confirmPackage, true), action("Back to Packages", () => navigate("packages")));
+      body.append(card(title(pkg.name), line("စုစုပေါင်း data", gb(pkg.dataLimitGb)),
+        line("သက်တမ်း", `${pkg.durationDays} ရက်`), line("ဈေးနှုန်း", money(pkg.priceMmk)),
+        line("ရွေးထားတာ", flow.renew ? "သက်တမ်းတိုး" : "ဝယ်မယ်"),
+        line("လက်ရှိ VPN", vpnStatusLabel(dashboardView(state.account).status)),
+        ...(pkg.changed ? [paragraph("Package အချက်အလက်တွေ ပြောင်းထားပါတယ်။ ဆက်မဝယ်ခင် ပြန်ကြည့်ပေးပါ။", "usage-warning")] : [])));
+      actions.append(action("ဆက်မယ်", confirmPackage, true), action("Package ရွေး", () => navigate("packages")));
     } else if (step === "methods" && order) {
-      body.append(card(title(order.plan), line("Amount", money(order.amountMmk)),
-        line("Order number", order.orderNumber),
-        paragraph("Your VPN activates after payment proof is reviewed and approved.")));
-      if (!state.methods.length) body.append(card(paragraph("Payment methods are unavailable right now."),
-        action("Try Again", loadMethods)));
+      body.append(card(title(formatPlanLabel(order.plan)), line("ငွေပမာဏ", money(order.amountMmk)),
+        line("မှာယူမှုနံပါတ်", order.orderNumber),
+        paragraph("Slip ကို စစ်ဆေးပြီး အတည်ပြုတာနဲ့ VPN ဖွင့်ပေးပါမယ်။")));
+      if (!state.methods.length) body.append(card(paragraph("ငွေပေးချေနည်းတွေကို အခုကြည့်လို့မရသေးပါဘူး။"),
+        action("ပြန်စမ်းမယ်", loadMethods)));
       for (const method of state.methods) body.append(card(title(method.name),
-        line("Account name", method.accountName), line("Destination", method.accountNumber),
-        action(`Pay with ${method.name}`, () => chooseMethod(method), true)));
-      actions.append(action("View Order", () => showOrder(order.orderNumber)));
+        line("အကောင့်အမည်", method.accountName), line("အကောင့်နံပါတ်", method.accountNumber),
+        action(`${method.name} နဲ့လွှဲမယ်`, () => chooseMethod(method), true)));
+      actions.append(action("မှာယူမှုကြည့်", () => showOrder(order.orderNumber)));
     } else if (step === "instructions" && order) {
       const method = state.methods.find((item) => item.code === order.paymentMethod);
-      body.append(card(title(method?.name || "Payment"), line("Pay", money(order.amountMmk)),
-        line("Account name", method?.accountName || "Unavailable"),
-        line("Destination", method?.accountNumber || "Unavailable"),
-        line("Order reference", order.orderNumber),
-        paragraph("Transfer the exact amount to this account, then upload a screenshot here. Activation follows approval.")));
-      actions.append(action("Upload Payment Proof", () => { state.checkout.step = "upload"; renderCheckout(); }, true),
-        action("Change Payment Method", loadMethods), action("View Order", () => showOrder(order.orderNumber)));
+      body.append(card(title(method?.name || "Payment"), line("လွှဲရမယ့်ငွေ", money(order.amountMmk)),
+        line("အကောင့်အမည်", method?.accountName || "မရသေးပါဘူး"),
+        line("အကောင့်နံပါတ်", method?.accountNumber || "မရသေးပါဘူး"),
+        line("မှာယူမှုနံပါတ်", order.orderNumber),
+        paragraph("ဒီအကောင့်ကို ပြထားတဲ့ ငွေပမာဏအတိုင်း လွှဲပေးပါ။ ပြီးရင် slip ပုံကို ဒီမှာတင်ပေးပါ။")));
+      actions.append(action("Slip တင်", () => { state.checkout.step = "upload"; renderCheckout(); }, true),
+        action("ငွေပေးချေနည်းပြောင်း", loadMethods), action("မှာယူမှုကြည့်", () => showOrder(order.orderNumber)));
     } else if (step === "upload" && order) {
       const input = document.createElement("input"); input.type = "file";
       input.id = "payment-proof-file"; input.accept = "image/jpeg,image/png";
       input.className = "proof-input"; input.disabled = state.uploading;
       input.addEventListener("change", () => chooseProofFile(input.files?.[0]));
       const label = document.createElement("label"); label.className = "secondary-button proof-picker";
-      label.htmlFor = input.id; label.textContent = state.uploadFile ? "Choose Another Image" : "Choose JPG or PNG";
-      body.append(card(title("Payment screenshot"), line("Order", order.orderNumber),
-        paragraph("JPG or PNG, up to 5 MB."), input, label));
+      label.htmlFor = input.id; label.textContent = state.uploadFile ? "ပုံပြန်ရွေး" : "ပုံရွေး";
+      body.append(card(title("Slip ပုံ"), line("မှာယူမှု", order.orderNumber),
+        paragraph("JPG / PNG ပုံကို တင်လို့ရပါတယ်။ 5 MB ထက် မကြီးရပါဘူး။"), input, label));
       if (state.uploadFile) {
         const preview = document.createElement("img"); preview.className = "proof-preview";
-        preview.src = state.previewUrl; preview.alt = "Selected payment proof preview";
-        body.append(card(preview, line("File", state.uploadFile.name),
-          line("Size", `${(state.uploadFile.size / 1024 / 1024).toFixed(1)} MB`)));
-        if (!state.uploading) actions.append(action("Remove Image", () => { clearProofFile(); renderCheckout(); }));
+        preview.src = state.previewUrl; preview.alt = "ရွေးထားတဲ့ slip ပုံ";
+        body.append(card(preview, line("ပုံအမည်", state.uploadFile.name),
+          line("ပုံအရွယ်အစား", `${(state.uploadFile.size / 1024 / 1024).toFixed(1)} MB`)));
+        if (!state.uploading) actions.append(action("ပုံဖယ်", () => { clearProofFile(); renderCheckout(); }));
       }
       if (state.uploading) {
-        const progressText = paragraph(`Uploading… ${state.uploadPercent}%`, "upload-progress-text");
+        const progressText = paragraph(`ပုံတင်နေပါတယ်… ${state.uploadPercent}%`, "upload-progress-text");
         const bar = document.createElement("progress"); bar.className = "upload-progress";
         bar.max = 100; bar.value = state.uploadPercent;
         body.append(card(progressText, bar));
       }
       if (state.uploadFile) {
-        const submit = action(state.uploading ? "Uploading…" :
-          state.uploadFailed ? "Retry Upload" : "Submit Payment Proof", submitProof, true);
+        const submit = action(state.uploading ? "ပုံတင်နေပါတယ်…" :
+          state.uploadFailed ? "ပြန်တင်" : "Slip တင်", submitProof, true);
         submit.disabled = state.uploading; actions.append(submit);
       }
-      if (!state.uploading) actions.append(action("Back to Instructions", () => {
+      if (!state.uploading) actions.append(action("ပြန်သွား", () => {
         state.checkout.step = "instructions"; renderCheckout();
-      }), action("Contact Support", () => navigate("support")));
+      }), action("Support", () => navigate("support")));
     } else if (step === "submitted" && order) {
-      body.append(card(title("Payment Submitted"), line("Order number", order.orderNumber),
-        line("Package", order.plan), line("Amount", money(order.amountMmk)),
-        line("Payment method", state.methods.find((item) => item.code === order.paymentMethod)?.name || "Selected"),
-        line("Status", orderStatus[order.status] || "Payment Submitted"),
-        paragraph("Your payment proof has been received and is waiting for review.")));
-      actions.append(action("View Order", () => showOrder(order.orderNumber), true),
-        action("Back to Packages", () => navigate("packages")));
+      body.append(card(title("Slip ရပါပြီ"), line("မှာယူမှုနံပါတ်", order.orderNumber),
+        line("Package", formatPlanLabel(order.plan)), line("ငွေပမာဏ", money(order.amountMmk)),
+        line("ငွေပေးချေနည်း", state.methods.find((item) => item.code === order.paymentMethod)?.name || "ရွေးပြီးပါပြီ"),
+        line("အခြေအနေ", orderStatusLabel(order.status)),
+        paragraph("Slip ရပါပြီ။ စစ်ဆေးပြီးတာနဲ့ ပြန်အကြောင်းကြားပေးပါမယ်။")));
+      actions.append(action("မှာယူမှုကြည့်", () => showOrder(order.orderNumber), true),
+        action("Package ရွေး", () => navigate("packages")));
     } else if (step === "progress" && order) {
-      body.append(card(title("You already have an order in progress."),
-        line("Order number", order.orderNumber), line("Package", order.plan),
-        line("Status", orderStatus[order.status] || "In progress")));
-      actions.append(action("View Order", () => showOrder(order.orderNumber), true),
-        action("Back", () => navigate("packages")));
+      body.append(card(title("စစ်ဆေးပေးနေတဲ့ မှာယူမှုတစ်ခု ရှိပါတယ်။"),
+        line("မှာယူမှုနံပါတ်", order.orderNumber), line("Package", formatPlanLabel(order.plan)),
+        line("အခြေအနေ", orderStatusLabel(order.status))));
+      actions.append(action("မှာယူမှုကြည့်", () => showOrder(order.orderNumber), true),
+        action("ပြန်သွား", () => navigate("packages")));
     } else if (step === "status" && order) {
-      body.append(card(title(orderStatus[order.status] || "Order in progress"),
-        line("Order number", order.orderNumber), line("Package", order.plan),
-        line("Amount", money(order.amountMmk)), line("Created", date(order.createdAt)),
-        line("Payment method", state.methods.find((item) => item.code === order.paymentMethod)?.name ||
-          (order.paymentMethod ? "Selected" : "Not selected")),
-        line("Status", orderStatus[order.status] || "In progress"),
-        paragraph(order.status === "PAYMENT_SUBMITTED" ? "Your payment proof has been received and is waiting for review." :
-          order.status === "PAID" ? "Your VPN is activated. Open My VPN to connect." :
-          "Activation follows payment proof review and approval.")));
+      body.append(card(title(orderStatusLabel(order.status)),
+        line("မှာယူမှုနံပါတ်", order.orderNumber), line("Package", formatPlanLabel(order.plan)),
+        line("ငွေပမာဏ", money(order.amountMmk)), line("မှာယူရက်", date(order.createdAt)),
+        line("ငွေပေးချေနည်း", state.methods.find((item) => item.code === order.paymentMethod)?.name ||
+          (order.paymentMethod ? "ရွေးပြီးပါပြီ" : "မရွေးရသေးပါဘူး")),
+        line("အခြေအနေ", orderStatusLabel(order.status)),
+        paragraph(order.status === "PAYMENT_SUBMITTED" ? "Slip ရပါပြီ။ စစ်ဆေးပြီးတာနဲ့ ပြန်အကြောင်းကြားပေးပါမယ်။" :
+          order.status === "PAID" ? "ငွေပေးချေမှု အတည်ပြုပြီးပါပြီ။ VPN ကို ဆက်သုံးလို့ရပါပြီ။ My VPN မှာ Connect နှိပ်ပေးပါ။" :
+          order.status === "PAYMENT_REJECTED" ? "ဒီ slip ကို အတည်ပြုလို့မရသေးပါဘူး။ Support မှာ slip အကြောင်း ရေးပို့ပေးပါ။ ထပ်ငွေလွှဲဖို့ မလိုပါဘူး။" :
+          order.status === "EXPIRED" ? "ဒီမှာယူမှုက သက်တမ်းကုန်သွားပါပြီ။ Package ကို ပြန်ရွေးပေးပါ။" :
+          order.status === "CANCELLED" ? "ဒီမှာယူမှုကို ပယ်ဖျက်ထားပါတယ်။ ဆက်ဝယ်ချင်ရင် package ပြန်ရွေးလို့ရပါတယ်။" :
+          "Slip ကို စစ်ဆေးပြီး အတည်ပြုတာနဲ့ VPN ဖွင့်ပေးပါမယ်။")));
       if (order.status === "PENDING_PAYMENT" && order.paymentMethod)
-        actions.append(action("Upload Payment Proof", () => {
+        actions.append(action("Slip တင်", () => {
           state.checkout.step = "upload"; renderCheckout();
         }, true));
       else if (order.status === "PENDING_PAYMENT")
-        actions.append(action("Choose Payment Method", loadMethods, true));
-      actions.append(action("Refresh Status", () => showOrder(order.orderNumber)),
-        action("Back to Packages", () => navigate("packages")));
+        actions.append(action("ငွေပေးချေနည်းရွေး", loadMethods, true));
+      actions.append(action("ပြန်ကြည့်", () => showOrder(order.orderNumber)),
+        action("Package ရွေး", () => navigate("packages")));
     }
   }
   async function selectPackage(selectionToken) {
     notice(""); navigate("checkout");
-    $("checkout-body").replaceChildren(card(paragraph("Loading package…")));
+    $("checkout-body").replaceChildren(card(paragraph("Package ကို ကြည့်ပေးနေပါတယ်…")));
     try {
       const result = await api("package/detail", { selectionToken });
       state.checkout = { step: "detail", package: result.package,
         confirmationToken: result.confirmationToken,
         renew: dashboardView(state.account).status === "ACTIVE" };
       state.order = null; renderCheckout();
-    } catch { notice("We couldn't load this package. Try again.", true); navigate("packages"); }
+    } catch { notice("ဒီ package ကို အခုကြည့်လို့မရသေးပါဘူး။ ခဏနေရင် ပြန်စမ်းကြည့်ပေးပါ။", true); navigate("packages"); }
   }
   async function confirmPackage() {
     const token = state.checkout.confirmationToken;
     $("checkout-actions").replaceChildren();
-    notice("Creating your order…");
+    notice("ခဏစောင့်ပေးပါ…");
     try {
       const result = await api("order/create", { confirmationToken: token });
       state.order = result.order;
@@ -348,7 +363,7 @@ if (typeof document !== "undefined") (() => {
         state.checkout.confirmationToken = error.data.confirmationToken;
         state.checkout.step = "detail";
         notice(""); renderCheckout();
-      } else { notice(error.message || "We couldn't create your order.", true); renderCheckout(); }
+      } else { notice(error.data?.error || "အခုမှာယူလို့မရသေးပါဘူး။ ခဏနေရင် ပြန်စမ်းကြည့်ပေးပါ။", true); renderCheckout(); }
     }
   }
   async function loadMethods() {
@@ -359,13 +374,13 @@ if (typeof document !== "undefined") (() => {
     } catch { renderCheckout(); }
   }
   async function chooseMethod(method) {
-    notice("Saving payment method…");
+    notice("ခဏစောင့်ပေးပါ…");
     try {
       const { order } = await api("order/payment-method",
         { orderNumber: state.order.orderNumber, method: method.code });
       state.order = order; state.checkout.step = "instructions";
       notice(""); renderCheckout();
-    } catch { notice("We couldn't select that payment method. Try again.", true); }
+    } catch { notice("အခုရွေးလို့မရသေးပါဘူး။ ခဏနေရင် ပြန်စမ်းကြည့်ပေးပါ။", true); }
   }
   function clearProofFile() {
     if (state.previewUrl) URL.revokeObjectURL(state.previewUrl);
@@ -375,13 +390,13 @@ if (typeof document !== "undefined") (() => {
   function chooseProofFile(file) {
     if (!file) return;
     if (!["image/jpeg", "image/png"].includes(file.type)) {
-      notice("Please upload a JPG or PNG image.", true); return;
+      notice("JPG / PNG ပုံကို ရွေးပေးပါ။", true); return;
     }
     if (file.size > 5 * 1024 * 1024) {
-      notice("Image is too large. Please choose an image under 5 MB.", true); return;
+      notice("ပုံက ကြီးနေပါတယ်။ 5 MB ထက်ငယ်တဲ့ ပုံကို ရွေးပေးပါ။", true); return;
     }
     if (file.size < 24) {
-      notice("Please choose a valid payment image.", true); return;
+      notice("ရှင်းလင်းတဲ့ slip ပုံကို ပြန်ရွေးပေးပါ။", true); return;
     }
     clearProofFile();
     state.uploadFile = file;
@@ -403,19 +418,19 @@ if (typeof document !== "undefined") (() => {
         const bar = document.querySelector(".upload-progress");
         const label = document.querySelector(".upload-progress-text");
         if (bar) bar.value = state.uploadPercent;
-        if (label) label.textContent = `Uploading… ${state.uploadPercent}%`;
+        if (label) label.textContent = `ပုံတင်နေပါတယ်… ${state.uploadPercent}%`;
       };
       xhr.onload = () => {
         let data;
         try { data = JSON.parse(xhr.responseText); } catch { data = {}; }
         if (xhr.status >= 200 && xhr.status < 300) resolve(data);
         else {
-          const error = new Error(data.error || "We couldn't upload your payment proof. Please try again.");
+          const error = new Error(data.error || "Slip တင်လို့မရသေးပါဘူး။ ခဏနေရင် ပြန်တင်ပေးပါ။");
           error.data = data; error.status = xhr.status; reject(error);
         }
       };
       xhr.onerror = xhr.ontimeout = () => reject(new Error(
-        "We couldn't upload your payment proof. Please try again."));
+        "Slip တင်လို့မရသေးပါဘူး။ ခဏနေရင် ပြန်တင်ပေးပါ။"));
       xhr.send(form);
     });
   }
@@ -437,7 +452,7 @@ if (typeof document !== "undefined") (() => {
         notice(""); renderCheckout();
       } else {
         state.uploadFailed = true;
-        notice(error.message || "We couldn't upload your payment proof. Please try again.", true);
+        notice(error.message || "Slip တင်လို့မရသေးပါဘူး။ ခဏနေရင် ပြန်တင်ပေးပါ။", true);
         renderCheckout();
       }
     } finally { state.uploading = false; if (state.checkout.step === "upload") renderCheckout(); }
@@ -445,27 +460,27 @@ if (typeof document !== "undefined") (() => {
   async function showOrder(orderNumber) {
     notice("");
     navigate("checkout");
-    $("checkout-body").replaceChildren(card(paragraph("Loading order…")));
+    $("checkout-body").replaceChildren(card(paragraph("မှာယူမှုကို ကြည့်ပေးနေပါတယ်…")));
     try {
       state.order = (await api("order/status", { orderNumber })).order;
       state.checkout = { step: "status" }; renderCheckout();
-    } catch { notice("We couldn't load this order. Try again.", true); }
+    } catch { notice("ဒီမှာယူမှုကို အခုကြည့်လို့မရသေးပါဘူး။ ခဏနေရင် ပြန်စမ်းကြည့်ပေးပါ။", true); }
   }
   async function refreshHistory() {
     const list = $("history-list");
-    list.replaceChildren(card(paragraph("Loading orders…")));
+    list.replaceChildren(card(paragraph("ဝယ်ထားတာတွေကို ကြည့်ပေးနေပါတယ်…")));
     try {
       const { orders } = await api("orders");
       list.replaceChildren();
-      if (!orders.length) { list.append(card(paragraph("No orders yet."))); return; }
+      if (!orders.length) { list.append(card(paragraph("ဝယ်ထားတာ မရှိသေးပါဘူး။"))); return; }
       for (const order of orders) {
-        list.append(card(title(order.plan), line("Order", order.orderNumber),
-          line("Amount", money(order.amountMmk)), line("Date", date(order.createdAt)),
-          line("Status", orderStatus[order.status] || "In progress"),
-          action("View Order", () => showOrder(order.orderNumber))));
+        list.append(card(title(formatPlanLabel(order.plan)), line("မှာယူမှု", order.orderNumber),
+          line("ငွေပမာဏ", money(order.amountMmk)), line("ရက်စွဲ", date(order.createdAt)),
+          line("အခြေအနေ", orderStatusLabel(order.status)),
+          action("မှာယူမှုကြည့်", () => showOrder(order.orderNumber))));
       }
-    } catch { list.replaceChildren(card(paragraph("We couldn't load orders."),
-      action("Try Again", refreshHistory))); }
+    } catch { list.replaceChildren(card(paragraph("ဝယ်ထားတာတွေကို အခုကြည့်လို့မရသေးပါဘူး။ ခဏနေရင် ပြန်စမ်းကြည့်ပေးပါ။"),
+      action("ပြန်စမ်းမယ်", refreshHistory))); }
   }
   function nearSupportBottom() {
     const conversation = $("support-conversation");
@@ -484,7 +499,7 @@ if (typeof document !== "undefined") (() => {
     const item = document.createElement("div");
     item.className = `support-message ${message.sender === "support" ? "from-support" : "from-customer"}`;
     const sender = document.createElement("strong");
-    sender.textContent = message.sender === "support" ? "Metro Secure Support" : "You";
+    sender.textContent = message.sender === "support" ? "Metro Secure Support" : "ကိုယ်ပို့ထားတာ";
     const body = document.createElement("p"); body.textContent = message.text;
     const time = document.createElement("time");
     const stamp = new Date(message.createdAt);
@@ -505,7 +520,7 @@ if (typeof document !== "undefined") (() => {
   function mergeSupport(messages) {
     for (const message of messages || []) appendSupport(message);
     if (!state.supportKeys.size && !$('support-conversation').querySelector('.support-empty'))
-      $("support-conversation").append(paragraph("No messages yet. Send us a message to start the conversation.", "support-empty"));
+      $("support-conversation").append(paragraph("ဘာအကူအညီလိုလဲ ရေးပို့ပေးပါ။", "support-empty"));
   }
   async function refreshSupport(open = false) {
     if (state.supportLoading) { state.supportRefreshAgain = true; return; }
@@ -513,7 +528,7 @@ if (typeof document !== "undefined") (() => {
     try {
       const data = await api(open ? "support/open" : "support/messages");
       if (state.tab === "support") { mergeSupport(data.messages); state.supportOpened = true; notice(""); }
-    } catch { if (state.tab === "support") notice("We couldn't load Support messages. Try again shortly.", true); }
+    } catch { if (state.tab === "support") notice("Support စာတွေကို အခုကြည့်လို့မရသေးပါဘူး။ ခဏနေရင် ပြန်စမ်းကြည့်ပေးပါ။", true); }
     finally {
       state.supportLoading = false;
       if (state.supportRefreshAgain && state.tab === "support") {
@@ -596,29 +611,29 @@ if (typeof document !== "undefined") (() => {
       const { message } = await api("support/send", { text });
       appendSupport(message);
       input.value = ""; resizeSupportInput(); notice("");
-    } catch (error) { notice(error.message || "We couldn't send your message. Try again.", true); }
+    } catch (error) { notice(error.data?.error || "စာပို့လို့မရသေးပါဘူး။ ခဏနေရင် ပြန်ပို့ပေးပါ။", true); }
     finally { state.supportSending = false; $("support-send").disabled = false; }
   }
   function render() {
     const a = state.account;
     const v = dashboardView(a);
-    set("greeting", a.displayName ? `Welcome, ${a.displayName}` : "Your private network");
-    set("home-status", statusLabel[v.status]);
+    set("greeting", a.displayName ? `${a.displayName} ရေ၊ ကြိုဆိုပါတယ်။` : "Metro Secure မှ ကြိုဆိုပါတယ်။");
+    set("home-status", vpnStatusLabel(v.status));
     $("home-status").dataset.status = v.status;
-    set("home-status-detail", v.status === "EXPIRED" ? "Your subscription period has ended. Renew VPN." :
-      v.status === "DATA_LIMIT_REACHED" ? "Your package data has been fully used. Renew VPN." :
-      v.status === "REVOKED" ? "Contact Support" :
-      v.status === "NONE" ? "Choose a package to get started." :
-        v.status === "ACTIVE" && v.days !== null && v.days <= 7 ? "⚠️ Expiring Soon" : "");
+    set("home-status-detail", v.status === "EXPIRED" ? "ဆက်သုံးချင်ရင် သက်တမ်းတိုးလို့ရပါတယ်။" :
+      v.status === "DATA_LIMIT_REACHED" ? "ဒီ package ရဲ့ data ကို အကုန်သုံးပြီးပါပြီ။ ဆက်သုံးချင်ရင် package ထပ်ဝယ်လို့ရပါတယ်။" :
+      v.status === "REVOKED" ? "Support" :
+      v.status === "NONE" ? "စသုံးချင်ရင် package တစ်ခု ရွေးလို့ရပါတယ်။" :
+        v.status === "ACTIVE" && v.days !== null && v.days <= 7 ? "VPN သက်တမ်းကုန်တော့မှာပါ။ ဆက်သုံးဖို့ ကြိုတင်သက်တမ်းတိုးထားလို့ရပါတယ်။" : "");
     const normal = v.status === "ACTIVE";
     show("home-empty", v.status === "NONE");
     show("home-subscription", a.hasSubscription && v.status !== "REVOKED");
     show("home-actions", a.hasSubscription && v.status !== "REVOKED");
     if (a.hasSubscription && v.status !== "REVOKED") {
-      set("home-plan", a.plan || "Current plan");
-      set("home-server", a.serverLabel || "VPN server");
-      set("home-usage", `${v.percent === null ? "Usage unavailable" :
-        `${formatUsagePercent(v.percent)} used`} · ${gb(v.limit)} allowance`);
+      set("home-plan", formatPlanLabel(a.plan) || "လက်ရှိ package");
+      set("home-server", a.serverLabel || "Server");
+      set("home-usage", `${v.percent === null ? "အသုံးပြုမှုကို ကြည့်လို့မရသေးပါဘူး" :
+        `${formatUsagePercent(v.percent)} သုံးထားပါတယ်`} · စုစုပေါင်း ${gb(v.limit)}`);
       progress("home-progress", v.percent);
       set("home-remaining", gb(v.remaining)); set("home-used", gb(v.used));
       set("home-expiry", date(a.expiresAt)); set("home-days", formatRemainingDays(v.days));
@@ -630,19 +645,19 @@ if (typeof document !== "undefined") (() => {
     show("vpn-actions", a.hasSubscription && v.status !== "REVOKED");
     if (!a.hasSubscription || v.status === "REVOKED") empty("vpn-empty", v);
     if (a.hasSubscription && v.status !== "REVOKED") {
-      set("vpn-status", statusLabel[v.status]); $("vpn-status").dataset.status = v.status;
-      set("vpn-plan", a.plan || "Unavailable"); set("vpn-server", a.serverLabel || "VPN server");
+      set("vpn-status", vpnStatusLabel(v.status)); $("vpn-status").dataset.status = v.status;
+      set("vpn-plan", formatPlanLabel(a.plan) || "မရသေးပါဘူး"); set("vpn-server", a.serverLabel || "Server");
       set("vpn-limit", gb(v.limit)); set("vpn-used", gb(v.used));
       set("vpn-remaining", gb(v.remaining)); set("vpn-percent", formatUsagePercent(v.percent));
       set("vpn-start", date(a.startedAt)); set("vpn-expiry", date(a.expiresAt));
-      set("vpn-days", formatRemainingDays(v.days)); set("vpn-subscription-status", statusLabel[v.status]);
+      set("vpn-days", formatRemainingDays(v.days)); set("vpn-subscription-status", vpnStatusLabel(v.status));
     }
     show("usage-empty", !a.hasSubscription || v.status === "REVOKED");
     show("usage-details", a.hasSubscription && v.status !== "REVOKED");
     if (!a.hasSubscription || v.status === "REVOKED") empty("usage-empty", v);
     if (a.hasSubscription && v.status !== "REVOKED") {
       set("usage-used", gb(v.used)); set("usage-percentage", v.percent === null ?
-        "Usage unavailable" : `${formatUsagePercent(v.percent)} used`);
+        "အသုံးပြုမှုကို ကြည့်လို့မရသေးပါဘူး" : `${formatUsagePercent(v.percent)} သုံးထားပါတယ်`);
       progress("usage-progress", v.percent); set("usage-limit", gb(v.limit));
       set("usage-remaining", gb(v.remaining)); set("usage-sync", formatUsageSync(a.lastUsageSyncedAt));
       set("usage-expiry", date(a.expiresAt));
@@ -668,13 +683,13 @@ if (typeof document !== "undefined") (() => {
     } finally { state.loading = false; $("refresh-button").disabled = false; }
   }
   async function connect() {
-    notice("Opening secure setup…");
+    notice("Connect ကို ဖွင့်ပေးနေပါတယ်…");
     try {
       const { url } = await api("connect");
       notice("");
       if (tg?.openLink) tg.openLink(url, { try_instant_view: false });
       else window.location.assign(url);
-    } catch { notice("We couldn't open VPN setup. Try again.", true); }
+    } catch { notice("Connect ကို အခုဖွင့်လို့မရသေးပါဘူး။ ခဏနေရင် ပြန်စမ်းကြည့်ပေးပါ။", true); }
   }
   for (const id of ["connect-button", "vpn-connect-button"]) $(id).addEventListener("click", connect);
   for (const id of ["renew-button", "vpn-renew-button", "usage-renew-button"])
