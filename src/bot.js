@@ -12,6 +12,7 @@ const { createNavigation } = require("./navigation");
 const { PAYMENT_METHODS } = require("./payment-config");
 const { validateAdminConfig, createAdminRouter } = require("./admin-auth");
 const { createSupportService } = require("./support");
+const { createSupportEvents } = require("./support-events");
 const { createTelegramAdmin } = require("./telegram-admin");
 const { buildCustomerMenu, buildPersistentCustomerKeyboard,
   buildPersistentAdminKeyboard } = require("./customer-menu");
@@ -1191,8 +1192,10 @@ async function miniAppCreateOrder(telegramUser, _account, packageId, confirmedVe
     ? { changed: true } : { order: null };
 }
 
+const supportEvents = createSupportEvents(process.env.BOT_TOKEN);
 const miniAppRouter = createMiniAppRouter({
   botToken: process.env.BOT_TOKEN,
+  supportEvents,
   getSupportService: () => miniAppSupportService,
   async getAccount(telegramId, telegramUser) {
     const { customer, subscription } = await findCustomerSubscription(telegramId);
@@ -1472,7 +1475,7 @@ async function startBot() {
   });
   const supportService = createSupportService({
     db, bot, adminTelegramId: ADMIN_TELEGRAM_ID, isAdmin,
-    helpKeyboard: buildHelpKeyboard,
+    helpKeyboard: buildHelpKeyboard, supportEvents,
   });
   miniAppSupportService = supportService;
   telegramAdmin = createTelegramAdmin({ bot, db, adminTelegramId: ADMIN_TELEGRAM_ID,

@@ -1,6 +1,7 @@
 const { Temporal } = require("@js-temporal/polyfill");
 const { Markup } = require("telegraf");
 const { createWindowLimiter } = require("./abuse-limits");
+const { createSupportEvents } = require("./support-events");
 
 const REPLY_WINDOW_MINUTES = 15;
 const CUSTOMER_ACK = "✅ မက်ဆေ့ချ်ကို လက်ခံရရှိပါပြီ။\nSupport team က မကြာမီ ပြန်လည်ဖြေကြားပေးပါမယ်။";
@@ -27,7 +28,8 @@ function supportPromptKeyboard() {
   ]);
 }
 
-function createSupportService({ db, bot, adminTelegramId, isAdmin, helpKeyboard }) {
+function createSupportService({ db, bot, adminTelegramId, isAdmin, helpKeyboard, supportEvents }) {
+  supportEvents ||= createSupportEvents();
   const allowText = createWindowLimiter({ windowMs: 60000, max: 10 });
   const allowPhoto = createWindowLimiter({ windowMs: 60000, max: 4 });
   const limitMessage = "You are sending support messages too quickly. Please wait a minute and try again.";
@@ -63,8 +65,17 @@ function createSupportService({ db, bot, adminTelegramId, isAdmin, helpKeyboard 
   }
 
   async function recordMessage(ticket, sender, text) {
-    return db.public.SupportMessage.create({ ticketId: ticket.id,
+    const saved = await db.public.SupportMessage.create({ ticketId: ticket.id,
       customerId: ticket.customerId, sender, text, createdAt: Temporal.Now.instant() });
+    const message = publicMessage(saved);
+    supportEvents.publish(ticket.customerId, message);
+    return message;
+  }
+
+  function publicMessage(message) {
+    return { key: supportEvents.messageId(message.id),
+      sender: message.sender, text: message.text,
+      createdAt: message.createdAt?.toString() || null };
   }
 
   async function listMessages(telegramId) {
@@ -74,8 +85,7 @@ function createSupportService({ db, bot, adminTelegramId, isAdmin, helpKeyboard 
     if (!ticket) return { messages: [] };
     const rows = await db.public.SupportMessage.where({ ticketId: ticket.id,
       customerId: customer.id }).orderBy((message) => message.createdAt.desc()).limit(100).all();
-    return { messages: rows.sort((a, b) => a.id - b.id).map((message) => ({ sender: message.sender,
-      text: message.text, createdAt: message.createdAt?.toString() || null })) };
+    return { messages: rows.sort((a, b) => a.id - b.id).map(publicMessage) };
   }
 
   async function sendCustomerMessage(telegramId, text) {
@@ -86,10 +96,10 @@ function createSupportService({ db, bot, adminTelegramId, isAdmin, helpKeyboard 
     if (!allowText(telegramId)) return { error: limitMessage, status: 429 };
     const content = safeText(text.trim());
     await relayCustomerText(target.customer, target.ticket, content);
-    await recordMessage(target.ticket, "customer", content);
+    const message = await recordMessage(target.ticket, "customer", content);
     await db.public.SupportTicket.where({ id: target.ticket.id, status: "OPEN" })
       .update({ updatedAt: Temporal.Now.instant() });
-    return { ok: true };
+    return { ok: true, message };
   }
 
   async function activeCustomerTicket(telegramId) {

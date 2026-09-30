@@ -25,7 +25,10 @@ if (typeof document !== "undefined") (() => {
   const state = { account: null, packages: [], tab: "home", lastLoad: 0, loading: false,
     checkout: null, order: null, methods: [], uploadFile: null, previewUrl: null,
     uploading: false, uploadPercent: 0, uploadFailed: false,
-    supportTimer: null, supportLoading: false };
+    supportLoading: false, supportRefreshAgain: false, supportSending: false,
+    supportOpened: false, supportKeys: new Set(),
+    supportSource: null, supportConnecting: false, supportHealthy: false, supportRetry: null,
+    supportFallbackDelay: null, supportFallbackTimer: null, supportReconnects: 0 };
   const show = (id, visible) => $(id).classList.toggle("hidden", !visible);
   const set = (id, value) => { $(id).textContent = value; };
   const notice = (value, error = false) => {
@@ -67,7 +70,7 @@ if (typeof document !== "undefined") (() => {
     $(id).setAttribute("aria-valuetext", percent === null ? "Usage unavailable" : `${percent}% used`);
   }
   function navigate(tab) {
-    if (state.supportTimer) { clearInterval(state.supportTimer); state.supportTimer = null; }
+    if (state.tab === "support" && tab !== "support") stopSupportConnection();
     state.tab = tab;
     for (const name of ["home", "vpn", "usage", "packages", "checkout", "history", "support"])
       show(`${name}-panel`, tab === name);
@@ -79,10 +82,8 @@ if (typeof document !== "undefined") (() => {
     if (tab === "packages") void refreshPackages();
     if (tab === "history") void refreshHistory();
     if (tab === "support") {
-      void refreshSupport(true);
-      state.supportTimer = setInterval(() => {
-        if (!document.hidden && state.tab === "support") void refreshSupport();
-      }, 10000);
+      if (!state.supportOpened) void refreshSupport(true);
+      void connectSupport();
     }
   }
   function empty(id, view) {
@@ -410,47 +411,137 @@ if (typeof document !== "undefined") (() => {
     } catch { list.replaceChildren(card(paragraph("We couldn't load orders."),
       action("Try Again", refreshHistory))); }
   }
-  function renderSupport(messages) {
+  function nearSupportBottom() {
     const conversation = $("support-conversation");
-    conversation.replaceChildren();
-    if (!messages.length) {
-      conversation.append(paragraph("No messages yet. Send us a message to start the conversation.", "support-empty"));
-      return;
-    }
-    for (const message of messages) {
-      const item = document.createElement("div");
-      item.className = `support-message ${message.sender === "support" ? "from-support" : "from-customer"}`;
-      const sender = document.createElement("strong");
-      sender.textContent = message.sender === "support" ? "Metro Secure Support" : "You";
-      const body = document.createElement("p"); body.textContent = message.text;
-      const time = document.createElement("time");
-      const stamp = new Date(message.createdAt);
-      time.textContent = Number.isNaN(stamp.getTime()) ? "" :
-        new Intl.DateTimeFormat("en-GB", { dateStyle: "medium", timeStyle: "short" }).format(stamp);
-      item.append(sender, body, time); conversation.append(item);
-    }
+    return conversation.scrollHeight - conversation.scrollTop - conversation.clientHeight < 80;
+  }
+  function scrollSupport() {
+    const conversation = $("support-conversation");
+    conversation.scrollTo({ top: conversation.scrollHeight, behavior: "smooth" });
+    show("support-new-messages", false);
+  }
+  function appendSupport(message) {
+    if (!message || typeof message.key !== "string" || state.supportKeys.has(message.key)) return false;
+    const conversation = $("support-conversation");
+    const atBottom = nearSupportBottom();
+    conversation.querySelector(".support-empty")?.remove();
+    const item = document.createElement("div");
+    item.className = `support-message ${message.sender === "support" ? "from-support" : "from-customer"}`;
+    const sender = document.createElement("strong");
+    sender.textContent = message.sender === "support" ? "Metro Secure Support" : "You";
+    const body = document.createElement("p"); body.textContent = message.text;
+    const time = document.createElement("time");
+    const stamp = new Date(message.createdAt);
+    time.textContent = Number.isNaN(stamp.getTime()) ? "" :
+      new Intl.DateTimeFormat("en-GB", { dateStyle: "medium", timeStyle: "short" }).format(stamp);
+    item.append(sender, body, time);
+    item.dataset.createdAt = message.createdAt || "";
+    const stampMs = Date.parse(item.dataset.createdAt);
+    const later = [...conversation.querySelectorAll(".support-message")]
+      .find((node) => Date.parse(node.dataset.createdAt) > stampMs);
+    if (later) conversation.insertBefore(item, later);
+    else conversation.append(item);
+    state.supportKeys.add(message.key);
+    if (atBottom) scrollSupport();
+    else show("support-new-messages", true);
+    return true;
+  }
+  function mergeSupport(messages) {
+    for (const message of messages || []) appendSupport(message);
+    if (!state.supportKeys.size && !$('support-conversation').querySelector('.support-empty'))
+      $("support-conversation").append(paragraph("No messages yet. Send us a message to start the conversation.", "support-empty"));
   }
   async function refreshSupport(open = false) {
-    if (state.supportLoading) return;
+    if (state.supportLoading) { state.supportRefreshAgain = true; return; }
     state.supportLoading = true;
     try {
       const data = await api(open ? "support/open" : "support/messages");
-      if (state.tab === "support") { renderSupport(data.messages); notice(""); }
+      if (state.tab === "support") { mergeSupport(data.messages); state.supportOpened = true; notice(""); }
     } catch { if (state.tab === "support") notice("We couldn't load Support messages. Try again shortly.", true); }
-    finally { state.supportLoading = false; }
+    finally {
+      state.supportLoading = false;
+      if (state.supportRefreshAgain && state.tab === "support") {
+        state.supportRefreshAgain = false;
+        void refreshSupport();
+      }
+    }
+  }
+  function stopFallback() {
+    clearTimeout(state.supportFallbackDelay); state.supportFallbackDelay = null;
+    clearInterval(state.supportFallbackTimer); state.supportFallbackTimer = null;
+  }
+  function scheduleFallback() {
+    if (state.supportHealthy || state.supportFallbackDelay || state.supportFallbackTimer ||
+        state.tab !== "support" || document.hidden) return;
+    state.supportFallbackDelay = setTimeout(() => {
+      state.supportFallbackDelay = null;
+      if (state.supportHealthy || state.tab !== "support" || document.hidden) return;
+      void refreshSupport();
+      state.supportFallbackTimer = setInterval(() => {
+        if (!state.supportHealthy && state.tab === "support" && !document.hidden) void refreshSupport();
+      }, 7000);
+    }, 3000);
+  }
+  function stopSupportConnection() {
+    state.supportSource?.close(); state.supportSource = null;
+    state.supportHealthy = false;
+    clearTimeout(state.supportRetry); state.supportRetry = null;
+    stopFallback();
+  }
+  async function connectSupport() {
+    if (state.tab !== "support" || document.hidden || state.supportSource ||
+        state.supportConnecting || state.supportRetry) return;
+    state.supportConnecting = true;
+    scheduleFallback();
+    try {
+      const { session } = await api("support/session");
+      if (state.tab !== "support" || document.hidden || state.supportSource) return;
+      const source = new EventSource(`api/support/events?session=${encodeURIComponent(session)}`);
+      state.supportSource = source;
+      source.addEventListener("message", (event) => {
+        try { appendSupport(JSON.parse(event.data)); } catch { /* Ignore malformed events. */ }
+      });
+      source.onopen = () => {
+        if (state.supportSource !== source) return;
+        state.supportHealthy = true;
+        state.supportReconnects = 0;
+        stopFallback();
+        void refreshSupport(); // Recover messages saved while the stream was down.
+      };
+      source.onerror = () => {
+        if (state.supportSource !== source) return;
+        source.close(); state.supportSource = null; state.supportHealthy = false;
+        scheduleFallback();
+        const delay = Math.min(10000, 1000 * 2 ** state.supportReconnects++);
+        state.supportRetry = setTimeout(() => {
+          state.supportRetry = null; void connectSupport();
+        }, delay);
+      };
+    } catch {
+      const delay = Math.min(10000, 1000 * 2 ** state.supportReconnects++);
+      state.supportRetry = setTimeout(() => {
+        state.supportRetry = null; void connectSupport();
+      }, delay);
+    } finally { state.supportConnecting = false; }
+  }
+  function resizeSupportInput() {
+    const input = $("support-input");
+    input.style.height = "auto";
+    input.style.height = `${Math.min(input.scrollHeight, 160)}px`;
   }
   async function sendSupport(event) {
     event.preventDefault();
     const input = $("support-input");
     const text = input.value.trim();
-    if (!text) return;
+    if (!text || state.supportSending) return;
+    state.supportSending = true;
     $("support-send").disabled = true;
     try {
-      await api("support/send", { text });
-      input.value = ""; notice("");
-      void refreshSupport();
+      const { message } = await api("support/send", { text });
+      appendSupport(message);
+      input.value = ""; resizeSupportInput(); notice("");
     } catch (error) { notice(error.message || "We couldn't send your message. Try again.", true); }
-    finally { $("support-send").disabled = false; }
+    finally { state.supportSending = false; $("support-send").disabled = false; }
   }
   function render() {
     const a = state.account;
@@ -530,6 +621,22 @@ if (typeof document !== "undefined") (() => {
     $(id).addEventListener("click", () => navigate("packages"));
   $("support-button").addEventListener("click", () => navigate("support"));
   $("support-form").addEventListener("submit", sendSupport);
+  $("support-input").addEventListener("input", resizeSupportInput);
+  $("support-input").addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+      event.preventDefault();
+      $("support-form").requestSubmit();
+    }
+  });
+  $("support-new-messages").addEventListener("click", scrollSupport);
+  $("support-conversation").addEventListener("scroll", () => {
+    if (nearSupportBottom()) show("support-new-messages", false);
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (state.tab !== "support") return;
+    if (document.hidden) stopSupportConnection();
+    else void connectSupport();
+  });
   for (const id of ["view-usage-button", "vpn-usage-button"])
     $(id).addEventListener("click", () => navigate("usage"));
   $("view-packages-button").addEventListener("click", () => navigate("packages"));

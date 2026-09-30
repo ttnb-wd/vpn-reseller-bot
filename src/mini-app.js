@@ -84,12 +84,13 @@ const validOrderNumber = (value) => typeof value === "string" && /^VPN-[A-Za-z0-
 
 function createMiniAppRouter({ botToken, getAccount, getPackages, getPackage,
   createOrder, getOrder, getOrders, getPaymentMethods, selectPaymentMethod,
-  uploadProof, getConnectUrl, getSupportService }) {
+  uploadProof, getConnectUrl, getSupportService, supportEvents }) {
   const router = express.Router();
   const publicDir = path.join(__dirname, "mini-app");
   const allowUploadIp = createWindowLimiter({ windowMs: 10 * 60000, max: 30 });
   const allowUploadCustomer = createWindowLimiter({ windowMs: 10 * 60000, max: 5 });
   const allowSupportRead = createWindowLimiter({ windowMs: 60000, max: 15 });
+  const allowSupportSession = createWindowLimiter({ windowMs: 60000, max: 20 });
   router.use((req, res, next) => {
     // Telegram Web may embed Mini Apps in a frame; the main server's DENY
     // header is appropriate for the admin and setup pages, but not here.
@@ -105,6 +106,15 @@ function createMiniAppRouter({ botToken, getAccount, getPackages, getPackage,
   router.get("/app.css", (_req, res) => res.sendFile(path.join(publicDir, "app.css")));
   router.get("/app.js", (_req, res) => res.sendFile(path.join(publicDir, "app.js")));
   router.get("/metro-secure-icon.png", (_req, res) => res.sendFile(path.join(publicDir, "metro-secure-icon.png")));
+  router.get("/api/support/events", (req, res) => {
+    const customerId = supportEvents?.consume(req.query.session);
+    if (customerId == null) return res.status(401).json({ error: "Support session expired. Reconnect from the Mini App." });
+    res.set({ "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-store, no-transform",
+      Connection: "keep-alive", "X-Accel-Buffering": "no" });
+    res.flushHeaders();
+    res.write(": connected\n\n");
+    supportEvents.subscribe(customerId, res);
+  });
   const authenticateTelegram = (req, res, next) => {
     const user = verifyTelegramInitData(req.body?.initData, botToken);
     if (!user) return res.status(401).json({ error: "Open Metro from Telegram to continue." });
@@ -273,11 +283,21 @@ function createMiniAppRouter({ botToken, getAccount, getPackages, getPackage,
     catch { console.error("Mini App support messages failed.");
       res.status(503).json({ error: "We couldn't load Support messages." }); }
   });
+  router.post("/api/support/session", async (req, res) => {
+    if (!supportEvents || !allowSupportSession(req.telegramUser.id))
+      return res.status(429).json({ error: "Please wait before reconnecting Support." });
+    try {
+      const target = await getSupportService().openOrResumeTicket(req.telegramUser.id);
+      if (!target) return res.status(403).json({ error: "Your account is unavailable." });
+      res.json({ session: supportEvents.issue(target.customer.id) });
+    } catch { console.error("Mini App support session failed.");
+      res.status(503).json({ error: "Support is temporarily unavailable." }); }
+  });
   router.post("/api/support/send", async (req, res) => {
     try {
       const result = await getSupportService().sendCustomerMessage(req.telegramUser.id, req.body?.text);
       if (result.error) return res.status(result.status).json({ error: result.error });
-      res.json({ ok: true });
+      res.json({ ok: true, message: result.message });
     } catch { console.error("Mini App support send failed.");
       res.status(503).json({ error: "We couldn't send your message. Please try again." }); }
   });

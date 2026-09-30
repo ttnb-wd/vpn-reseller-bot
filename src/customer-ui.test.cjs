@@ -810,7 +810,10 @@ test("bot and Mini App share support messages and keep customer conversations se
   await bot.events.text(botMessage);
   assert.equal((await service.listMessages(123)).messages[0].text, "Bot question");
   assert.equal((await service.listMessages(456)).messages.length, 0);
-  assert.deepEqual(await service.sendCustomerMessage(456, "App question"), { ok: true });
+  const sent = await service.sendCustomerMessage(456, "App question");
+  assert.equal(sent.ok, true);
+  assert.equal(sent.message.text, "App question");
+  assert.match(sent.message.key, /^[A-Za-z0-9_-]{43}$/);
   assert.match(bot.sent.at(-1).args[1], /App question/);
   assert.equal((await service.listMessages(456)).messages[0].text, "App question");
   await bot.action("support_reply_2", 999);

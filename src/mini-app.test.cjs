@@ -62,8 +62,9 @@ test("Mini App Support stays inside the app and validates every customer request
     assert.match(css, /\.primary-button\{border:0;background:linear-gradient/);
     assert.match(css, /\.secondary-button\{border:1px solid/);
     assert.match(js, /api\("support\/send"/);
-    assert.match(js, /setInterval\([\s\S]*?10000\)/);
-    assert.match(js, /clearInterval\(state\.supportTimer\)/);
+    assert.match(js, /new EventSource\(`/);
+    assert.match(js, /state\.supportFallbackTimer = setInterval/);
+    assert.match(js, /stopFallback\(\)/);
     assert.match(js, /api\/order\/payment-proof-upload/);
     assert.doesNotMatch(js, /payment-proof-handoff|api\("flow"/);
     assert.match(readFileSync(path.join(__dirname, "customer-menu.js"), "utf8"), /🎧 Support/);
