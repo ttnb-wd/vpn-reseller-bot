@@ -25,12 +25,25 @@ function formatRemainingDays(value) {
     `${value} ${value === 1 ? "day" : "days"} remaining`;
 }
 
+function formatUsagePercent(percent) {
+  if (percent === null || Number.isNaN(percent)) return "Usage unavailable";
+  if (percent <= 0) return "0%";
+  if (percent < 0.05) return "<0.1%";
+  if (percent < 99.95) return `${Number(percent.toFixed(1))}%`;
+  return percent < 100 ? "<100%" : "100%";
+}
+
+function progressFillPercent(percent) {
+  if (percent === null || Number.isNaN(percent) || percent <= 0) return 0;
+  return Math.min(100, Math.max(1, percent));
+}
+
 function dashboardView(account, now = Date.now()) {
   const a = account || {};
   const hasSubscription = Boolean(a.hasSubscription);
   const limit = Number.isFinite(a.dataLimitGb) && a.dataLimitGb > 0 ? a.dataLimitGb : null;
   const used = Number.isFinite(a.dataUsedGb) && a.dataUsedGb >= 0 ? a.dataUsedGb : null;
-  const percent = limit !== null && used !== null ? Math.max(0, Math.round(used / limit * 100)) : null;
+  const percent = limit !== null && used !== null ? used / limit * 100 : null;
   const remaining = limit !== null && used !== null ? Math.max(0, limit - used) : null;
   const days = remainingDays(a.expiresAt, now);
   // The backend applies the shared subscription-state rule for every customer surface.
@@ -43,6 +56,7 @@ function dashboardView(account, now = Date.now()) {
 }
 if (typeof module !== "undefined") module.exports = {
   dashboardView, formatUsageSync, remainingDays, formatRemainingDays,
+  formatUsagePercent, progressFillPercent,
 };
 
 if (typeof document !== "undefined") (() => {
@@ -91,10 +105,10 @@ if (typeof document !== "undefined") (() => {
     return data;
   }
   function progress(id, percent) {
-    const value = percent === null ? 0 : Math.min(100, percent);
-    $(id).querySelector("span").style.width = `${value}%`;
-    $(id).setAttribute("aria-valuenow", String(value));
-    $(id).setAttribute("aria-valuetext", percent === null ? "Usage unavailable" : `${percent}% used`);
+    $(id).querySelector("span").style.width = `${progressFillPercent(percent)}%`;
+    $(id).setAttribute("aria-valuenow", String(percent === null ? 0 : Math.min(100, percent)));
+    $(id).setAttribute("aria-valuetext", percent === null ? "Usage unavailable" :
+      `${formatUsagePercent(percent)} used`);
   }
   function navigate(tab) {
     if (state.tab === "support" && tab !== "support") stopSupportConnection();
@@ -603,7 +617,8 @@ if (typeof document !== "undefined") (() => {
     if (a.hasSubscription && v.status !== "REVOKED") {
       set("home-plan", a.plan || "Current plan");
       set("home-server", a.serverLabel || "VPN server");
-      set("home-usage", `${v.percent === null ? "Usage unavailable" : v.percent + "% used"} · ${gb(v.limit)} allowance`);
+      set("home-usage", `${v.percent === null ? "Usage unavailable" :
+        `${formatUsagePercent(v.percent)} used`} · ${gb(v.limit)} allowance`);
       progress("home-progress", v.percent);
       set("home-remaining", gb(v.remaining)); set("home-used", gb(v.used));
       set("home-expiry", date(a.expiresAt)); set("home-days", formatRemainingDays(v.days));
@@ -618,7 +633,7 @@ if (typeof document !== "undefined") (() => {
       set("vpn-status", statusLabel[v.status]); $("vpn-status").dataset.status = v.status;
       set("vpn-plan", a.plan || "Unavailable"); set("vpn-server", a.serverLabel || "VPN server");
       set("vpn-limit", gb(v.limit)); set("vpn-used", gb(v.used));
-      set("vpn-remaining", gb(v.remaining)); set("vpn-percent", v.percent === null ? "Unavailable" : `${v.percent}%`);
+      set("vpn-remaining", gb(v.remaining)); set("vpn-percent", formatUsagePercent(v.percent));
       set("vpn-start", date(a.startedAt)); set("vpn-expiry", date(a.expiresAt));
       set("vpn-days", formatRemainingDays(v.days)); set("vpn-subscription-status", statusLabel[v.status]);
     }
@@ -626,7 +641,8 @@ if (typeof document !== "undefined") (() => {
     show("usage-details", a.hasSubscription && v.status !== "REVOKED");
     if (!a.hasSubscription || v.status === "REVOKED") empty("usage-empty", v);
     if (a.hasSubscription && v.status !== "REVOKED") {
-      set("usage-used", gb(v.used)); set("usage-percentage", v.percent === null ? "Usage unavailable" : `${v.percent}% used`);
+      set("usage-used", gb(v.used)); set("usage-percentage", v.percent === null ?
+        "Usage unavailable" : `${formatUsagePercent(v.percent)} used`);
       progress("usage-progress", v.percent); set("usage-limit", gb(v.limit));
       set("usage-remaining", gb(v.remaining)); set("usage-sync", formatUsageSync(a.lastUsageSyncedAt));
       set("usage-expiry", date(a.expiresAt));

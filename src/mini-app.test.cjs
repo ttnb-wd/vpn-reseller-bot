@@ -5,7 +5,8 @@ const path = require("node:path");
 const { test } = require("node:test");
 const express = require("express");
 const { verifyTelegramInitData, createMiniAppRouter } = require("./mini-app");
-const { dashboardView, formatUsageSync, remainingDays, formatRemainingDays } = require("./mini-app/app");
+const { dashboardView, formatUsageSync, remainingDays, formatRemainingDays,
+  formatUsagePercent, progressFillPercent } = require("./mini-app/app");
 
 const token = "123456:synthetic-telegram-token";
 function signedData(userId = 42, authDate = Math.floor(Date.now() / 1000)) {
@@ -170,6 +171,52 @@ test("dashboard handles subscription and usage states", () => {
   assert.match(dashboardView({ ...base, dataUsedGb: 95 }, now).warning, /Very little/);
   assert.equal(dashboardView({ ...base, dataUsedGb: 100 }, now).warning, "Data limit reached");
   assert.equal(dashboardView({ ...base, dataUsedGb: null }, now).percent, null);
+});
+
+test("Mini App formats live subscription usage without rounding non-zero usage to zero or a full quota", () => {
+  for (const [used, limit, label] of [
+    [0, 300, "0%"], [0.4, 300, "0.1%"], [1, 300, "0.3%"],
+    [50, 100, "50%"], [199, 200, "99.5%"], [200, 200, "100%"],
+    [250, 200, "100%"],
+  ]) {
+    const view = dashboardView({ hasSubscription: true, status: "ACTIVE",
+      dataUsedGb: used, dataLimitGb: limit });
+    assert.equal(view.percent, used / limit * 100);
+    assert.equal(formatUsagePercent(view.percent), label);
+  }
+  assert.equal(formatUsagePercent(dashboardView({ dataUsedGb: 0.001,
+    dataLimitGb: 300 }).percent), "<0.1%");
+  assert.equal(formatUsagePercent(99.96), "<100%");
+  assert.equal(formatUsagePercent(dashboardView({ dataUsedGb: 1e308,
+    dataLimitGb: 1e-308 }).percent), "100%");
+  assert.equal(formatUsagePercent(null), "Usage unavailable");
+});
+
+test("Mini App progress presents a visible fill for small usage while keeping the raw percentage", () => {
+  const percent = dashboardView({ dataUsedGb: 0.4, dataLimitGb: 300 }).percent;
+  assert.ok(percent > 0 && percent < 1);
+  assert.equal(progressFillPercent(percent), 1);
+  assert.equal(formatUsagePercent(percent), "0.1%");
+  assert.equal(progressFillPercent(0), 0);
+  assert.equal(progressFillPercent(50), 50);
+  assert.equal(progressFillPercent(120), 100);
+  assert.equal(progressFillPercent(Infinity), 100);
+  const appJs = readFileSync(path.join(__dirname, "mini-app", "app.js"), "utf8");
+  assert.match(appJs, /style\.width = `\$\{progressFillPercent\(percent\)\}%`/);
+  assert.match(appJs, /aria-valuenow", String\(percent === null \? 0 : Math\.min\(100, percent\)\)/);
+});
+
+test("Home, My VPN, and Usage share the percentage formatter and thresholds use raw values", () => {
+  const appJs = readFileSync(path.join(__dirname, "mini-app", "app.js"), "utf8");
+  for (const id of ["home-usage", "vpn-percent", "usage-percentage"])
+    assert.match(appJs, new RegExp(`set\\("${id}"[^;]*formatUsagePercent\\(v\\.percent\\)`));
+  const base = { hasSubscription: true, status: "ACTIVE", dataLimitGb: 100 };
+  assert.equal(dashboardView({ ...base, dataUsedGb: 79.95 }).warning, "");
+  assert.match(dashboardView({ ...base, dataUsedGb: 80 }).warning, /getting close/);
+  assert.match(dashboardView({ ...base, dataUsedGb: 94.95 }).warning, /getting close/);
+  assert.match(dashboardView({ ...base, dataUsedGb: 95 }).warning, /Very little/);
+  assert.match(dashboardView({ ...base, dataUsedGb: 99.95 }).warning, /Very little/);
+  assert.equal(dashboardView({ ...base, dataUsedGb: 100 }).warning, "Data limit reached");
 });
 
 test("Mini App derives exact remaining days from expiry and always labels them as days", () => {
