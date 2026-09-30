@@ -106,12 +106,34 @@ test("Mini App serves live account data and gates connect and checkout by Telegr
     const html = await page.text();
     assert.match(html, /Metro Secure/);
     assert.match(html, /id="support-button"/);
-    assert.equal([...html.matchAll(/metro-secure-icon\.png/g)].length, 4);
+    assert.equal([...html.matchAll(/metro-secure-icon\.png/g)].length, 5);
+    assert.match(html, /<link rel="preload" as="image" href="metro-secure-icon\.png">/);
+    const headerLogo = html.match(/<header class="topbar"><img\b[^>]*>/)?.[0];
+    const heroLogo = html.match(/<div id="hero" class="hero"><img\b[^>]*>/)?.[0];
+    assert.ok(headerLogo);
+    assert.ok(heroLogo);
+    for (const [logo, size] of [[headerLogo, 36], [heroLogo, 76]]) {
+      assert.match(logo, /src="metro-secure-icon\.png"/);
+      assert.match(logo, new RegExp(`width="${size}" height="${size}"`));
+      assert.match(logo, /loading="eager"/);
+      assert.match(logo, /fetchpriority="high"/);
+      assert.doesNotMatch(logo, /loading="lazy"|style="[^"]*opacity\s*:\s*0/);
+    }
+    assert.ok(html.indexOf('id="hero"') < html.indexOf('id="loading"'));
+    assert.ok(html.indexOf('id="hero"') < html.indexOf('id="content" class="hidden"'));
+    assert.doesNotMatch(html, /hero-skeleton/);
+    const css = await (await fetch(`${base}/app.css`)).text();
+    const js = await (await fetch(`${base}/app.js`)).text();
+    assert.match(css, /\.topbar img,\.hero img\{opacity:1;transform:none;animation:none;transition:none\}/);
+    assert.doesNotMatch(js, /metro-secure-icon\.png/);
+    assert.match(js, /show\("hero", tab === "home"\)/);
     assert.doesNotMatch(html, /🌐|<svg\b/);
     const icon = await fetch(`${base}/metro-secure-icon.png`);
+    const iconBytes = Buffer.from(await icon.arrayBuffer());
     assert.equal(icon.status, 200);
     assert.match(icon.headers.get("content-type"), /^image\/png/);
-    assert.deepEqual(Buffer.from(await icon.arrayBuffer()),
+    assert.match(icon.headers.get("cache-control"), /public, max-age=86400/);
+    assert.deepEqual(iconBytes,
       readFileSync(path.join(__dirname, "mini-app", "metro-secure-icon.png")));
     const denied = await post("overview", { initData: "bad" });
     assert.equal(denied.status, 401);

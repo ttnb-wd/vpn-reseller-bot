@@ -99,6 +99,7 @@ if (typeof document !== "undefined") (() => {
   function navigate(tab) {
     if (state.tab === "support" && tab !== "support") stopSupportConnection();
     state.tab = tab;
+    show("hero", tab === "home");
     if (isAccountTab(tab) && !document.hidden && state.account) {
       void load(true);
       startAccountRefresh();

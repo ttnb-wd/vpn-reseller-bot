@@ -109,7 +109,10 @@ function createMiniAppRouter({ botToken, getAccount, getPackages, getPackage,
   router.get("/", (_req, res) => res.sendFile(path.join(publicDir, "index.html")));
   router.get("/app.css", (_req, res) => res.sendFile(path.join(publicDir, "app.css")));
   router.get("/app.js", (_req, res) => res.sendFile(path.join(publicDir, "app.js")));
-  router.get("/metro-secure-icon.png", (_req, res) => res.sendFile(path.join(publicDir, "metro-secure-icon.png")));
+  router.get("/metro-secure-icon.png", (_req, res) => {
+    res.set("Cache-Control", "public, max-age=86400");
+    res.sendFile(path.join(publicDir, "metro-secure-icon.png"), { cacheControl: false });
+  });
   router.get("/api/support/events", (req, res) => {
     const customerId = supportEvents?.consume(req.query.session);
     if (customerId == null) return res.status(401).json({ error: "Support session expired. Reconnect from the Mini App." });
