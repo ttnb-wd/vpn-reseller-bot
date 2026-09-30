@@ -25,7 +25,7 @@ function isValidImage(bytes, mimeType) {
 
 function parseMultipartProof(bytes, contentType) {
   if (!Buffer.isBuffer(bytes) || bytes.length > MAX_REQUEST_BYTES)
-    return Promise.reject(new UploadError("ပုံက ကြီးနေပါတယ်။ 5 MB ထက်ငယ်တဲ့ ပုံကို ရွေးပေးပါ။", 413));
+    return Promise.reject(new UploadError("This image is too large. Choose a slip up to 5 MB.", 413));
   return new Promise((resolve, reject) => {
     let parser;
     try {
@@ -33,7 +33,7 @@ function parseMultipartProof(bytes, contentType) {
         limits: { files: 2, fields: 3, parts: 4, fieldSize: 8192,
           fileSize: MAX_IMAGE_BYTES, headerPairs: 20 } });
     } catch {
-      reject(new UploadError("JPG / PNG ပုံကို ရွေးပေးပါ။"));
+      reject(new UploadError("Choose a JPG or PNG slip."));
       return;
     }
     const fields = {};
@@ -41,7 +41,7 @@ function parseMultipartProof(bytes, contentType) {
     let mimeType;
     let fileCount = 0;
     let problem = null;
-    const invalid = () => { problem ||= new UploadError("JPG / PNG ပုံကို ရွေးပေးပါ။"); };
+    const invalid = () => { problem ||= new UploadError("Choose a JPG or PNG slip."); };
     parser.on("field", (name, value, info) => {
       if (!["initData", "orderNumber"].includes(name) || Object.hasOwn(fields, name) || info.valueTruncated)
         invalid();
@@ -53,18 +53,18 @@ function parseMultipartProof(bytes, contentType) {
       mimeType = info.mimeType;
       stream.on("data", (chunk) => chunks.push(chunk));
       stream.on("limit", () => { problem = new UploadError(
-        "ပုံက ကြီးနေပါတယ်။ 5 MB ထက်ငယ်တဲ့ ပုံကို ရွေးပေးပါ။", 413); });
+        "This image is too large. Choose a slip up to 5 MB.", 413); });
       stream.resume();
     });
     for (const event of ["filesLimit", "fieldsLimit", "partsLimit"]) parser.on(event, invalid);
-    parser.on("error", () => reject(new UploadError("JPG / PNG ပုံကို ရွေးပေးပါ။")));
+    parser.on("error", () => reject(new UploadError("Choose a JPG or PNG slip.")));
     parser.on("finish", () => {
       if (problem) return reject(problem);
       if (fileCount !== 1 || !fields.initData || !fields.orderNumber)
-        return reject(new UploadError("JPG / PNG ပုံကို ရွေးပေးပါ။"));
+        return reject(new UploadError("Choose a JPG or PNG slip."));
       const image = Buffer.concat(chunks);
       if (!isValidImage(image, mimeType))
-        return reject(new UploadError("JPG / PNG ပုံကို ရွေးပေးပါ။"));
+        return reject(new UploadError("Choose a JPG or PNG slip."));
       resolve({ initData: fields.initData, orderNumber: fields.orderNumber,
         image, mimeType });
     });

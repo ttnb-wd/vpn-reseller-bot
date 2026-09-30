@@ -18,6 +18,7 @@ const { buildCustomerMenu, buildPersistentCustomerKeyboard,
   buildPersistentAdminKeyboard } = require("./customer-menu");
 const { createWindowLimiter } = require("./abuse-limits");
 const { createMiniAppRouter } = require("./mini-app");
+const { connectCopy } = require("./mini-app-connect-copy");
 const { effectiveSubscriptionState } = require("./subscription-state");
 const { createExpiryWorker } = require("./expiry-worker");
 const { USAGE_SYNC_INTERVAL_MS } = require("./worker-intervals");
@@ -173,9 +174,10 @@ function scriptJson(value) {
     "\\u" + character.charCodeAt(0).toString(16).padStart(4, "0"));
 }
 
-function renderVpnConnectPage(vpnKey, nonce, remainingMs) {
+function renderVpnConnectPage(vpnKey, nonce, remainingMs, language = "my") {
+  const t = (value) => connectCopy(value, language);
   return `<!doctype html>
-<html lang="my">
+<html lang="${language === "en" ? "en" : "my"}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -200,14 +202,14 @@ function renderVpnConnectPage(vpnKey, nonce, remainingMs) {
 <body>
   <main>
     <h1>VPN Setup</h1>
-    <p id="status" role="status" aria-live="polite">Outline ကို ဖွင့်ပေးနေပါတယ်…</p>
-    <p>Outline မပွင့်ရင် အောက်ကခလုတ်ကို နှိပ်ပေးပါ။</p>
+    <p id="status" role="status" aria-live="polite">${t("Outline ကို ဖွင့်ပေးနေပါတယ်…")}</p>
+    <p>${t("Outline မပွင့်ရင် အောက်ကခလုတ်ကို နှိပ်ပေးပါ။")}</p>
     <button id="open-outline" type="button">Open Outline</button>
-    <button id="copy-key" class="secondary" type="button">Copy VPN Key</button>
-    <p id="platform-help" class="hint">Outline ဖွင့်ဖို့ ခွင့်ပြုပြီး Add → Connect ကိုနှိပ်ပေးပါ။</p>
-    <p class="hint">မပွင့်ရင် ဒီစာမျက်နှာကို Safari / Chrome နဲ့ ဖွင့်ကြည့်ပေးပါ။
-      VPN key ကို ကူးပြီး Outline ထဲ ထည့်လို့လည်း ရပါတယ်။ Link က 10 မိနစ်အတွင်း သက်တမ်းကုန်ပါတယ်။ မမျှဝေပေးပါနဲ့။</p>
-    <noscript>Outline ဖွင့်ဖို့ JavaScript ကို ဖွင့်ပေးပါ။</noscript>
+    <button id="copy-key" class="secondary" type="button">${t("Copy VPN Key")}</button>
+    <p id="platform-help" class="hint">${t("Outline ဖွင့်ဖို့ ခွင့်ပြုပြီး Add → Connect ကိုနှိပ်ပေးပါ။")}</p>
+    <p class="hint">${t("မပွင့်ရင် ဒီစာမျက်နှာကို Safari / Chrome နဲ့ ဖွင့်ကြည့်ပေးပါ။")}
+      ${t("VPN key ကို ကူးပြီး Outline ထဲ ထည့်လို့လည်း ရပါတယ်။ Link က 10 မိနစ်အတွင်း သက်တမ်းကုန်ပါတယ်။ မမျှဝေပေးပါနဲ့။")}</p>
+    <noscript>${t("Outline ဖွင့်ဖို့ JavaScript ကို ဖွင့်ပေးပါ။")}</noscript>
   </main>
   <script nonce="${nonce}">
     (() => {
@@ -223,21 +225,21 @@ function renderVpnConnectPage(vpnKey, nonce, remainingMs) {
         vpnKey = "";
         openButton.disabled = true;
         copyButton.disabled = true;
-        status.textContent = "ဒီ link က သက်တမ်းကုန်သွားပါပြီ။ My VPN မှာ Connect ကို ပြန်နှိပ်ပေးပါ။";
+        status.textContent = ${scriptJson(t("ဒီ link က သက်တမ်းကုန်သွားပါပြီ။ My VPN မှာ Connect ကို ပြန်နှိပ်ပေးပါ။"))};
         return false;
       }
       function openOutline() {
         if (!isUsable()) return;
         clearTimeout(hintTimer);
-        status.textContent = "Outline ကို ဖွင့်ပေးနေပါတယ်…";
+        status.textContent = ${scriptJson(t("Outline ကို ဖွင့်ပေးနေပါတယ်…"))};
         // Keep this synchronous inside the real click. No fetch, await, timer,
         // iframe, invented scheme, or Android intent/store fallback.
         try { window.location.href = vpnKey; } catch {
-          status.textContent = "Outline မပွင့်သေးပါဘူး။ VPN key ကို ကူးပြီး Outline ထဲ ထည့်ပေးပါ။";
+          status.textContent = ${scriptJson(t("Outline မပွင့်သေးပါဘူး။ VPN key ကို ကူးပြီး Outline ထဲ ထည့်ပေးပါ။"))};
         }
         // Browsers cannot reliably report whether a custom-scheme app opened.
         hintTimer = setTimeout(() => {
-          if (isUsable()) status.textContent = "Outline မပွင့်ရင် Open Outline ကိုနှိပ်ပေးပါ။ VPN key ကို ကူးထည့်လို့လည်း ရပါတယ်။";
+          if (isUsable()) status.textContent = ${scriptJson(t("Outline မပွင့်ရင် Open Outline ကိုနှိပ်ပေးပါ။ VPN key ကို ကူးထည့်လို့လည်း ရပါတယ်။"))};
         }, 1800);
       }
       function legacyCopy() {
@@ -267,13 +269,13 @@ function renderVpnConnectPage(vpnKey, nonce, remainingMs) {
           } else if (!legacyCopy()) {
             throw new Error("Copy unavailable");
           }
-          if (isUsable()) status.textContent = "VPN key ကူးပြီးပါပြီ။ Outline ထဲ ထည့်ပြီး Add → Connect ကိုနှိပ်ပေးပါ။";
+          if (isUsable()) status.textContent = ${scriptJson(t("VPN key ကူးပြီးပါပြီ။ Outline ထဲ ထည့်ပြီး Add → Connect ကိုနှိပ်ပေးပါ။"))};
         } catch {
           if (!isUsable()) return;
           // A rejected async clipboard call may consume user activation. The
           // next click performs the legacy copy synchronously with a new gesture.
           useLegacyCopy = true;
-          status.textContent = "ကူးလို့မရသေးပါဘူး။ Copy VPN Key ကို ပြန်နှိပ်ပေးပါ။";
+          status.textContent = ${scriptJson(t("ကူးလို့မရသေးပါဘူး။ Copy VPN Key ကို ပြန်နှိပ်ပေးပါ။"))};
         }
       });
       const ua = navigator.userAgent;
@@ -281,13 +283,13 @@ function renderVpnConnectPage(vpnKey, nonce, remainingMs) {
         (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
       const help = document.getElementById("platform-help");
       if (isAppleMobile) {
-        help.textContent = "Safari က မေးလာရင် Open ကိုနှိပ်ပေးပါ။ မပွင့်ရင် Open Outline ကိုနှိပ်ပြီး Add → Connect ကိုနှိပ်ပေးပါ။";
+        help.textContent = ${scriptJson(t("Safari က မေးလာရင် Open ကိုနှိပ်ပေးပါ။ မပွင့်ရင် Open Outline ကိုနှိပ်ပြီး Add → Connect ကိုနှိပ်ပေးပါ။"))};
       } else if (/Android/.test(ua)) {
-        help.textContent = "Open Outline ကိုနှိပ်ပေးပါ။ Chrome က မေးလာရင် Outline ကိုရွေးပြီး Add → Connect ကိုနှိပ်ပေးပါ။";
+        help.textContent = ${scriptJson(t("Open Outline ကိုနှိပ်ပေးပါ။ Chrome က မေးလာရင် Outline ကိုရွေးပြီး Add → Connect ကိုနှိပ်ပေးပါ။"))};
       } else if (/Windows/.test(ua)) {
-        help.textContent = "Outline ဖွင့်ဖို့ ခွင့်ပြုပေးပါ။ Windows က app ရွေးခိုင်းရင် Outline ကိုရွေးပြီး key ထည့်ပေးပါ။ ပြီးရင် Connect ကိုနှိပ်ပေးပါ။";
+        help.textContent = ${scriptJson(t("Outline ဖွင့်ဖို့ ခွင့်ပြုပေးပါ။ Windows က app ရွေးခိုင်းရင် Outline ကိုရွေးပြီး key ထည့်ပေးပါ။ ပြီးရင် Connect ကိုနှိပ်ပေးပါ။"))};
       } else if (/Mac/.test(ua)) {
-        help.textContent = "Mac မှာ Outline ဖွင့်ဖို့ ခွင့်ပြုပေးပါ။ Key ထည့်ပြီး Connect ကိုနှိပ်ပေးပါ။";
+        help.textContent = ${scriptJson(t("Mac မှာ Outline ဖွင့်ဖို့ ခွင့်ပြုပေးပါ။ Key ထည့်ပြီး Connect ကိုနှိပ်ပေးပါ။"))};
       }
       setTimeout(isUsable, Math.max(0, deadline - performance.now()));
       window.addEventListener("pageshow", isUsable);
@@ -300,6 +302,8 @@ function renderVpnConnectPage(vpnKey, nonce, remainingMs) {
 }
 
 app.get("/connect/:token", async (req, res) => {
+  const language = req.query.lang === "en" ? "en" : "my";
+  const t = (value) => connectCopy(value, language);
   const nonce = crypto.randomBytes(18).toString("base64");
   res.set({
     "Cache-Control": "private, no-store, max-age=0",
@@ -313,12 +317,12 @@ app.get("/connect/:token", async (req, res) => {
   });
   if (!allowConnect(req.ip || req.socket.remoteAddress)) {
     res.set("Retry-After", "60");
-    return res.status(429).type("text").send("ခဏစောင့်ပြီးမှ Connect ကို ပြန်နှိပ်ပေးပါ။");
+    return res.status(429).type("text").send(t("ခဏစောင့်ပြီးမှ Connect ကို ပြန်နှိပ်ပေးပါ။"));
   }
   // Never redirect an HTTP request with a bearer token or send it a VPN key.
-  if (!req.secure) return res.status(400).type("text").send("My VPN မှာ Connect ကို ပြန်နှိပ်ပေးပါ။");
+  if (!req.secure) return res.status(400).type("text").send(t("My VPN မှာ Connect ကို ပြန်နှိပ်ပေးပါ။"));
   const invalidLink = () => res.status(410).type("text").send(
-    "ဒီ link က သုံးလို့မရတော့ပါဘူး။ My VPN မှာ Connect ကို ပြန်နှိပ်ပေးပါ။"
+    t("ဒီ link က သုံးလို့မရတော့ပါဘူး။ My VPN မှာ Connect ကို ပြန်နှိပ်ပေးပါ။")
   );
   const payload = readConnectToken(req.params.token);
   if (!payload) return invalidLink();
@@ -329,10 +333,10 @@ app.get("/connect/:token", async (req, res) => {
     const remainingMs = Math.min(payload.expiresAt,
       Number(Temporal.Instant.from(subscription.expiresAt).epochMilliseconds)) - Date.now();
     if (remainingMs <= 0) return invalidLink();
-    return res.type("html").send(renderVpnConnectPage(subscription.vpnKey, nonce, remainingMs));
+    return res.type("html").send(renderVpnConnectPage(subscription.vpnKey, nonce, remainingMs, language));
   } catch {
     console.error("VPN setup page could not be loaded.");
-    return res.status(503).type("text").send("Connect ကို အခုဖွင့်လို့မရသေးပါဘူး။ ခဏနေရင် My VPN မှာ ပြန်စမ်းကြည့်ပေးပါ။");
+    return res.status(503).type("text").send(t("Connect ကို အခုဖွင့်လို့မရသေးပါဘူး။ ခဏနေရင် My VPN မှာ ပြန်စမ်းကြည့်ပေးပါ။"));
   }
 });
 
@@ -1363,7 +1367,7 @@ const miniAppRouter = createMiniAppRouter({
     if (!isSubscriptionActive(subscription) ||
         !isReusableAccessKey(subscription.vpnKeyId, subscription.vpnKey) ||
         !isValidOutlineAccessKey(subscription.vpnKey)) return null;
-    return createVpnConnectUrl(subscription);
+    return `${createVpnConnectUrl(subscription)}?lang=en`;
   },
   async sendBotFlow(telegramId, flow, packageId) {
     if (!allowMiniFlow(telegramId)) throw new Error("Too many requests");

@@ -115,7 +115,7 @@ function createMiniAppRouter({ botToken, getAccount, getPackages, getPackage,
   });
   router.get("/api/support/events", (req, res) => {
     const customerId = supportEvents?.consume(req.query.session);
-    if (customerId == null) return res.status(401).json({ error: "Support ကို ပြန်ဖွင့်ပေးပါ။" });
+    if (customerId == null) return res.status(401).json({ error: "Reopen Support to try again." });
     res.set({ "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-store, no-transform",
       Connection: "keep-alive", "X-Accel-Buffering": "no" });
     res.flushHeaders();
@@ -124,32 +124,32 @@ function createMiniAppRouter({ botToken, getAccount, getPackages, getPackage,
   });
   const authenticateTelegram = (req, res, next) => {
     const user = verifyTelegramInitData(req.body?.initData, botToken);
-    if (!user) return res.status(401).json({ error: "Metro Secure ကို ပြန်ဖွင့်ပြီး စမ်းကြည့်ပေးပါ။" });
+    if (!user) return res.status(401).json({ error: "Reopen Metro Secure to try again." });
     req.telegramUser = user;
     next();
   };
   const resolveCustomer = async (req, res, next) => {
     try {
       const account = await getAccount(req.telegramUser.id, req.telegramUser);
-      if (!account?.customerExists) return res.status(403).json({ error: "အကောင့်ကို အခုကြည့်လို့မရသေးပါဘူး။ Support မှာ ဆက်သွယ်ပေးပါ။" });
+      if (!account?.customerExists) return res.status(403).json({ error: "Your account is unavailable. Contact Support here." });
       req.account = account;
       next();
     } catch {
       console.error("Mini App customer lookup failed.");
-      res.status(503).json({ error: "အခုကြည့်လို့မရသေးပါဘူး။ ခဏနေရင် ပြန်စမ်းကြည့်ပေးပါ။" });
+      res.status(503).json({ error: "Couldn’t load this page. Try again in a moment." });
     }
   };
   router.post("/api/order/payment-proof-upload", (req, res, next) => {
-    if (!allowUploadIp(req.ip)) return res.status(429).json({ error: "ခဏစောင့်ပြီးမှ ပုံပြန်တင်ပေးပါ။" });
+    if (!allowUploadIp(req.ip)) return res.status(429).json({ error: "Wait a moment before uploading again." });
     if (!/^multipart\/form-data(?:;|$)/i.test(req.headers["content-type"] || ""))
-      return res.status(415).json({ error: "JPG / PNG ပုံကို ရွေးပေးပါ။" });
+      return res.status(415).json({ error: "Choose a JPG or PNG slip." });
     const timer = setTimeout(() => req.destroy(), 20000);
     res.once("close", () => clearTimeout(timer));
     express.raw({ type: "multipart/form-data", limit: MAX_REQUEST_BYTES, inflate: false })(req, res, (error) => {
       clearTimeout(timer);
       if (error) return res.status(error.type === "entity.too.large" ? 413 : 400).json({
         error: error.type === "entity.too.large" ?
-          "ပုံက ကြီးနေပါတယ်။ 5 MB ထက်ငယ်တဲ့ ပုံကို ရွေးပေးပါ။" : "ပုံတင်လို့မရသေးပါဘူး။ Slip ပုံကို ပြန်ရွေးပေးပါ။" });
+          "This image is too large. Choose a slip up to 5 MB." : "Couldn’t upload your slip. Choose it again." });
       next();
     });
   }, async (req, res, next) => {
@@ -159,25 +159,25 @@ function createMiniAppRouter({ botToken, getAccount, getPackages, getPackage,
       req.upload = upload;
       next();
     } catch (error) { res.status(error instanceof UploadError ? error.status : 400).json({
-      error: error instanceof UploadError ? error.message : "ပုံတင်လို့မရသေးပါဘူး။ Slip ပုံကို ပြန်ရွေးပေးပါ။" }); }
+      error: error instanceof UploadError ? error.message : "Couldn’t upload your slip. Choose it again." }); }
   }, authenticateTelegram, resolveCustomer, async (req, res) => {
     if (!allowUploadCustomer(req.telegramUser.id))
-      return res.status(429).json({ error: "ခဏစောင့်ပြီးမှ ပုံပြန်တင်ပေးပါ။" });
+      return res.status(429).json({ error: "Wait a moment before uploading again." });
     if (!validOrderNumber(req.body.orderNumber))
-      return res.status(400).json({ error: "ဒီမှာယူမှုကို မတွေ့သေးပါဘူး။ ဝယ်ထားတာတွေထဲမှာ ပြန်ကြည့်ပေးပါ။" });
+      return res.status(400).json({ error: "Order not found. Check your order history." });
     try {
       const result = await uploadProof(req.telegramUser.id, req.body.orderNumber,
         req.upload.image, req.upload.mimeType);
       if (result?.already) return res.status(409).json({
-        error: "Slip ရပြီးပါပြီ။ ထပ်တင်ဖို့ မလိုပါဘူး။",
+        error: "Your slip has already been received. No need to upload it again.",
         order: publicOrder(result.order) });
       if (result?.busy) return res.status(409).json({
-        error: "Slip တင်နေပါတယ်။ ဝယ်ထားတာတွေထဲမှာ ခဏနေ ပြန်ကြည့်ပေးပါ။ မပြီးသေးရင် Support မှာ ဆက်သွယ်ပေးပါ။" });
-      if (!result?.order) return res.status(404).json({ error: "ဒီမှာယူမှုကို မတွေ့သေးပါဘူး။ ဝယ်ထားတာတွေထဲမှာ ပြန်ကြည့်ပေးပါ။" });
+        error: "Your slip is uploading. Check your order history shortly. If it stays pending, contact Support here." });
+      if (!result?.order) return res.status(404).json({ error: "Order not found. Check your order history." });
       res.json({ proofSubmitted: true, order: publicOrder(result.order) });
     } catch {
       console.error("Mini App payment proof upload failed.");
-      res.status(503).json({ error: "Slip တင်လို့မရသေးပါဘူး။ ခဏနေရင် ပြန်တင်ပေးပါ။" });
+      res.status(503).json({ error: "Couldn’t upload your slip. Try again in a moment." });
     }
   });
   router.use("/api", express.json({ limit: "12kb", strict: true }));
@@ -190,7 +190,7 @@ function createMiniAppRouter({ botToken, getAccount, getPackages, getPackage,
         packages: packages.map((pkg) => publicPackage(pkg, req.telegramUser.id, botToken)) });
     } catch {
       console.error("Mini App account lookup failed.");
-      res.status(503).json({ error: "အခုကြည့်လို့မရသေးပါဘူး။ ခဏနေရင် ပြန်စမ်းကြည့်ပေးပါ။" });
+      res.status(503).json({ error: "Couldn’t load this page. Try again in a moment." });
     }
   });
   router.post("/api/packages", async (req, res) => {
@@ -199,33 +199,33 @@ function createMiniAppRouter({ botToken, getAccount, getPackages, getPackage,
       res.json({ packages: packages.map((pkg) => publicPackage(pkg, req.telegramUser.id, botToken)) });
     } catch {
       console.error("Mini App package lookup failed.");
-      res.status(503).json({ error: "Package တွေကို အခုကြည့်လို့မရသေးပါဘူး။ ခဏနေရင် ပြန်စမ်းကြည့်ပေးပါ။" });
+      res.status(503).json({ error: "Couldn’t load packages. Try again in a moment." });
     }
   });
   router.post("/api/package/detail", async (req, res) => {
     const selected = openToken(req.body?.selectionToken, req.telegramUser.id, botToken);
-    if (selected?.kind !== "selection") return res.status(400).json({ error: "Package ကို ပြန်ရွေးပေးပါ။" });
+    if (selected?.kind !== "selection") return res.status(400).json({ error: "Choose your package again." });
     try {
       const pkg = await getPackage(selected.id);
-      if (!pkg) return res.status(404).json({ error: "ဒီ package ကို မရတော့ပါဘူး။ Package အသစ်ရွေးပေးပါ။" });
+      if (!pkg) return res.status(404).json({ error: "This package is no longer available. Choose another package." });
       res.json({ package: publicPackage(pkg, req.telegramUser.id, botToken,
         selected.version !== pkg.version),
         confirmationToken: sealToken({ kind: "confirmation", id: pkg.id, version: pkg.version, at: Date.now() },
           req.telegramUser.id, botToken) });
     } catch {
       console.error("Mini App package detail failed.");
-      res.status(503).json({ error: "ဒီ package ကို အခုကြည့်လို့မရသေးပါဘူး။ ခဏနေရင် ပြန်စမ်းကြည့်ပေးပါ။" });
+      res.status(503).json({ error: "Couldn’t load this package. Try again in a moment." });
     }
   });
   router.post("/api/order/create", async (req, res) => {
     const selected = openToken(req.body?.confirmationToken, req.telegramUser.id, botToken);
     if (selected?.kind !== "confirmation" || typeof selected.version !== "string")
-      return res.status(400).json({ error: "Package အချက်အလက်တွေကို ပြန်ကြည့်ပေးပါ။" });
+      return res.status(400).json({ error: "Review your package details." });
     try {
       const pkg = await getPackage(selected.id);
-      if (!pkg) return res.status(404).json({ error: "ဒီ package ကို မရတော့ပါဘူး။ Package အသစ်ရွေးပေးပါ။" });
+      if (!pkg) return res.status(404).json({ error: "This package is no longer available. Choose another package." });
       if (selected.version !== pkg.version) return res.status(409).json({
-        error: "Package အချက်အလက်တွေ ပြောင်းထားပါတယ်။ လက်ရှိအချက်အလက်တွေကို ပြန်ကြည့်ပေးပါ။",
+        error: "This package has changed. Review the latest details.",
         package: publicPackage(pkg, req.telegramUser.id, botToken, true),
         confirmationToken: sealToken({ kind: "confirmation", id: pkg.id, version: pkg.version, at: Date.now() },
           req.telegramUser.id, botToken),
@@ -233,90 +233,94 @@ function createMiniAppRouter({ botToken, getAccount, getPackages, getPackage,
       const result = await createOrder(req.telegramUser, req.account, pkg.id, selected.version);
       if (result?.changed) {
         const current = await getPackage(selected.id);
-        if (!current) return res.status(404).json({ error: "ဒီ package ကို မရတော့ပါဘူး။ Package အသစ်ရွေးပေးပါ။" });
-        return res.status(409).json({ error: "Package အချက်အလက်တွေ ပြောင်းထားပါတယ်။ ပြန်ကြည့်ပေးပါ။",
+        if (!current) return res.status(404).json({ error: "This package is no longer available. Choose another package." });
+        return res.status(409).json({ error: "This package has changed. Review the details.",
           package: publicPackage(current, req.telegramUser.id, botToken, true),
           confirmationToken: sealToken({ kind: "confirmation", id: current.id, version: current.version, at: Date.now() },
             req.telegramUser.id, botToken) });
       }
-      if (!result?.order) return res.status(409).json({ error: "အခုမှာယူလို့မရသေးပါဘူး။ ခဏနေရင် ပြန်စမ်းကြည့်ပေးပါ။" });
+      if (!result?.order) return res.status(409).json({ error: "Couldn’t create your order. Try again in a moment." });
       res.json({ order: publicOrder(result.order), inProgress: Boolean(result.inProgress) });
     } catch {
       console.error("Mini App order creation failed.");
-      res.status(503).json({ error: "အခုမှာယူလို့မရသေးပါဘူး။ ခဏနေရင် ပြန်စမ်းကြည့်ပေးပါ။" });
+      res.status(503).json({ error: "Couldn’t create your order. Try again in a moment." });
     }
   });
   router.post("/api/orders", async (req, res) => {
     try { res.json({ orders: (await getOrders(req.telegramUser.id)).map(publicOrder) }); }
-    catch { console.error("Mini App order history failed."); res.status(503).json({ error: "ဝယ်ထားတာတွေကို အခုကြည့်လို့မရသေးပါဘူး။ ခဏနေရင် ပြန်စမ်းကြည့်ပေးပါ။" }); }
+    catch { console.error("Mini App order history failed."); res.status(503).json({ error: "Couldn’t load your order history. Try again in a moment." }); }
   });
   router.post("/api/order/status", async (req, res) => {
     if (!validOrderNumber(req.body?.orderNumber))
-      return res.status(400).json({ error: "မှာယူမှုကို ပြန်ရွေးပေးပါ။" });
+      return res.status(400).json({ error: "Choose your order again." });
     try {
       const order = await getOrder(req.telegramUser.id, req.body.orderNumber);
-      if (!order) return res.status(404).json({ error: "ဒီမှာယူမှုကို မတွေ့သေးပါဘူး။ ဝယ်ထားတာတွေထဲမှာ ပြန်ကြည့်ပေးပါ။" });
+      if (!order) return res.status(404).json({ error: "Order not found. Check your order history." });
       res.json({ order: publicOrder(order) });
-    } catch { console.error("Mini App order status failed."); res.status(503).json({ error: "ဒီမှာယူမှုကို အခုကြည့်လို့မရသေးပါဘူး။ ခဏနေရင် ပြန်စမ်းကြည့်ပေးပါ။" }); }
+    } catch { console.error("Mini App order status failed."); res.status(503).json({ error: "Couldn’t load this order. Try again in a moment." }); }
   });
   router.post("/api/payment-methods", async (req, res) => {
     try { res.json({ methods: await getPaymentMethods() }); }
-    catch { console.error("Mini App payment methods failed."); res.status(503).json({ error: "ငွေပေးချေနည်းတွေကို အခုကြည့်လို့မရသေးပါဘူး။ ခဏနေရင် ပြန်စမ်းကြည့်ပေးပါ။" }); }
+    catch { console.error("Mini App payment methods failed."); res.status(503).json({ error: "Couldn’t load payment methods. Try again in a moment." }); }
   });
   router.post("/api/order/payment-method", async (req, res) => {
     const { orderNumber, method } = req.body || {};
     if (!validOrderNumber(orderNumber) || typeof method !== "string" || method.length > 40)
-      return res.status(400).json({ error: "ငွေပေးချေနည်းကို ပြန်ရွေးပေးပါ။" });
+      return res.status(400).json({ error: "Choose your payment method again." });
     try {
       const order = await selectPaymentMethod(req.telegramUser.id, orderNumber, method);
-      if (!order) return res.status(409).json({ error: "ဒီမှာယူမှုအတွက် ငွေပေးချေလို့မရတော့ပါဘူး။ ဝယ်ထားတာတွေထဲမှာ ပြန်ကြည့်ပေးပါ။" });
+      if (!order) return res.status(409).json({ error: "Payment is no longer available for this order. Check your order history." });
       res.json({ order: publicOrder(order) });
-    } catch { console.error("Mini App payment selection failed."); res.status(503).json({ error: "အခုရွေးလို့မရသေးပါဘူး။ ခဏနေရင် ပြန်စမ်းကြည့်ပေးပါ။" }); }
+    } catch { console.error("Mini App payment selection failed."); res.status(503).json({ error: "Couldn’t save your choice. Try again in a moment." }); }
   });
   router.post("/api/support/open", async (req, res) => {
     if (!allowSupportRead(req.telegramUser.id))
-      return res.status(429).json({ error: "ခဏစောင့်ပြီးမှ Support ကို ပြန်ကြည့်ပေးပါ။" });
+      return res.status(429).json({ error: "Wait a moment before checking Support again." });
     try {
       const service = getSupportService();
       const target = await service.openOrResumeTicket(req.telegramUser.id);
-      if (!target) return res.status(403).json({ error: "အကောင့်ကို အခုကြည့်လို့မရသေးပါဘူး။ Support မှာ ဆက်သွယ်ပေးပါ။" });
+      if (!target) return res.status(403).json({ error: "Your account is unavailable. Contact Support here." });
       res.json(await service.listMessages(req.telegramUser.id));
     } catch { console.error("Mini App support opening failed.");
-      res.status(503).json({ error: "Support ကို အခုဖွင့်လို့မရသေးပါဘူး။ ခဏနေရင် ပြန်စမ်းကြည့်ပေးပါ။" }); }
+      res.status(503).json({ error: "Couldn’t open Support. Try again in a moment." }); }
   });
   router.post("/api/support/messages", async (req, res) => {
     if (!allowSupportRead(req.telegramUser.id))
-      return res.status(429).json({ error: "ခဏစောင့်ပြီးမှ Support ကို ပြန်ကြည့်ပေးပါ။" });
+      return res.status(429).json({ error: "Wait a moment before checking Support again." });
     try { res.json(await getSupportService().listMessages(req.telegramUser.id)); }
     catch { console.error("Mini App support messages failed.");
-      res.status(503).json({ error: "Support စာတွေကို အခုကြည့်လို့မရသေးပါဘူး။ ခဏနေရင် ပြန်စမ်းကြည့်ပေးပါ။" }); }
+      res.status(503).json({ error: "Couldn’t load Support messages. Try again in a moment." }); }
   });
   router.post("/api/support/session", async (req, res) => {
     if (!supportEvents || !allowSupportSession(req.telegramUser.id))
-      return res.status(429).json({ error: "ခဏစောင့်ပြီးမှ Support ကို ပြန်ဖွင့်ပေးပါ။" });
+      return res.status(429).json({ error: "Wait a moment before reopening Support." });
     try {
       const target = await getSupportService().openOrResumeTicket(req.telegramUser.id);
-      if (!target) return res.status(403).json({ error: "အကောင့်ကို အခုကြည့်လို့မရသေးပါဘူး။ Support မှာ ဆက်သွယ်ပေးပါ။" });
+      if (!target) return res.status(403).json({ error: "Your account is unavailable. Contact Support here." });
       res.json({ session: supportEvents.issue(target.customer.id) });
     } catch { console.error("Mini App support session failed.");
-      res.status(503).json({ error: "Support ကို အခုဖွင့်လို့မရသေးပါဘူး။ ခဏနေရင် ပြန်စမ်းကြည့်ပေးပါ။" }); }
+      res.status(503).json({ error: "Couldn’t open Support. Try again in a moment." }); }
   });
   router.post("/api/support/send", async (req, res) => {
     try {
       const result = await getSupportService().sendCustomerMessage(req.telegramUser.id, req.body?.text);
-      if (result.error) return res.status(result.status).json({ error: result.error });
+      if (result.error) return res.status(result.status).json({ error: {
+        400: "Write a message of up to 3,000 characters.",
+        403: "Your account is unavailable. Contact Support here.",
+        429: "You’re sending messages too quickly. Wait a minute and try again.",
+      }[result.status] || "Couldn’t send your message. Try again in a moment." });
       res.json({ ok: true, message: result.message });
     } catch { console.error("Mini App support send failed.");
-      res.status(503).json({ error: "စာပို့လို့မရသေးပါဘူး။ ခဏနေရင် ပြန်ပို့ပေးပါ။" }); }
+      res.status(503).json({ error: "Couldn’t send your message. Try again in a moment." }); }
   });
   router.post("/api/connect", async (req, res) => {
     try {
       const url = await getConnectUrl(req.telegramUser.id);
-      if (!url) return res.status(409).json({ error: "VPN ကို လောလောဆယ် ချိတ်လို့မရသေးပါဘူး။ My VPN မှာ ပြန်ကြည့်ပေးပါ။" });
+      if (!url) return res.status(409).json({ error: "Your VPN is unavailable. Check My VPN." });
       res.json({ url });
     } catch {
       console.error("Mini App connect failed.");
-      res.status(503).json({ error: "Connect ကို အခုဖွင့်လို့မရသေးပါဘူး။ ခဏနေရင် ပြန်စမ်းကြည့်ပေးပါ။" });
+      res.status(503).json({ error: "Couldn’t open Connect. Try again in a moment." });
     }
   });
   return router;
