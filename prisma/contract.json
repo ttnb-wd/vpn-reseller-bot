@@ -603,6 +603,13 @@
                   "kind": "scalar"
                 }
               },
+              "lastUsageSyncedAt": {
+                "nullable": true,
+                "type": {
+                  "codecId": "pg/timestamptz-temporal@1",
+                  "kind": "scalar"
+                }
+              },
               "packageId": {
                 "nullable": true,
                 "type": {
@@ -723,6 +730,9 @@
                 },
                 "id": {
                   "column": "id"
+                },
+                "lastUsageSyncedAt": {
+                  "column": "lastUsageSyncedAt"
                 },
                 "packageId": {
                   "column": "packageId"
@@ -1383,6 +1393,11 @@
                   "nativeType": "int4",
                   "nullable": false
                 },
+                "lastUsageSyncedAt": {
+                  "codecId": "pg/timestamptz-temporal@1",
+                  "nativeType": "timestamptz",
+                  "nullable": true
+                },
                 "packageId": {
                   "codecId": "pg/int4@1",
                   "nativeType": "int4",
@@ -1708,7 +1723,7 @@
         "kind": "postgres-schema"
       }
     },
-    "storageHash": "b6f285c09bc827a8628e661a44302a9c2a1cb77da7a66a2b9c1f62f4ced3bd41"
+    "storageHash": "77069c8ca874716c7fa03fbee67dffd33f42173406ffcc56b998b44cc77997a7"
   },
   "capabilities": {
     "postgres": {

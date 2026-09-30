@@ -5,7 +5,7 @@ const path = require("node:path");
 const { test } = require("node:test");
 const express = require("express");
 const { verifyTelegramInitData, createMiniAppRouter } = require("./mini-app");
-const { dashboardView } = require("./mini-app/app");
+const { dashboardView, formatUsageSync } = require("./mini-app/app");
 
 const token = "123456:synthetic-telegram-token";
 function signedData(userId = 42, authDate = Math.floor(Date.now() / 1000)) {
@@ -150,9 +150,19 @@ test("dashboard handles subscription and usage states", () => {
   assert.equal(dashboardView({ ...base, dataUsedGb: null }, now).percent, null);
 });
 
+test("usage sync timestamps render as relative text with a first-sync fallback", () => {
+  const now = Date.parse("2026-09-30T12:00:00Z");
+  assert.equal(formatUsageSync(null, now), "Waiting for first sync");
+  assert.equal(formatUsageSync("2026-09-30T12:00:00Z", now), "Just now");
+  assert.equal(formatUsageSync("2026-09-30T11:59:15Z", now), "45 seconds ago");
+  assert.equal(formatUsageSync("2026-09-30T11:58:00Z", now), "2 minutes ago");
+  assert.doesNotMatch(formatUsageSync("2026-09-28T12:00:00Z", now), /T12:00:00Z/);
+});
+
 test("customer API sends only allowlisted fields and rejects identity substitution", async () => {
   const accounts = new Map([[42, { customerExists: true, hasSubscription: true, status: "ACTIVE", plan: "Standard",
     serverLabel: "Singapore", dataLimitGb: 200, dataUsedGb: 82.4,
+    lastUsageSyncedAt: "2026-09-30T11:59:15Z",
     vpnKey: "ss://secret", vpnKeyId: "internal-key", customerId: 9, telegramId: "42",
     managementUrl: "https://192.0.2.1/secret", token: "private" }]]);
   let createdKeys = 0;
@@ -186,6 +196,7 @@ test("customer API sends only allowlisted fields and rejects identity substituti
     assert.equal(body.account.plan, "Standard");
     assert.equal(body.account.serverLabel, "Singapore");
     assert.equal(body.account.dataUsedGb, 82.4);
+    assert.equal(body.account.lastUsageSyncedAt, "2026-09-30T11:59:15Z");
     for (const secret of ["ss://", "internal-key", "customerId", "telegramId", "managementUrl", "192.0.2.1", "private"])
       assert.equal(JSON.stringify(body).includes(secret), false);
     const connect = await post("connect", { initData: signedData(42), customerId: 999 });

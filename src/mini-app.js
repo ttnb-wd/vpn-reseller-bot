@@ -31,7 +31,7 @@ function verifyTelegramInitData(initData, botToken, nowSeconds = Math.floor(Date
 }
 
 const ACCOUNT_FIELDS = ["hasSubscription", "status", "displayName", "plan", "serverLabel",
-  "dataUsedGb", "dataLimitGb", "startedAt", "expiresAt", "usageSyncedAt", "canConnect"];
+  "dataUsedGb", "dataLimitGb", "startedAt", "expiresAt", "lastUsageSyncedAt", "canConnect"];
 function customerAccount(account) {
   return Object.fromEntries(ACCOUNT_FIELDS.map((field) => [field, account?.[field] ?? null]));
 }

@@ -1,6 +1,5 @@
 const { Temporal } = require("@js-temporal/polyfill");
-
-const EXPIRY_INTERVAL_MS = 2 * 60 * 1000;
+const { EXPIRY_INTERVAL_MS } = require("./worker-intervals");
 
 function createExpiryWorker({ client, deleteAccessKey, blockAccessKey, restoreAccessKey,
   isAccessKeyNotFoundError, log = console,

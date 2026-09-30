@@ -54,7 +54,7 @@ test("expiry worker revokes only overdue owned keys and is idempotent", async ()
   ];
   const deleted = [];
   const { worker } = fixture(rows, async (id) => deleted.push(id));
-  assert.equal(EXPIRY_INTERVAL_MS, 120000);
+  assert.equal(EXPIRY_INTERVAL_MS, 60000);
   worker.start();
   await worker.run();
   await worker.run();

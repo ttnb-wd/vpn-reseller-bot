@@ -132,3 +132,62 @@ test("Support client appends, deduplicates, recovers, polls only when unhealthy,
 });
 
 async function flush() { await new Promise((resolve) => setImmediate(resolve)); }
+
+test("visible account views refresh every 60 seconds and pause while hidden", async () => {
+  const nodes = new Map();
+  const get = (id) => {
+    if (!nodes.has(id)) {
+      const node = createNode();
+      if (id.endsWith("-progress")) {
+        const span = createNode("span");
+        node.append(span);
+        node.querySelector = () => span;
+      }
+      nodes.set(id, node);
+    }
+    return nodes.get(id);
+  };
+  const listeners = new Map();
+  const usageNav = createNode("button"); usageNav.dataset.tab = "usage";
+  const document = { hidden: false, getElementById: get, createElement: createNode,
+    querySelectorAll(selector) { return selector === ".nav-button" ? [usageNav] : []; },
+    addEventListener(name, fn) { listeners.set(name, fn); } };
+  const intervals = new Map(); let nextTimer = 1;
+  const setIntervalFake = (fn, ms) => { const id = nextTimer++; intervals.set(id, { fn, ms }); return id; };
+  const clearIntervalFake = (id) => intervals.delete(id);
+  let overviewCalls = 0;
+  const fetch = async (url) => {
+    assert.match(String(url), /api\/overview$/);
+    overviewCalls++;
+    return { ok: true, async json() { return { account: { hasSubscription: true,
+      status: "ACTIVE", plan: "Basic", dataLimitGb: 100, dataUsedGb: overviewCalls,
+      lastUsageSyncedAt: overviewCalls === 1 ? null :
+        new Date(Date.now() - 45000).toISOString(),
+      expiresAt: "2099-01-01T00:00:00Z", canConnect: true }, packages: [] }; } };
+  };
+  const window = { Telegram: { WebApp: { initData: "signed", ready() {}, expand() {} } },
+    scrollTo() {}, location: { assign() {} } };
+  const source = readFileSync(path.join(__dirname, "mini-app", "app.js"), "utf8");
+  vm.runInNewContext(source, { document, window, fetch, URL, Intl, Date, console,
+    setInterval: setIntervalFake, clearInterval: clearIntervalFake,
+    setTimeout() {}, clearTimeout() {} });
+  await flush();
+  assert.equal(overviewCalls, 1);
+  assert.equal(get("home-sync").textContent, "Waiting for first sync");
+  assert.deepEqual([...intervals.values()].map((entry) => entry.ms), [60000]);
+  [...intervals.values()][0].fn(); await flush();
+  assert.equal(overviewCalls, 2);
+  assert.equal(get("home-sync").textContent, "45 seconds ago");
+  assert.equal(get("home-used").textContent, "2 GB");
+  assert.equal(get("home-remaining").textContent, "98 GB");
+  usageNav.fire("click"); await flush();
+  assert.equal(overviewCalls, 3);
+  assert.equal(get("usage-sync").textContent, "45 seconds ago");
+  document.hidden = true;
+  listeners.get("visibilitychange")();
+  assert.equal(intervals.size, 0);
+  document.hidden = false;
+  listeners.get("visibilitychange")(); await flush();
+  assert.equal(overviewCalls, 4);
+  assert.deepEqual([...intervals.values()].map((entry) => entry.ms), [60000]);
+});

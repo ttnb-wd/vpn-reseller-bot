@@ -1,3 +1,20 @@
+const ACCOUNT_REFRESH_INTERVAL_MS = 60 * 1000;
+
+function formatUsageSync(value, now = Date.now()) {
+  if (!value) return "Waiting for first sync";
+  const timestamp = new Date(value).getTime();
+  if (!Number.isFinite(timestamp)) return "Waiting for first sync";
+  const seconds = Math.max(0, Math.floor((now - timestamp) / 1000));
+  if (seconds < 5) return "Just now";
+  if (seconds < 60) return `${seconds} ${seconds === 1 ? "second" : "seconds"} ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} ${minutes === 1 ? "minute" : "minutes"} ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} ${hours === 1 ? "hour" : "hours"} ago`;
+  return new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short",
+    year: "numeric", hour: "numeric", minute: "2-digit" }).format(new Date(timestamp));
+}
+
 function dashboardView(account, now = Date.now()) {
   const a = account || {};
   const hasSubscription = Boolean(a.hasSubscription);
@@ -15,7 +32,7 @@ function dashboardView(account, now = Date.now()) {
       "You're getting close to your data limit.";
   return { status, limit, used, percent, remaining, days, warning };
 }
-if (typeof module !== "undefined") module.exports = { dashboardView };
+if (typeof module !== "undefined") module.exports = { dashboardView, formatUsageSync };
 
 if (typeof document !== "undefined") (() => {
   const tg = window.Telegram?.WebApp;
@@ -27,7 +44,8 @@ if (typeof document !== "undefined") (() => {
     supportLoading: false, supportRefreshAgain: false, supportSending: false,
     supportOpened: false, supportKeys: new Set(),
     supportSource: null, supportConnecting: false, supportHealthy: false, supportRetry: null,
-    supportFallbackDelay: null, supportFallbackTimer: null, supportReconnects: 0 };
+    supportFallbackDelay: null, supportFallbackTimer: null, supportReconnects: 0,
+    accountRefreshTimer: null };
   const show = (id, visible) => $(id).classList.toggle("hidden", !visible);
   const set = (id, value) => { $(id).textContent = value; };
   const notice = (value, error = false) => {
@@ -41,7 +59,6 @@ if (typeof document !== "undefined") (() => {
     return parsed && !Number.isNaN(parsed.getTime()) ?
       new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" }).format(parsed) : "Unavailable";
   };
-  const sync = (value) => value ? date(value) : "Sync time unavailable";
   const days = (value) => value === null ? "Unavailable" : `${value} ${value === 1 ? "day" : "days"}`;
   const money = (value) => `${new Intl.NumberFormat("en-US").format(Number(value))} MMK`;
   const orderStatus = { PENDING_PAYMENT: "Pending Payment", PAYMENT_SUBMITTED: "Payment Submitted",
@@ -72,6 +89,10 @@ if (typeof document !== "undefined") (() => {
   function navigate(tab) {
     if (state.tab === "support" && tab !== "support") stopSupportConnection();
     state.tab = tab;
+    if (isAccountTab(tab) && !document.hidden && state.account) {
+      void load(true);
+      startAccountRefresh();
+    } else stopAccountRefresh();
     for (const name of ["home", "vpn", "usage", "packages", "checkout", "history", "support"])
       show(`${name}-panel`, tab === name);
     for (const button of document.querySelectorAll(".nav-button"))
@@ -85,6 +106,16 @@ if (typeof document !== "undefined") (() => {
       if (!state.supportOpened) void refreshSupport(true);
       void connectSupport();
     }
+  }
+  function isAccountTab(tab) { return tab === "home" || tab === "vpn" || tab === "usage"; }
+  function stopAccountRefresh() {
+    clearInterval(state.accountRefreshTimer);
+    state.accountRefreshTimer = null;
+  }
+  function startAccountRefresh() {
+    if (state.accountRefreshTimer || !state.account || document.hidden ||
+        !isAccountTab(state.tab)) return;
+    state.accountRefreshTimer = setInterval(() => { void load(true); }, ACCOUNT_REFRESH_INTERVAL_MS);
   }
   function empty(id, view) {
     const target = $(id);
@@ -565,7 +596,7 @@ if (typeof document !== "undefined") (() => {
       progress("home-progress", v.percent);
       set("home-remaining", gb(v.remaining)); set("home-used", gb(v.used));
       set("home-expiry", date(a.expiresAt)); set("home-days", days(v.days));
-      set("home-sync", sync(a.usageSyncedAt));
+      set("home-sync", formatUsageSync(a.lastUsageSyncedAt));
     }
     $("connect-button").disabled = $("vpn-connect-button").disabled = !normal || !a.canConnect;
     show("vpn-empty", !a.hasSubscription || v.status === "REVOKED");
@@ -586,7 +617,7 @@ if (typeof document !== "undefined") (() => {
     if (a.hasSubscription && v.status !== "REVOKED") {
       set("usage-used", gb(v.used)); set("usage-percentage", v.percent === null ? "Usage unavailable" : `${v.percent}% used`);
       progress("usage-progress", v.percent); set("usage-limit", gb(v.limit));
-      set("usage-remaining", gb(v.remaining)); set("usage-sync", sync(a.usageSyncedAt));
+      set("usage-remaining", gb(v.remaining)); set("usage-sync", formatUsageSync(a.lastUsageSyncedAt));
       set("usage-expiry", date(a.expiresAt));
       set("usage-warning", v.warning); show("usage-warning", Boolean(v.warning));
     }
@@ -603,6 +634,7 @@ if (typeof document !== "undefined") (() => {
       const { account, packages } = await api("overview");
       state.account = account; state.packages = packages; state.lastLoad = Date.now();
       render(); show("content", true); show("loading", false); notice("");
+      startAccountRefresh();
     } catch {
       show("loading", false); show("content", false); show("error-panel", true);
       notice("");
@@ -634,6 +666,11 @@ if (typeof document !== "undefined") (() => {
     if (nearSupportBottom()) show("support-new-messages", false);
   });
   document.addEventListener("visibilitychange", () => {
+    if (document.hidden) stopAccountRefresh();
+    else if (isAccountTab(state.tab)) {
+      void load(true);
+      startAccountRefresh();
+    }
     if (state.tab !== "support") return;
     if (document.hidden) stopSupportConnection();
     else void connectSupport();

@@ -20,6 +20,7 @@ const { createWindowLimiter } = require("./abuse-limits");
 const { createMiniAppRouter } = require("./mini-app");
 const { effectiveSubscriptionState } = require("./subscription-state");
 const { createExpiryWorker } = require("./expiry-worker");
+const { USAGE_SYNC_INTERVAL_MS } = require("./worker-intervals");
 const { safeDiagnosticCode, sanitizeDiagnosticMessage,
   logHandlerFailure } = require("./safe-diagnostics");
 
@@ -73,6 +74,7 @@ const ADMIN_TELEGRAM_ID = String(
 let db;
 let usageSyncTimer;
 let usageSyncRunning = false;
+let usageSyncCompletion;
 let expiryWorker;
 
 const pendingProofs = new Map();
@@ -86,7 +88,6 @@ const MINI_PAYMENT_CALLBACKS = { bank_transfer: "bank", mobile_wallet: "wallet" 
 const PROCESSING_TIMEOUT_MINUTES = 15;
 
 const RECOVERY_INTERVAL_MS = 5 * 60 * 1000;
-const USAGE_SYNC_INTERVAL_MS = 15 * 60 * 1000;
 const REPLY_SHORTCUTS = new Map([
   ["🛡️ Buy VPN", "buy_vpn"], ["🌐 My VPN", "my_vpn"],
   ["📊 Usage", "my_vpn"], ["♻️ Renew", "renew_vpn"],
@@ -893,10 +894,21 @@ function startProcessingRecovery() {
 async function syncAccessKeyUsage() {
   if (!db || usageSyncRunning) return;
   usageSyncRunning = true;
+  let finishSync;
+  usageSyncCompletion = new Promise((resolve) => { finishSync = resolve; });
 
   try {
     const usageByKeyId = await getAllAccessKeyUsage();
-    const existingKeyIds = await getExistingAccessKeyIds();
+    let existingKeyIds;
+    try {
+      existingKeyIds = await getExistingAccessKeyIds();
+    } catch (error) {
+      // Reported keys can still be synced. An omitted key cannot be
+      // interpreted as zero without a successful existence check.
+      console.error("Outline access key list unavailable during usage sync.", {
+        status: safeHttpStatus(error?.response?.status),
+      });
+    }
     const subscriptions = [
       ...await db.public.Subscription.where({ status: "ACTIVE" }).all(),
       ...await db.public.Subscription.where({ status: "DATA_LIMIT_REACHED" }).all(),
@@ -906,14 +918,18 @@ async function syncAccessKeyUsage() {
 
     for (const subscription of subscriptions) {
       const keyId = subscription.vpnKeyId;
+      const hasUsage = Object.hasOwn(usageByKeyId, String(keyId));
       if (!keyId || String(keyId).startsWith("mock-") ||
-          subscription.revokedAt || !existingKeyIds.has(String(keyId))) {
+          subscription.revokedAt ||
+          (existingKeyIds && !existingKeyIds.has(String(keyId))) ||
+          (!existingKeyIds && !hasUsage)) {
         skipped++;
         continue;
       }
 
-      // Outline omits existing keys with no traffic from the transfer map.
-      const bytes = Object.hasOwn(usageByKeyId, String(keyId))
+      // Outline treats a missing key in a successful rolling metrics map as
+      // zero usage. A failed metrics request never reaches this branch.
+      const bytes = hasUsage
         ? usageByKeyId[String(keyId)] : 0;
       if (!Number.isSafeInteger(bytes) || bytes < 0) {
         skipped++;
@@ -927,7 +943,11 @@ async function syncAccessKeyUsage() {
           // Outline's rolling counter can later decrease. Keep the reached
           // purchase blocked until an approved renewal restores the allowance.
           await setAccessKeyDataLimit(keyId, 0);
-          updated++;
+          const changed = await db.public.Subscription
+            .where({ id: subscription.id, vpnKeyId: keyId, status: "DATA_LIMIT_REACHED" })
+            .updateAll({ dataUsedGb: Math.max(Number(subscription.dataUsedGb) || 0, dataUsedGb),
+              lastUsageSyncedAt: Temporal.Now.instant() });
+          updated += changed.length;
           continue;
         }
         const limitGb = Number(subscription.dataLimitGb);
@@ -938,12 +958,24 @@ async function syncAccessKeyUsage() {
           continue;
         }
         await setAccessKeyDataLimit(keyId, gbToBytes(limitGb));
-        const changed = await db.public.Subscription
-          .where({ id: subscription.id, vpnKeyId: keyId, status: "ACTIVE",
-            dataLimitGb: subscription.dataLimitGb })
-          .updateAll({ dataUsedGb, ...(reached ? { status: "DATA_LIMIT_REACHED" } : {}) });
-        updated += changed.length;
-        if (reached && changed.length) await setAccessKeyDataLimit(keyId, 0);
+        const current = db.public.Subscription.where({ id: subscription.id,
+          vpnKeyId: keyId, status: "ACTIVE", dataLimitGb: subscription.dataLimitGb });
+        if (reached) {
+          // Latch the quota state before the second Outline call. Only record
+          // a completed sync after its zero-limit read-back also succeeds.
+          const latched = await current.updateAll({ dataUsedGb, status: "DATA_LIMIT_REACHED" });
+          if (latched.length) {
+            await setAccessKeyDataLimit(keyId, 0);
+            const changed = await db.public.Subscription
+              .where({ id: subscription.id, vpnKeyId: keyId, status: "DATA_LIMIT_REACHED" })
+              .updateAll({ dataUsedGb, lastUsageSyncedAt: Temporal.Now.instant() });
+            updated += changed.length;
+          }
+        } else {
+          const changed = await current.updateAll({ dataUsedGb,
+            lastUsageSyncedAt: Temporal.Now.instant() });
+          updated += changed.length;
+        }
       } catch {
         skipped++;
       }
@@ -958,13 +990,15 @@ async function syncAccessKeyUsage() {
     });
   } finally {
     usageSyncRunning = false;
+    finishSync();
+    usageSyncCompletion = null;
   }
 }
 
 function startUsageSync() {
   void syncAccessKeyUsage();
   usageSyncTimer = setInterval(() => { void syncAccessKeyUsage(); }, USAGE_SYNC_INTERVAL_MS);
-  console.log("Outline usage sync enabled (every 15 minutes).");
+  console.log("Outline usage sync enabled (every 60 seconds).");
 }
 
 async function sendMainMenu(ctx) {
@@ -1233,7 +1267,7 @@ const miniAppRouter = createMiniAppRouter({
       startedAt: subscription?.startedAt?.toString() || null,
       expiresAt: subscription?.expiresAt?.toString() || null,
       serverLabel,
-      usageSyncedAt: null,
+      lastUsageSyncedAt: subscription?.lastUsageSyncedAt?.toString() || null,
       canConnect: active && isReusableAccessKey(subscription.vpnKeyId, subscription.vpnKey) &&
         isValidOutlineAccessKey(subscription.vpnKey),
     };
@@ -3234,6 +3268,7 @@ async function startBot() {
     );
 
     clearInterval(usageSyncTimer);
+    if (usageSyncCompletion) await usageSyncCompletion;
     await expiryWorker?.stop();
     try {
       bot.stop(signal);

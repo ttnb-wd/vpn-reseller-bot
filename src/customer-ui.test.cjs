@@ -84,8 +84,12 @@ async function loadBot(existingTables = null, outlineKeys = new Map(), options =
   const keyCalls = [];
   const limitCalls = [];
   const missingKeys = new Set();
+  let failZeroLimitOnce = false;
   let miniAppCallbacks;
   let usageByKeyId = {};
+  let metricsCalls = 0;
+  let metricsGate = null;
+  const scheduledIntervals = [];
   let existingKeyIds = new Set();
   let metricsUnavailable = false;
   let rejectMiniPhotoOnce = Boolean(options.rejectMiniPhotoOnce);
@@ -172,6 +176,8 @@ async function loadBot(existingTables = null, outlineKeys = new Map(), options =
       if (name === "./outline") return {
         validateOutlineConfig() {}, async testOutlineConnection() {},
         async getAllAccessKeyUsage() {
+          metricsCalls++;
+          if (metricsGate) await metricsGate;
           if (metricsUnavailable) throw new Error("Private management URL");
           return usageByKeyId;
         },
@@ -186,6 +192,10 @@ async function loadBot(existingTables = null, outlineKeys = new Map(), options =
         },
         async setAccessKeyDataLimit(id, bytes) {
           limitCalls.push({ id, bytes });
+          if (bytes === 0 && failZeroLimitOnce) {
+            failZeroLimitOnce = false;
+            throw new Error("synthetic Outline failure");
+          }
           if (missingKeys.has(id)) throw Object.assign(new Error("Missing"), { missing: true });
         },
         isAccessKeyNotFoundError(error) { return error.missing === true; },
@@ -197,7 +207,8 @@ async function loadBot(existingTables = null, outlineKeys = new Map(), options =
       once(signal, handler) { signals[signal] = handler; },
       exit(code) { exits.push(code); },
     },
-    Buffer, URL, setTimeout, clearTimeout, clearInterval, setInterval() {},
+    Buffer, URL, setTimeout, clearTimeout, clearInterval,
+    setInterval(fn, ms) { scheduledIntervals.push({ fn, ms }); return scheduledIntervals.length; },
     console: { log() {}, error(...args) { errors.push(args); }, warn() {} }, module: { exports: {} },
   });
   vm.runInContext(source.slice(0, source.lastIndexOf("\nstartBot().catch(")) + `
@@ -234,6 +245,10 @@ async function loadBot(existingTables = null, outlineKeys = new Map(), options =
     miniAppCreateOrder: context.module.exports.miniAppCreateOrder,
     packageVersion: context.module.exports.packageVersion,
     setUsage(value, ids) { usageByKeyId = value; existingKeyIds = new Set(ids); },
+    scheduledIntervals,
+    get metricsCalls() { return metricsCalls; },
+    setMetricsGate(value) { metricsGate = value; },
+    failNextZeroLimit() { failZeroLimitOnce = true; },
     setMetricsUnavailable(value) { metricsUnavailable = value; } };
 }
 
@@ -268,6 +283,8 @@ test("usage sync records real 30-day key usage and skips unsafe or missing metri
   bot.setUsage({ "real-1": 1.5 * 1024 ** 3 }, ["real-1"]);
   await bot.syncUsage();
   assert.equal(subscription.dataUsedGb, 1.5);
+  assert.ok(subscription.lastUsageSyncedAt);
+  const syncedAt = subscription.lastUsageSyncedAt.toString();
   assert.equal(bot.tables.Subscription[1].dataUsedGb, 4);
   assert.equal(bot.tables.Subscription[2].dataUsedGb, 4);
   assert.equal(bot.keyCalls.length, 0);
@@ -278,14 +295,83 @@ test("usage sync records real 30-day key usage and skips unsafe or missing metri
   bot.setUsage({ "real-1": Number.MAX_SAFE_INTEGER + 1 }, ["real-1"]);
   await bot.syncUsage();
   assert.equal(subscription.dataUsedGb, 1.5);
+  assert.equal(subscription.lastUsageSyncedAt.toString(), syncedAt);
   bot.setMetricsUnavailable(true);
   await bot.syncUsage();
   assert.equal(subscription.dataUsedGb, 1.5);
+  assert.equal(subscription.lastUsageSyncedAt.toString(), syncedAt);
   bot.setMetricsUnavailable(false);
   bot.setUsage({}, ["real-1"]);
   await bot.syncUsage();
   assert.equal(subscription.dataUsedGb, 0);
   assert.equal(bot.keyCalls.length, 0);
+});
+
+test("a failed subscription write preserves its previous sync timestamp and isolates the next row", async () => {
+  const bot = await loadBot();
+  const previous = Temporal.Instant.from("2026-09-29T00:00:00Z");
+  const subscriptions = [1, 2].map((id) => ({ id, customerId: id,
+    status: "ACTIVE", vpnKeyId: `key-${id}`, dataLimitGb: 100,
+    dataUsedGb: 5, lastUsageSyncedAt: previous,
+    expiresAt: Temporal.Now.instant().add({ hours: 24 }), revokedAt: null }));
+  bot.tables.Subscription.push(...subscriptions);
+  bot.setUsage({ "key-1": 10 * 1024 ** 3, "key-2": 20 * 1024 ** 3 }, ["key-1", "key-2"]);
+  const originalWhere = bot.client.public.Subscription.where;
+  bot.client.public.Subscription.where = (filter) => {
+    const query = originalWhere(filter);
+    if (filter.id === 1) query.updateAll = async () => { throw new Error("DB unavailable"); };
+    return query;
+  };
+  await bot.syncUsage();
+  assert.equal(subscriptions[0].dataUsedGb, 5);
+  assert.equal(subscriptions[0].lastUsageSyncedAt.toString(), previous.toString());
+  assert.equal(subscriptions[1].dataUsedGb, 20);
+  assert.ok(Temporal.Instant.compare(subscriptions[1].lastUsageSyncedAt, previous) > 0);
+});
+
+test("quota block failure leaves the previous sync timestamp for retry", async () => {
+  const bot = await loadBot();
+  const previous = Temporal.Instant.from("2026-09-29T00:00:00Z");
+  const subscription = { id: 1, customerId: 1, status: "ACTIVE",
+    vpnKeyId: "quota-key", dataLimitGb: 50, dataUsedGb: 2,
+    lastUsageSyncedAt: previous,
+    expiresAt: Temporal.Now.instant().add({ hours: 24 }), revokedAt: null };
+  bot.tables.Subscription.push(subscription);
+  bot.setUsage({ "quota-key": 50 * 1024 ** 3 }, ["quota-key"]);
+  bot.failNextZeroLimit();
+  await bot.syncUsage();
+  assert.equal(subscription.status, "DATA_LIMIT_REACHED");
+  assert.equal(subscription.lastUsageSyncedAt.toString(), previous.toString());
+  await bot.syncUsage();
+  assert.ok(Temporal.Instant.compare(subscription.lastUsageSyncedAt, previous) > 0);
+});
+
+test("usage sync starts immediately, schedules 60 seconds and skips overlap", async () => {
+  const bot = await loadBot();
+  assert.ok(bot.metricsCalls >= 1);
+  assert.equal(bot.scheduledIntervals.filter((timer) => timer.ms === 60000).length, 1);
+  let release;
+  bot.setMetricsGate(new Promise((resolve) => { release = resolve; }));
+  const before = bot.metricsCalls;
+  const first = bot.syncUsage();
+  const second = bot.syncUsage();
+  assert.equal(bot.metricsCalls, before + 1);
+  release();
+  await Promise.all([first, second]);
+});
+
+test("shutdown waits for an in-flight usage sync before closing the database", async () => {
+  const bot = await loadBot();
+  let release;
+  bot.setMetricsGate(new Promise((resolve) => { release = resolve; }));
+  const sync = bot.syncUsage();
+  bot.signals.SIGTERM();
+  await new Promise(setImmediate);
+  assert.equal(bot.runtimeCloses.length, 0);
+  release();
+  await sync;
+  await new Promise(setImmediate);
+  assert.equal(bot.runtimeCloses.length, 1);
 });
 
 test("reaching a purchased quota latches the existing key closed until renewal", async () => {
@@ -301,8 +387,11 @@ test("reaching a purchased quota latches the existing key closed until renewal",
   await bot.syncUsage();
   assert.equal(subscription.status, "DATA_LIMIT_REACHED");
   assert.equal(subscription.dataUsedGb, 50);
+  assert.ok(subscription.lastUsageSyncedAt);
   assert.equal(bot.limitCalls.at(-1).bytes, 0);
-  assert.equal((await bot.miniAppCallbacks.getAccount(123)).status, "DATA_LIMIT_REACHED");
+  const account = await bot.miniAppCallbacks.getAccount(123);
+  assert.equal(account.status, "DATA_LIMIT_REACHED");
+  assert.equal(account.lastUsageSyncedAt, subscription.lastUsageSyncedAt.toString());
   assert.equal(await bot.miniAppCallbacks.getConnectUrl(123), null);
   assert.match((await bot.action("my_vpn")).replies[0][0], /Data Limit Reached/);
   bot.setUsage({ "real-quota-1": 1 * 1024 ** 3 }, ["real-quota-1"]);

@@ -34,7 +34,7 @@ import type {
 } from '@prisma/orm-postgres/contract/types';
 
 export type StorageHash =
-  StorageHashBase<'b6f285c09bc827a8628e661a44302a9c2a1cb77da7a66a2b9c1f62f4ced3bd41'>;
+  StorageHashBase<'77069c8ca874716c7fa03fbee67dffd33f42173406ffcc56b998b44cc77997a7'>;
 export type ExecutionHash = ExecutionHashBase<string>;
 export type ProfileHash =
   ProfileHashBase<'3916f444a8a17ad749191acf9e08dad97d1a327b88c2f1d45d12f240296aa8b2'>;
@@ -298,6 +298,7 @@ export type FieldOutputTypes = {
       readonly revokedAt: CodecTypes['pg/timestamptz-temporal@1']['output'] | null;
       readonly dataLimitGb: CodecTypes['pg/float8@1']['output'] | null;
       readonly dataUsedGb: CodecTypes['pg/float8@1']['output'];
+      readonly lastUsageSyncedAt: CodecTypes['pg/timestamptz-temporal@1']['output'] | null;
       readonly createdAt: CodecTypes['pg/timestamptz-temporal@1']['output'];
       readonly updatedAt: CodecTypes['pg/timestamptz-temporal@1']['output'];
     };
@@ -382,6 +383,7 @@ export type FieldInputTypes = {
       readonly revokedAt: CodecTypes['pg/timestamptz-temporal@1']['input'] | null;
       readonly dataLimitGb: CodecTypes['pg/float8@1']['input'] | null;
       readonly dataUsedGb: CodecTypes['pg/float8@1']['input'];
+      readonly lastUsageSyncedAt: CodecTypes['pg/timestamptz-temporal@1']['input'] | null;
       readonly createdAt: CodecTypes['pg/timestamptz-temporal@1']['input'];
       readonly updatedAt: CodecTypes['pg/timestamptz-temporal@1']['input'];
     };
@@ -459,6 +461,7 @@ export type StorageColumnTypes = {
       readonly durationMonths: CodecTypes['pg/int4@1']['output'];
       readonly expiresAt: CodecTypes['pg/timestamptz-temporal@1']['output'] | null;
       readonly id: CodecTypes['pg/int4@1']['output'];
+      readonly lastUsageSyncedAt: CodecTypes['pg/timestamptz-temporal@1']['output'] | null;
       readonly packageId: CodecTypes['pg/int4@1']['output'] | null;
       readonly plan: CodecTypes['pg/text@1']['output'];
       readonly revokedAt: CodecTypes['pg/timestamptz-temporal@1']['output'] | null;
@@ -543,6 +546,7 @@ export type StorageColumnInputTypes = {
       readonly durationMonths: CodecTypes['pg/int4@1']['input'];
       readonly expiresAt: CodecTypes['pg/timestamptz-temporal@1']['input'] | null;
       readonly id: CodecTypes['pg/int4@1']['input'];
+      readonly lastUsageSyncedAt: CodecTypes['pg/timestamptz-temporal@1']['input'] | null;
       readonly packageId: CodecTypes['pg/int4@1']['input'] | null;
       readonly plan: CodecTypes['pg/text@1']['input'];
       readonly revokedAt: CodecTypes['pg/timestamptz-temporal@1']['input'] | null;
@@ -671,6 +675,7 @@ export namespace Models {
     revokedAt: CodecTypes['pg/timestamptz-temporal@1']['output'] | null;
     dataLimitGb: CodecTypes['pg/float8@1']['output'] | null;
     dataUsedGb: CodecTypes['pg/float8@1']['output'];
+    lastUsageSyncedAt: CodecTypes['pg/timestamptz-temporal@1']['output'] | null;
     createdAt: CodecTypes['pg/timestamptz-temporal@1']['output'];
     updatedAt: CodecTypes['pg/timestamptz-temporal@1']['output'];
     customer: public_Customer;
@@ -1061,6 +1066,11 @@ type ContractBase = Omit<
                     readonly kind: 'literal';
                     readonly value: DefaultLiteralValue<'pg/float8@1', 0>;
                   };
+                };
+                readonly lastUsageSyncedAt: {
+                  readonly nativeType: 'timestamptz';
+                  readonly codecId: 'pg/timestamptz-temporal@1';
+                  readonly nullable: true;
                 };
                 readonly createdAt: {
                   readonly nativeType: 'timestamptz';
@@ -1727,6 +1737,13 @@ type ContractBase = Omit<
                 readonly nullable: false;
                 readonly type: { readonly kind: 'scalar'; readonly codecId: 'pg/float8@1' };
               };
+              readonly lastUsageSyncedAt: {
+                readonly nullable: true;
+                readonly type: {
+                  readonly kind: 'scalar';
+                  readonly codecId: 'pg/timestamptz-temporal@1';
+                };
+              };
               readonly createdAt: {
                 readonly nullable: false;
                 readonly type: {
@@ -1786,6 +1803,7 @@ type ContractBase = Omit<
                 readonly revokedAt: { readonly column: 'revokedAt' };
                 readonly dataLimitGb: { readonly column: 'dataLimitGb' };
                 readonly dataUsedGb: { readonly column: 'dataUsedGb' };
+                readonly lastUsageSyncedAt: { readonly column: 'lastUsageSyncedAt' };
                 readonly createdAt: { readonly column: 'createdAt' };
                 readonly updatedAt: { readonly column: 'updatedAt' };
               };
