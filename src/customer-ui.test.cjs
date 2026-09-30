@@ -23,7 +23,8 @@ async function loadBot(existingTables = null, outlineKeys = new Map(), options =
       { id: 99, name: "Retired", active: false, sortOrder: 4 },
     ],
   };
-  const matches = (row, filter) => Object.entries(filter).every(([key, value]) => row[key] === value);
+  const matches = (row, filter) => Object.entries(filter).every(([key, value]) =>
+    row[key] === value || value === null && row[key] == null);
   const predicateFor = (filter) => typeof filter === "function"
     ? filter(new Proxy({}, { get: (_target, field) => ({
       isNull: () => (row) => row[field] == null,
@@ -86,6 +87,8 @@ async function loadBot(existingTables = null, outlineKeys = new Map(), options =
   let usageByKeyId = {};
   let existingKeyIds = new Set();
   let metricsUnavailable = false;
+  let rejectMiniPhotoOnce = Boolean(options.rejectMiniPhotoOnce);
+  let ambiguousMiniPhotoOnce = Boolean(options.ambiguousMiniPhotoOnce);
   const fakeApp = {
     set() {}, get() {}, use() {}, disable() {},
     listen() {
@@ -99,7 +102,21 @@ async function loadBot(existingTables = null, outlineKeys = new Map(), options =
     constructor() {
       this.telegram = {
         async sendMessage(...args) { sent.push({ type: "message", args }); },
-        async sendPhoto(...args) { sent.push({ type: "photo", args }); },
+        async sendPhoto(...args) {
+          if (typeof args[1] !== "string" && rejectMiniPhotoOnce) {
+            rejectMiniPhotoOnce = false;
+            throw Object.assign(new Error("Synthetic Telegram rejection"),
+              { response: { error_code: 400 } });
+          }
+          sent.push({ type: "photo", args });
+          if (typeof args[1] !== "string" && ambiguousMiniPhotoOnce) {
+            ambiguousMiniPhotoOnce = false;
+            throw new Error("Synthetic transport ambiguity");
+          }
+          return { message_id: sent.length, photo: [{ file_id: typeof args[1] === "string"
+            ? args[1] : `mini-upload-${sent.length}` }] };
+        },
+        async editMessageReplyMarkup(...args) { sent.push({ type: "editMarkup", args }); },
         async setChatMenuButton(request) {
           menuButtonCalls.push(request);
           if (options.menuWriteFails) throw new Error("Temporary Telegram menu failure");
@@ -626,6 +643,59 @@ test("Mini App payment handoff keeps order ownership and uses the bot photo revi
   await bot.events.photo(photo);
   assert.equal(bot.tables.Order[0].paymentProof, "synthetic-proof");
   assert.equal(bot.keyCalls.length, 0);
+});
+
+test("Mini App upload stores one Telegram proof on the existing order and admin review channel", async () => {
+  const bot = await loadBot();
+  bot.tables.Customer.push({ id: 1, telegramId: "123", firstName: "Buyer" });
+  bot.tables.Customer.push({ id: 2, telegramId: "456", firstName: "Other" });
+  const pkg = bot.tables.Package.find((item) => item.id === 7);
+  const { order } = await bot.miniAppCreateOrder({ id: 123, first_name: "Buyer" }, {},
+    pkg.id, bot.packageVersion(pkg));
+  await bot.miniAppCallbacks.selectPaymentMethod(123, order.orderNumber, "mobile_wallet");
+  assert.equal(await bot.miniAppCallbacks.uploadProof(456, order.orderNumber,
+    Buffer.from("synthetic"), "image/png"), null);
+  const uploaded = await bot.miniAppCallbacks.uploadProof(123, order.orderNumber,
+    Buffer.from("synthetic"), "image/png");
+  assert.equal(uploaded.order.status, "PENDING_PAYMENT");
+  assert.equal(uploaded.order.paymentProof.startsWith("mini-upload-"), true);
+  assert.equal(uploaded.order.paymentReference, null);
+  const adminPhotos = bot.sent.filter((item) => item.type === "photo");
+  assert.equal(adminPhotos.length, 1);
+  assert.match(adminPhotos[0].args[2].caption, /PAYMENT VERIFICATION/);
+  assert.equal(bot.sent.filter((item) => item.type === "editMarkup").length, 1);
+  const duplicate = await bot.miniAppCallbacks.uploadProof(123, order.orderNumber,
+    Buffer.from("synthetic"), "image/png");
+  assert.equal(duplicate.already, true);
+  assert.equal(bot.sent.filter((item) => item.type === "photo").length, 1);
+  assert.equal(bot.keyCalls.length, 0);
+  assert.equal(bot.tables.Subscription.length, 0);
+  await bot.action(`approve_payment_${order.id}`, 999);
+  assert.equal(bot.tables.Order[0].status, "PAID");
+  assert.equal(bot.tables.Subscription.length, 1);
+});
+
+test("definite Telegram rejection permits retry while ambiguous delivery never duplicates admin proof", async () => {
+  for (const [option, mayRetry] of [["rejectMiniPhotoOnce", true], ["ambiguousMiniPhotoOnce", false]]) {
+    const bot = await loadBot(null, new Map(), { [option]: true });
+    bot.tables.Customer.push({ id: 1, telegramId: "123", firstName: "Buyer" });
+    const pkg = bot.tables.Package.find((item) => item.id === 7);
+    const { order } = await bot.miniAppCreateOrder({ id: 123, first_name: "Buyer" }, {},
+      pkg.id, bot.packageVersion(pkg));
+    await bot.miniAppCallbacks.selectPaymentMethod(123, order.orderNumber, "mobile_wallet");
+    await assert.rejects(bot.miniAppCallbacks.uploadProof(123, order.orderNumber,
+      Buffer.from("synthetic"), "image/png"));
+    assert.equal(bot.tables.Order[0].paymentReference === null, mayRetry);
+    if (mayRetry) {
+      const retried = await bot.miniAppCallbacks.uploadProof(123, order.orderNumber,
+        Buffer.from("synthetic"), "image/png");
+      assert.equal(Boolean(retried.order.paymentProof), true);
+    } else {
+      assert.equal((await bot.miniAppCallbacks.uploadProof(123, order.orderNumber,
+        Buffer.from("synthetic"), "image/png")).busy, true);
+    }
+    assert.equal(bot.sent.filter((item) => item.type === "photo").length, 1);
+  }
 });
 
 test("start registers a customer and empty VPN states stay customer friendly", async () => {

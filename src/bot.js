@@ -1137,6 +1137,31 @@ async function miniAppOwnedOrder(telegramId, orderNumber) {
   return db.public.Order.where({ customerId: customer.id, orderNumber }).first();
 }
 
+function proofReviewKeyboard(order) {
+  return Markup.inlineKeyboard([[
+    Markup.button.callback("✅ Approve", `approve_payment_${order.id}`),
+    Markup.button.callback("❌ Reject", `reject_payment_${order.id}`),
+  ]]);
+}
+
+async function sendAdminProofReview(order, photo, deferActions = false) {
+  const customer = await db.public.Customer.where({ id: order.customerId }).first();
+  const pkg = order.packageId ? await db.public.Package.where({ id: order.packageId }).first() : null;
+  const caption =
+    `💰 PAYMENT VERIFICATION\n\n` +
+    `Order: ${order.orderNumber}\n` +
+    `Package: ${pkg?.name || order.plan}\n` +
+    `Duration: ${getDurationLabel(order.durationMonths || 1)}\n` +
+    `Data: ${formatNumber(order.totalDataGb || 0)} GB\n` +
+    `Price: ${formatMmk(order.price)}\n\n` +
+    `Customer: ${customer?.firstName || "N/A"}\n` +
+    `Username: @${customer?.username || "N/A"}\n` +
+    `Telegram ID: ${customer?.telegramId || "N/A"}`;
+  return bot.telegram.sendPhoto(ADMIN_TELEGRAM_ID, photo, {
+    caption, ...(deferActions ? {} : proofReviewKeyboard(order)),
+  });
+}
+
 async function miniAppCreateOrder(telegramUser, _account, packageId, confirmedVersion) {
   const { customer, subscription } = await findCustomerSubscription(telegramUser.id);
   if (!customer) return null;
@@ -1251,6 +1276,53 @@ const miniAppRouter = createMiniAppRouter({
         Markup.button.callback("🗂️ My Orders", "my_orders"),
       ]]));
     return true;
+  },
+  async uploadProof(telegramId, orderNumber, image, mimeType) {
+    const order = await miniAppOwnedOrder(telegramId, orderNumber);
+    if (!order) return null;
+    if (order.paymentProof) return { already: true, order };
+    if (order.status !== "PENDING_PAYMENT" || !order.paymentMethod) return null;
+    if (order.paymentReference) return { busy: true };
+    const reservation = `MINI_UPLOAD_V1:${crypto.randomUUID()}`;
+    const claimed = await db.public.Order.where({
+      id: order.id, customerId: order.customerId, status: "PENDING_PAYMENT",
+      paymentProof: null, paymentReference: null,
+    }).updateAll({ paymentReference: reservation });
+    if (!claimed.length) {
+      const latest = await miniAppOwnedOrder(telegramId, orderNumber);
+      return latest?.paymentProof ? { already: true, order: latest } : { busy: true };
+    }
+    // Keep the reservation if Telegram accepted the photo but the response or
+    // database write fails. Retrying must never send another admin proof.
+    let sent;
+    try {
+      sent = await sendAdminProofReview(order,
+        Input.fromBuffer(image, mimeType === "image/png" ? "proof.png" : "proof.jpg"), true);
+    } catch (error) {
+      // Telegram 4xx responses mean the photo was rejected before storage.
+      // Transport failures are ambiguous, so retain the reservation.
+      if ([400, 413, 429].includes(Number(error?.response?.error_code))) {
+        await db.public.Order.where({ id: order.id, customerId: order.customerId,
+          paymentProof: null, paymentReference: reservation })
+          .updateAll({ paymentReference: null });
+      }
+      throw error;
+    }
+    const fileId = sent?.photo?.at(-1)?.file_id;
+    if (typeof fileId !== "string" || !fileId) throw new Error("Telegram photo reference unavailable.");
+    const saved = await db.public.Order.where({
+      id: order.id, customerId: order.customerId, status: "PENDING_PAYMENT",
+      paymentProof: null, paymentReference: reservation,
+    }).updateAll({ paymentProof: fileId, paymentReference: null });
+    if (!saved.length) throw new Error("Payment proof reservation changed.");
+    try {
+      await bot.telegram.editMessageReplyMarkup(ADMIN_TELEGRAM_ID, sent.message_id,
+        undefined, proofReviewKeyboard(order).reply_markup);
+    } catch {
+      // The protected admin order page can still review the stored proof.
+      console.error("Mini App proof review buttons unavailable.");
+    }
+    return { order: saved[0] };
   },
   async getConnectUrl(telegramId) {
     if (!allowMiniConnect(telegramId)) return null;
@@ -2078,6 +2150,9 @@ async function startBot() {
         pendingProofs.delete(userId);
         return await ctx.reply("ဒီမှာယူမှုက သင့်အကောင့်နဲ့ မသက်ဆိုင်ပါ။");
       }
+      if (String(order.paymentReference || "").startsWith("MINI_UPLOAD_V1:")) {
+        return await ctx.reply("Payment proof upload is in progress. Check My Orders shortly.");
+      }
 
       if (
         order.status !==
@@ -2123,68 +2198,7 @@ async function startBot() {
         ])
       );
 
-      const customer =
-        await db.public.Customer
-          .where({
-            id: order.customerId,
-          })
-          .first();
-
-      const pkg = order.packageId
-        ? await db.public.Package
-            .where({
-              id: order.packageId,
-            })
-            .first()
-        : null;
-
-      const adminCaption =
-        `💰 PAYMENT VERIFICATION\n\n` +
-        `Order: ${order.orderNumber}\n` +
-        `Package: ${
-          pkg?.name || order.plan
-        }\n` +
-        `Duration: ${getDurationLabel(
-          order.durationMonths || 1
-        )}\n` +
-        `Data: ${formatNumber(
-          order.totalDataGb || 0
-        )} GB\n` +
-        `Price: ${formatMmk(order.price)}\n\n` +
-        `Customer: ${
-          customer?.firstName ||
-          "N/A"
-        }\n` +
-        `Username: @${
-          customer?.username ||
-          "N/A"
-        }\n` +
-        `Telegram ID: ${
-          customer?.telegramId ||
-          "N/A"
-        }`;
-
-      await bot.telegram.sendPhoto(
-        ADMIN_TELEGRAM_ID,
-        paymentProof,
-        {
-          caption: adminCaption,
-
-          ...Markup.inlineKeyboard([
-            [
-              Markup.button.callback(
-                "✅ Approve",
-                `approve_payment_${order.id}`
-              ),
-
-              Markup.button.callback(
-                "❌ Reject",
-                `reject_payment_${order.id}`
-              ),
-            ],
-          ]),
-        }
-      );
+      await sendAdminProofReview(order, paymentProof);
     } catch (error) {
       console.error("Payment proof handling failed.");
 

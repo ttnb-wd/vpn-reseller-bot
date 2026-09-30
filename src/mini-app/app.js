@@ -23,7 +23,8 @@ if (typeof document !== "undefined") (() => {
   const initData = tg?.initData || "";
   const $ = (id) => document.getElementById(id);
   const state = { account: null, packages: [], tab: "home", lastLoad: 0, loading: false,
-    checkout: null, order: null, methods: [] };
+    checkout: null, order: null, methods: [], uploadFile: null, previewUrl: null,
+    uploading: false, uploadPercent: 0 };
   const show = (id, visible) => $(id).classList.toggle("hidden", !visible);
   const set = (id, value) => { $(id).textContent = value; };
   const notice = (value, error = false) => {
@@ -155,10 +156,13 @@ if (typeof document !== "undefined") (() => {
     const step = flow.step;
     set("checkout-title", { detail: flow.renew ? "Renew VPN" : "Buy VPN",
       methods: "Payment Method", instructions: "Payment Instructions",
+      upload: "Upload Payment Proof", submitted: "Payment Submitted",
       progress: "Order in Progress", status: "Order Status" }[step] || "Checkout");
     set("checkout-subtitle", step === "detail" ? "Review the current package before continuing." :
       step === "methods" ? "Choose where to send your payment." :
-      step === "instructions" ? "Pay the exact amount, then send your proof in the bot." :
+      step === "instructions" ? "Pay the exact amount, then upload or send your proof." :
+      step === "upload" ? "Choose a clear screenshot of your payment." :
+      step === "submitted" ? "Your payment proof is waiting for review." :
       "You can check this order again in Order History.");
     if (step === "detail" && pkg) {
       body.append(card(title(pkg.name), line("Data allowance", gb(pkg.dataLimitGb)),
@@ -183,9 +187,47 @@ if (typeof document !== "undefined") (() => {
         line("Account name", method?.accountName || "Unavailable"),
         line("Destination", method?.accountNumber || "Unavailable"),
         line("Order reference", order.orderNumber),
-        paragraph("Transfer the exact amount to this account. Send a screenshot as a photo in the Metro Secure bot. Activation follows admin approval.")));
-      actions.append(action("Send Payment Proof in Bot", proofHandoff, true),
+        paragraph("Transfer the exact amount to this account. Upload a screenshot here or send it as a photo in the bot. Activation follows admin approval.")));
+      actions.append(action("Upload Payment Proof", () => { state.checkout.step = "upload"; renderCheckout(); }, true),
+        action("Send Payment Proof in Bot", proofHandoff),
         action("Change Payment Method", loadMethods), action("View Order", () => showOrder(order.orderNumber)));
+    } else if (step === "upload" && order) {
+      const input = document.createElement("input"); input.type = "file";
+      input.id = "payment-proof-file"; input.accept = "image/jpeg,image/png";
+      input.className = "proof-input"; input.disabled = state.uploading;
+      input.addEventListener("change", () => chooseProofFile(input.files?.[0]));
+      const label = document.createElement("label"); label.className = "secondary-button proof-picker";
+      label.htmlFor = input.id; label.textContent = state.uploadFile ? "Choose Another Image" : "Choose JPG or PNG";
+      body.append(card(title("Payment screenshot"), line("Order", order.orderNumber),
+        paragraph("JPG or PNG, up to 5 MB."), input, label));
+      if (state.uploadFile) {
+        const preview = document.createElement("img"); preview.className = "proof-preview";
+        preview.src = state.previewUrl; preview.alt = "Selected payment proof preview";
+        body.append(card(preview, line("File", state.uploadFile.name),
+          line("Size", `${(state.uploadFile.size / 1024 / 1024).toFixed(1)} MB`)));
+        if (!state.uploading) actions.append(action("Remove Image", () => { clearProofFile(); renderCheckout(); }));
+      }
+      if (state.uploading) {
+        const progressText = paragraph(`Uploading… ${state.uploadPercent}%`, "upload-progress-text");
+        const bar = document.createElement("progress"); bar.className = "upload-progress";
+        bar.max = 100; bar.value = state.uploadPercent;
+        body.append(card(progressText, bar));
+      }
+      if (state.uploadFile) {
+        const submit = action(state.uploading ? "Uploading…" : "Submit Payment Proof", submitProof, true);
+        submit.disabled = state.uploading; actions.append(submit);
+      }
+      if (!state.uploading) actions.append(action("Back to Instructions", () => {
+        state.checkout.step = "instructions"; renderCheckout();
+      }), action("Contact Support", () => openFlow("support")));
+    } else if (step === "submitted" && order) {
+      body.append(card(title("Payment Submitted"), line("Order number", order.orderNumber),
+        line("Package", order.plan), line("Amount", money(order.amountMmk)),
+        line("Payment method", state.methods.find((item) => item.code === order.paymentMethod)?.name || "Selected"),
+        line("Status", orderStatus[order.status] || "Payment Submitted"),
+        paragraph("Your payment proof has been received and is waiting for review.")));
+      actions.append(action("View Order", () => showOrder(order.orderNumber), true),
+        action("Back to Packages", () => navigate("packages")));
     } else if (step === "progress" && order) {
       body.append(card(title("You already have an order in progress."),
         line("Order number", order.orderNumber), line("Package", order.plan),
@@ -199,11 +241,13 @@ if (typeof document !== "undefined") (() => {
         line("Payment method", state.methods.find((item) => item.code === order.paymentMethod)?.name ||
           (order.paymentMethod ? "Selected" : "Not selected")),
         line("Status", orderStatus[order.status] || "In progress"),
-        paragraph(order.status === "PAYMENT_SUBMITTED" ? "Your proof was received. Please wait for admin review." :
+        paragraph(order.status === "PAYMENT_SUBMITTED" ? "Your payment proof has been received and is waiting for review." :
           order.status === "PAID" ? "Your VPN is activated. Open My VPN to connect." :
           "Activation follows payment proof review and approval.")));
       if (order.status === "PENDING_PAYMENT" && order.paymentMethod)
-        actions.append(action("Send Payment Proof in Bot", proofHandoff, true));
+        actions.append(action("Upload Payment Proof", () => {
+          state.checkout.step = "upload"; renderCheckout();
+        }, true), action("Send Payment Proof in Bot", proofHandoff));
       else if (order.status === "PENDING_PAYMENT")
         actions.append(action("Choose Payment Method", loadMethods, true));
       actions.append(action("Refresh Status", () => showOrder(order.orderNumber)),
@@ -257,6 +301,79 @@ if (typeof document !== "undefined") (() => {
       state.order = order; state.checkout.step = "instructions";
       notice(""); renderCheckout();
     } catch { notice("We couldn't select that payment method. Try again.", true); }
+  }
+  function clearProofFile() {
+    if (state.previewUrl) URL.revokeObjectURL(state.previewUrl);
+    state.previewUrl = null; state.uploadFile = null; state.uploadPercent = 0;
+  }
+  function chooseProofFile(file) {
+    if (!file) return;
+    if (!["image/jpeg", "image/png"].includes(file.type)) {
+      notice("Please upload a JPG or PNG image.", true); return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      notice("Image is too large. Please choose an image under 5 MB.", true); return;
+    }
+    if (file.size < 24) {
+      notice("Please choose a valid payment image.", true); return;
+    }
+    clearProofFile();
+    state.uploadFile = file;
+    state.previewUrl = URL.createObjectURL(file);
+    notice(""); renderCheckout();
+  }
+  function uploadRequest(file, orderNumber) {
+    return new Promise((resolve, reject) => {
+      const form = new FormData();
+      form.append("initData", initData);
+      form.append("orderNumber", orderNumber);
+      form.append("proof", file, file.name);
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", "api/order/payment-proof-upload");
+      xhr.timeout = 60000;
+      xhr.upload.onprogress = (event) => {
+        if (!event.lengthComputable) return;
+        state.uploadPercent = Math.min(99, Math.round(event.loaded / event.total * 100));
+        const bar = document.querySelector(".upload-progress");
+        const label = document.querySelector(".upload-progress-text");
+        if (bar) bar.value = state.uploadPercent;
+        if (label) label.textContent = `Uploading… ${state.uploadPercent}%`;
+      };
+      xhr.onload = () => {
+        let data;
+        try { data = JSON.parse(xhr.responseText); } catch { data = {}; }
+        if (xhr.status >= 200 && xhr.status < 300) resolve(data);
+        else {
+          const error = new Error(data.error || "We couldn't upload your payment proof. Please try again.");
+          error.data = data; error.status = xhr.status; reject(error);
+        }
+      };
+      xhr.onerror = xhr.ontimeout = () => reject(new Error(
+        "We couldn't upload your payment proof. Please try again."));
+      xhr.send(form);
+    });
+  }
+  async function submitProof() {
+    if (!state.uploadFile || state.uploading || !state.order) return;
+    state.uploading = true; state.uploadPercent = 0;
+    notice(""); renderCheckout();
+    try {
+      const result = await uploadRequest(state.uploadFile, state.order.orderNumber);
+      state.order = result.order;
+      clearProofFile();
+      state.checkout.step = "submitted";
+      notice(""); renderCheckout();
+    } catch (error) {
+      if (error.status === 409 && error.data?.order?.proofSubmitted) {
+        state.order = error.data.order;
+        clearProofFile();
+        state.checkout.step = "submitted";
+        notice(""); renderCheckout();
+      } else {
+        notice(error.message || "We couldn't upload your payment proof. Please try again.", true);
+        renderCheckout();
+      }
+    } finally { state.uploading = false; if (state.checkout.step === "upload") renderCheckout(); }
   }
   async function proofHandoff() {
     notice("Opening the bot for payment proof…");
@@ -384,7 +501,10 @@ if (typeof document !== "undefined") (() => {
   $("history-back-button").addEventListener("click", () => navigate("packages"));
   $("checkout-back-button").addEventListener("click", () => {
     const step = state.checkout?.step;
-    if (step === "instructions") loadMethods();
+    if (state.uploading) return;
+    if (step === "upload") { state.checkout.step = "instructions"; renderCheckout(); }
+    else if (step === "submitted") showOrder(state.order.orderNumber);
+    else if (step === "instructions") loadMethods();
     else if (step === "methods" || step === "progress") showOrder(state.order.orderNumber);
     else navigate("packages");
   });

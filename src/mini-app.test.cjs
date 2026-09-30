@@ -45,6 +45,7 @@ test("Mini App serves live account data and gates connect and checkout by Telegr
   try {
     const page = await fetch(base);
     assert.equal(page.status, 200);
+    assert.match(page.headers.get("content-security-policy"), /img-src 'self' data: blob:/);
     assert.equal(page.headers.get("x-frame-options"), null);
     const html = await page.text();
     assert.match(html, /Metro Secure/);

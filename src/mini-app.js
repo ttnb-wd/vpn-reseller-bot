@@ -1,6 +1,8 @@
 const crypto = require("node:crypto");
 const express = require("express");
 const path = require("node:path");
+const { createWindowLimiter } = require("./abuse-limits");
+const { MAX_REQUEST_BYTES, parseMultipartProof } = require("./payment-proof-upload");
 
 const MAX_INIT_AGE_SECONDS = 60 * 60;
 
@@ -75,22 +77,25 @@ function publicOrder(order) {
     amountMmk: Number(order.price), dataLimitGb: order.totalDataGb ?? null,
     durationDays: order.totalDurationDays ?? null,
     createdAt: order.createdAt?.toString() || null,
-    paymentMethod: order.paymentMethod || null, status };
+    paymentMethod: order.paymentMethod || null,
+    proofSubmitted: Boolean(order.paymentProof), status };
 }
 const validOrderNumber = (value) => typeof value === "string" && /^VPN-[A-Za-z0-9-]{1,80}$/.test(value);
 
 function createMiniAppRouter({ botToken, getAccount, getPackages, getPackage,
   createOrder, getOrder, getOrders, getPaymentMethods, selectPaymentMethod,
-  handoffProof, getConnectUrl, sendBotFlow }) {
+  handoffProof, uploadProof, getConnectUrl, sendBotFlow }) {
   const router = express.Router();
   const publicDir = path.join(__dirname, "mini-app");
+  const allowUploadIp = createWindowLimiter({ windowMs: 10 * 60000, max: 30 });
+  const allowUploadCustomer = createWindowLimiter({ windowMs: 10 * 60000, max: 5 });
   router.use((req, res, next) => {
     // Telegram Web may embed Mini Apps in a frame; the main server's DENY
     // header is appropriate for the admin and setup pages, but not here.
     res.removeHeader("X-Frame-Options");
     res.set({
       "Cache-Control": "no-store",
-      "Content-Security-Policy": "default-src 'self'; script-src 'self' https://telegram.org; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; frame-ancestors https://web.telegram.org https://*.telegram.org; object-src 'none'",
+      "Content-Security-Policy": "default-src 'self'; script-src 'self' https://telegram.org; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; base-uri 'none'; frame-ancestors https://web.telegram.org https://*.telegram.org; object-src 'none'",
       "Referrer-Policy": "no-referrer",
     });
     next();
@@ -99,14 +104,13 @@ function createMiniAppRouter({ botToken, getAccount, getPackages, getPackage,
   router.get("/app.css", (_req, res) => res.sendFile(path.join(publicDir, "app.css")));
   router.get("/app.js", (_req, res) => res.sendFile(path.join(publicDir, "app.js")));
   router.get("/metro-secure-icon.png", (_req, res) => res.sendFile(path.join(publicDir, "metro-secure-icon.png")));
-  router.use("/api", express.json({ limit: "12kb", strict: true }));
-  router.use("/api", (req, res, next) => {
+  const authenticateTelegram = (req, res, next) => {
     const user = verifyTelegramInitData(req.body?.initData, botToken);
     if (!user) return res.status(401).json({ error: "Open Metro from Telegram to continue." });
     req.telegramUser = user;
     next();
-  });
-  router.use("/api", async (req, res, next) => {
+  };
+  const resolveCustomer = async (req, res, next) => {
     try {
       const account = await getAccount(req.telegramUser.id, req.telegramUser);
       if (!account?.customerExists) return res.status(403).json({ error: "Open Metro from the Telegram bot to continue." });
@@ -116,7 +120,50 @@ function createMiniAppRouter({ botToken, getAccount, getPackages, getPackage,
       console.error("Mini App customer lookup failed.");
       res.status(503).json({ error: "We couldn't load your account." });
     }
+  };
+  router.post("/api/order/payment-proof-upload", (req, res, next) => {
+    if (!allowUploadIp(req.ip)) return res.status(429).json({ error: "Please wait before trying another upload." });
+    if (!/^multipart\/form-data(?:;|$)/i.test(req.headers["content-type"] || ""))
+      return res.status(415).json({ error: "Please choose a JPG or PNG image." });
+    const timer = setTimeout(() => req.destroy(), 20000);
+    res.once("close", () => clearTimeout(timer));
+    express.raw({ type: "multipart/form-data", limit: MAX_REQUEST_BYTES, inflate: false })(req, res, (error) => {
+      clearTimeout(timer);
+      if (error) return res.status(error.type === "entity.too.large" ? 413 : 400).json({
+        error: error.type === "entity.too.large" ?
+          "Image is too large. Please choose an image under 5 MB." : "Invalid upload." });
+      next();
+    });
+  }, async (req, res, next) => {
+    try {
+      const upload = await parseMultipartProof(req.body, req.headers["content-type"]);
+      req.body = { initData: upload.initData, orderNumber: upload.orderNumber };
+      req.upload = upload;
+      next();
+    } catch (error) { res.status(error.status || 400).json({ error: error.message || "Invalid upload." }); }
+  }, authenticateTelegram, resolveCustomer, async (req, res) => {
+    if (!allowUploadCustomer(req.telegramUser.id))
+      return res.status(429).json({ error: "Please wait before trying another upload." });
+    if (!validOrderNumber(req.body.orderNumber))
+      return res.status(400).json({ error: "This order is not available." });
+    try {
+      const result = await uploadProof(req.telegramUser.id, req.body.orderNumber,
+        req.upload.image, req.upload.mimeType);
+      if (result?.already) return res.status(409).json({
+        error: "Payment proof has already been submitted.",
+        order: publicOrder(result.order) });
+      if (result?.busy) return res.status(409).json({
+        error: "An upload is already in progress. Check Order History or contact Support if it does not finish." });
+      if (!result?.order) return res.status(404).json({ error: "This order is not available." });
+      res.json({ proofSubmitted: true, order: publicOrder(result.order) });
+    } catch {
+      console.error("Mini App payment proof upload failed.");
+      res.status(503).json({ error: "We couldn't upload your payment proof. Please try again." });
+    }
   });
+  router.use("/api", express.json({ limit: "12kb", strict: true }));
+  router.use("/api", authenticateTelegram);
+  router.use("/api", resolveCustomer);
   router.post("/api/overview", async (req, res) => {
     try {
       const packages = await getPackages();
