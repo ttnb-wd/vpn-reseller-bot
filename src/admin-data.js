@@ -194,14 +194,15 @@ async function getOrderProof(client, id) {
 
 async function getPaymentsData(client, params = {}) {
   const { or } = await import("@prisma/orm-postgres/orm-client");
-  const filter = ["pending", "paid", "rejected", "all"].includes(params.status)
-    ? params.status : "pending";
+  const filter = ["pending", "processing", "paid", "rejected", "all"].includes(params.status)
+    ? params.status : "all";
   let query = client.public.Order.where((order) => or(
     order.paymentMethod.isNotNull(), order.paymentProof.isNotNull(),
   ));
   if (filter === "pending") {
-    query = query.where({ status: "PENDING_PAYMENT" })
-      .where((order) => order.paymentProof.isNotNull());
+    query = query.where({ status: "PENDING_PAYMENT" });
+  } else if (filter === "processing") {
+    query = query.where({ status: "PROCESSING" });
   } else if (filter === "paid") {
     query = query.where({ status: "PAID" });
   } else if (filter === "rejected") {
@@ -213,7 +214,7 @@ async function getPaymentsData(client, params = {}) {
   const page = Math.min(parsePage(params.page), totalPages);
   const orders = await query
     .select("id", "orderNumber", "plan", "price", "paymentMethod", "paymentReference",
-      "paymentProof", "status", "paidAt")
+      "paymentProof", "status", "paidAt", "createdAt")
     .include("customer", (customer) => customer.select("telegramId", "username", "firstName"))
     .include("package", (pkg) => pkg.select("name"))
     .orderBy([(order) => order.createdAt.desc(), (order) => order.id.desc()])

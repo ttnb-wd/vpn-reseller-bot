@@ -1,6 +1,8 @@
 const crypto = require("crypto");
 const bcrypt = require("bcryptjs");
 const express = require("express");
+const { Readable } = require("node:stream");
+const { pipeline } = require("node:stream/promises");
 const { getDatabaseClient } = require("./db");
 const {
   getDashboardData, getUsersData, getUserDetail,
@@ -14,7 +16,7 @@ const {
   renderVpnKeys, renderPackages, renderPackageEdit,
   renderUsage, renderSettings,
 } = require("./admin-ui");
-const { loadTelegramPaymentProof } = require("./admin-proof");
+const { loadTelegramPaymentProof, PROOF_ERROR_CODES } = require("./admin-proof");
 
 const COOKIE_NAME = "metro_admin_session";
 const SESSION_MAX_AGE_MS = 30 * 60 * 1000;
@@ -216,7 +218,14 @@ function createAdminRouter(config) {
 
   function requireAdmin(req, res, next) {
     const sessionId = readSessionId(req);
-    if (!sessionId) return res.redirect(303, "/admin/login");
+    if (!sessionId) {
+      if (/^\/payment-proof\/[1-9]\d{0,9}$/.test(req.path)) {
+        (config.proofLogger || console.info)("Admin payment proof", {
+          orderId: Number(req.path.split("/").at(-1)), code: "AUTH_REQUIRED", status: 303,
+        });
+      }
+      return res.redirect(303, "/admin/login");
+    }
     req.adminSessionId = sessionId;
     next();
   }
@@ -381,11 +390,21 @@ function createAdminRouter(config) {
 
   router.get("/payment-proof/:orderId", async (req, res) => {
     if (!validOrderId(req.params.orderId)) return res.sendStatus(404);
+    const log = (event) => (config.proofLogger || console.info)("Admin payment proof", {
+      orderId: Number(req.params.orderId), ...event,
+    });
     try {
       const order = await dataApi.getOrderProof(getClient(), Number(req.params.orderId));
-      if (!order?.paymentProof) return res.sendStatus(404);
-      const proof = await proofLoader(order.paymentProof);
-      if (!proof) return res.sendStatus(404);
+      log({ proofPresent: Boolean(order?.paymentProof) });
+      if (!order?.paymentProof) {
+        log({ code: "PROOF_NOT_FOUND", status: 404 });
+        return res.sendStatus(404);
+      }
+      const proof = await proofLoader(order.paymentProof, { onDiagnostic: log });
+      if (!proof) {
+        log({ code: "PROOF_NOT_FOUND", status: 404 });
+        return res.sendStatus(404);
+      }
       const extensions = { "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp" };
       const extension = extensions[proof.contentType];
       if (!extension || !Buffer.isBuffer(proof.bytes) || proof.bytes.length > 20 * 1024 * 1024) {
@@ -393,14 +412,16 @@ function createAdminRouter(config) {
       }
       res.set({
         "Cache-Control": "private, no-store, max-age=0",
-        "Content-Security-Policy": "default-src 'none'; sandbox",
+        "Content-Security-Policy": "default-src 'none'; img-src 'self'; sandbox",
         "Content-Disposition": `inline; filename="payment-proof.${extension}"`,
         "Referrer-Policy": "no-referrer",
         "X-Content-Type-Options": "nosniff",
       });
-      return res.type(proof.contentType).send(proof.bytes);
-    } catch {
-      console.error("Admin payment proof fetch failed.");
+      res.type(proof.contentType);
+      await pipeline(Readable.from([proof.bytes]), res);
+    } catch (error) {
+      log({ code: PROOF_ERROR_CODES.has(error.proofCode) ? error.proofCode : "PROOF_FETCH_FAILED", status: 502 });
+      if (res.headersSent || res.destroyed) return res.destroy();
       return res.status(502).type("text").send("Payment proof is temporarily unavailable.");
     }
   });

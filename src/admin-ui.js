@@ -107,7 +107,7 @@ function renderLayout(res, title, email, section, formToken, content) {
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
     "X-Robots-Tag": "noindex, nofollow, noarchive",
-    "Content-Security-Policy": `default-src 'none'; style-src 'nonce-${nonce}'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`,
+    "Content-Security-Policy": `default-src 'none'; img-src 'self'; style-src 'nonce-${nonce}'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`,
   });
   return res.type("html").send(`<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -338,16 +338,16 @@ function renderOrderDetail(res, email, formToken, order) {
 }
 
 function renderPayments(res, email, formToken, data) {
-  const filters = [["pending", "Pending"], ["paid", "Approved / Paid"], ["rejected", "Rejected"], ["all", "All"]];
+  const filters = [["all", "All"], ["pending", "Pending / Awaiting review"], ["processing", "Processing"], ["paid", "Approved / Paid"], ["rejected", "Rejected"]];
   const cards = data.orders.map((order) => `<article class="user-card">
     <div class="user-head"><h3><a href="/admin/orders/${order.id}">${text(order.orderNumber)}</a></h3>${badge(order.status)}</div>
     <dl>
       ${field("Customer", text(customerName(order.customer)))}${field("Telegram ID", text(order.customer?.telegramId))}
       ${field("Package", text(order.package?.name || order.plan))}${field("Amount", `${formatNumber(order.price)} MMK`)}
       ${field("Payment method", text(order.paymentMethod))}${field("Payment reference", text(order.paymentReference))}
-      ${field("Paid at", formatDate(order.paidAt))}${field("Proof available", proofAvailable(order) ? "Yes" : "No")}
+      ${field("Created at", formatDate(order.createdAt))}${field("Paid at", formatDate(order.paidAt))}${field("Proof available", proofAvailable(order) ? "Yes" : "No")}
     </dl><div class="actions"><a href="/admin/orders/${order.id}">View order</a>
-      ${proofAvailable(order) ? `<a href="/admin/payment-proof/${order.id}" target="_blank" rel="noopener noreferrer">View slip</a>` : ""}</div>
+      ${proofAvailable(order) ? `<a class="button" href="/admin/payment-proof/${order.id}" target="_blank" rel="noopener noreferrer">View Payment Proof</a>` : ""}</div>
   </article>`).join("");
   return renderLayout(res, "Payments", email, "payments", formToken, `
     <h2>Payments</h2><p class="intro">${formatNumber(data.count)} payment-related order${data.count === 1 ? "" : "s"}</p>
