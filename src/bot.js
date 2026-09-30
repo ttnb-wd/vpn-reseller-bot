@@ -1131,19 +1131,27 @@ async function createPackageOrder(
 
 const miniAppRouter = createMiniAppRouter({
   botToken: process.env.BOT_TOKEN,
-  async getAccount(telegramId) {
-    const { subscription } = await findCustomerSubscription(telegramId);
+  async getAccount(telegramId, telegramUser) {
+    const { customer, subscription } = await findCustomerSubscription(telegramId);
     const active = isSubscriptionActive(subscription);
+    const expired = Boolean(subscription?.expiresAt &&
+      Temporal.Instant.compare(subscription.expiresAt, Temporal.Now.instant()) <= 0);
+    const configuredLabel = process.env.VPN_SERVER_LABEL || process.env.VPN_REGION || "";
+    const serverLabel = /^[\p{L}][\p{L}\p{N} '-]{0,39}$/u.test(configuredLabel)
+      ? configuredLabel : "VPN server";
     return {
+      customerExists: Boolean(customer),
       hasSubscription: Boolean(subscription),
-      status: active ? "ACTIVE" : subscription && subscription.expiresAt &&
-        Temporal.Instant.compare(subscription.expiresAt, Temporal.Now.instant()) <= 0
-        ? "EXPIRED" : subscription ? "INACTIVE" : "NONE",
+      status: subscription?.revokedAt ? "REVOKED" : active ? "ACTIVE" :
+        expired ? "EXPIRED" : subscription ? "INACTIVE" : "NONE",
+      displayName: customer?.firstName || telegramUser?.first_name || null,
       plan: subscription?.plan || null,
-      dataUsedGb: subscription?.dataUsedGb || 0,
-      dataLimitGb: subscription?.dataLimitGb || 0,
+      dataUsedGb: subscription?.dataUsedGb ?? null,
+      dataLimitGb: subscription?.dataLimitGb ?? null,
+      startedAt: subscription?.startedAt?.toString() || null,
       expiresAt: subscription?.expiresAt?.toString() || null,
-      region: process.env.VPN_REGION || "Singapore",
+      serverLabel,
+      usageSyncedAt: null,
       canConnect: active && isReusableAccessKey(subscription.vpnKeyId, subscription.vpnKey) &&
         isValidOutlineAccessKey(subscription.vpnKey),
     };

@@ -28,6 +28,35 @@ function verifyTelegramInitData(initData, botToken, nowSeconds = Math.floor(Date
   }
 }
 
+const ACCOUNT_FIELDS = ["hasSubscription", "status", "displayName", "plan", "serverLabel",
+  "dataUsedGb", "dataLimitGb", "startedAt", "expiresAt", "usageSyncedAt", "canConnect"];
+function customerAccount(account) {
+  return Object.fromEntries(ACCOUNT_FIELDS.map((field) => [field, account?.[field] ?? null]));
+}
+
+function packageToken(packageId, userId, botToken) {
+  const key = crypto.createHash("sha256").update(botToken).digest();
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+  cipher.setAAD(Buffer.from(String(userId)));
+  const ciphertext = Buffer.concat([cipher.update(String(packageId)), cipher.final()]);
+  return Buffer.concat([iv, cipher.getAuthTag(), ciphertext]).toString("base64url");
+}
+
+function readPackageToken(token, userId, botToken) {
+  if (typeof token !== "string" || token.length > 128) return null;
+  try {
+    const bytes = Buffer.from(token, "base64url");
+    if (bytes.length < 29) return null;
+    const key = crypto.createHash("sha256").update(botToken).digest();
+    const decipher = crypto.createDecipheriv("aes-256-gcm", key, bytes.subarray(0, 12));
+    decipher.setAAD(Buffer.from(String(userId)));
+    decipher.setAuthTag(bytes.subarray(12, 28));
+    const id = Number(Buffer.concat([decipher.update(bytes.subarray(28)), decipher.final()]).toString());
+    return Number.isSafeInteger(id) && id > 0 ? id : null;
+  } catch { return null; }
+}
+
 function createMiniAppRouter({ botToken, getAccount, getPackages, getConnectUrl, sendBotFlow }) {
   const router = express.Router();
   const publicDir = path.join(__dirname, "mini-app");
@@ -53,14 +82,28 @@ function createMiniAppRouter({ botToken, getAccount, getPackages, getConnectUrl,
     req.telegramUser = user;
     next();
   });
+  router.use("/api", async (req, res, next) => {
+    try {
+      const account = await getAccount(req.telegramUser.id, req.telegramUser);
+      if (!account?.customerExists) return res.status(403).json({ error: "Open Metro from the Telegram bot to continue." });
+      req.account = account;
+      next();
+    } catch {
+      console.error("Mini App customer lookup failed.");
+      res.status(503).json({ error: "We couldn't load your account." });
+    }
+  });
   router.post("/api/overview", async (req, res) => {
     try {
-      const [account, packages] = await Promise.all([
-        getAccount(req.telegramUser.id), getPackages(),
-      ]);
-      res.json({ account, packages });
+      const packages = await getPackages();
+      res.json({ account: customerAccount(req.account), packages: packages.map((pkg) => ({
+        name: pkg.name, dataLimitGb: pkg.dataLimitGb, durationDays: pkg.durationDays,
+        priceMmk: pkg.priceMmk,
+        selectionToken: packageToken(pkg.id, req.telegramUser.id, botToken),
+      })) });
     } catch {
-      res.status(503).json({ error: "Account details are temporarily unavailable." });
+      console.error("Mini App account lookup failed.");
+      res.status(503).json({ error: "We couldn't load your account." });
     }
   });
   router.post("/api/connect", async (req, res) => {
@@ -69,13 +112,16 @@ function createMiniAppRouter({ botToken, getAccount, getPackages, getConnectUrl,
       if (!url) return res.status(409).json({ error: "Your VPN is not ready to connect." });
       res.json({ url });
     } catch {
+      console.error("Mini App connect failed.");
       res.status(503).json({ error: "VPN setup is temporarily unavailable." });
     }
   });
   router.post("/api/flow", async (req, res) => {
-    const { flow, packageId } = req.body || {};
+    const { flow, packageToken: selectionToken } = req.body || {};
+    const packageId = selectionToken === undefined ? undefined :
+      readPackageToken(selectionToken, req.telegramUser.id, botToken);
     if (!["renew", "packages", "support"].includes(flow) ||
-        (packageId !== undefined && (!Number.isSafeInteger(packageId) || packageId <= 0))) {
+        (selectionToken !== undefined && packageId === null)) {
       return res.status(400).json({ error: "Invalid selection." });
     }
     try {

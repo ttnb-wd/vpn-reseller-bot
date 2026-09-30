@@ -219,6 +219,53 @@ test("existing-key HTTPS setup", async (t) => {
     assert.equal(JSON.stringify(data).includes(subscription.vpnKey), false);
   });
 
+  await t.test("customer dashboard statuses, server label and Connect use the existing key", async () => {
+    const signed = () => {
+      const fields = new URLSearchParams({ auth_date: String(Math.floor(Date.now() / 1000)),
+        user: JSON.stringify({ id: 123, first_name: "Test" }) });
+      const secret = crypto.createHmac("sha256", "WebAppData").update(bot.env.BOT_TOKEN).digest();
+      const check = [...fields.entries()].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
+        .map(([key, value]) => `${key}=${value}`).join("\n");
+      fields.set("hash", crypto.createHmac("sha256", secret).update(check).digest("hex"));
+      return fields.toString();
+    };
+    const post = (path) => fetch(origin + `/app/api/${path}`, { method: "POST",
+      headers: { "content-type": "application/json" }, body: JSON.stringify({ initData: signed() }) });
+    const original = subscription;
+    try {
+      bot.env.VPN_SERVER_LABEL = "vpn.example.test";
+      let account = (await (await post("overview")).json()).account;
+      assert.equal(account.serverLabel, "VPN server");
+      assert.equal(account.status, "ACTIVE");
+      assert.equal(account.canConnect, true);
+      assert.equal(account.hasSubscription, true);
+      assert.equal(JSON.stringify(account).includes(original.vpnKey), false);
+      assert.equal(JSON.stringify(account).includes("192.0.2.1"), false);
+      bot.env.VPN_SERVER_LABEL = "Singapore";
+      account = (await (await post("overview")).json()).account;
+      assert.equal(account.serverLabel, "Singapore");
+      const connected = await post("connect");
+      assert.equal(connected.status, 200);
+      assert.match((await connected.json()).url, /\/connect\/v1\./);
+      assert.equal(bot.createKeyCalls, 0);
+      subscription = { ...original, expiresAt: Temporal.Now.instant().subtract({ seconds: 1 }) };
+      account = (await (await post("overview")).json()).account;
+      assert.equal(account.status, "EXPIRED");
+      assert.equal(account.canConnect, false);
+      assert.equal((await post("connect")).status, 409);
+      subscription = { ...original, revokedAt: Temporal.Now.instant() };
+      account = (await (await post("overview")).json()).account;
+      assert.equal(account.status, "REVOKED");
+      assert.equal(account.canConnect, false);
+      assert.equal((await post("connect")).status, 409);
+      subscription = null;
+      account = (await (await post("overview")).json()).account;
+      assert.equal(account.status, "NONE");
+      assert.equal(account.hasSubscription, false);
+      assert.equal(bot.createKeyCalls, 0);
+    } finally { subscription = original; delete bot.env.VPN_SERVER_LABEL; }
+  });
+
   await t.test("tampered, malformed, wrong-secret and expired tokens are rejected before DB lookup", async () => {
     const before = queryCount;
     const bytes = Buffer.from(token.slice(3), "base64url");
