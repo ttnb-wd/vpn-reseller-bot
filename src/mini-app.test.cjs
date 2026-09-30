@@ -160,3 +160,105 @@ test("account lookup failure returns a safe message", async () => {
     assert.deepEqual(await response.json(), { error: "We couldn't load your account." });
   } finally { await new Promise((resolve) => server.close(resolve)); }
 });
+
+test("Phase 2 checkout rechecks packages, scopes orders, and keeps payment proof in the bot", async () => {
+  const packages = [
+    { id: 7, name: "Basic", dataLimitGb: 50, durationDays: 30, priceMmk: 3200, active: true, sortOrder: 1, version: "v1" },
+    { id: 8, name: "Hidden", dataLimitGb: 10, durationDays: 10, priceMmk: 1000, active: false, sortOrder: 2, version: "v1" },
+  ];
+  const orders = [];
+  let handoffs = 0;
+  const app = express();
+  app.use("/app", createMiniAppRouter({ botToken: token,
+    async getAccount(id) { return { customerExists: id === 42 || id === 77,
+      status: id === 77 ? "ACTIVE" : "NONE", hasSubscription: id === 77 }; },
+    async getPackages() { return packages.filter((pkg) => pkg.active)
+      .sort((a, b) => a.sortOrder - b.sortOrder || a.id - b.id); },
+    async getPackage(id) { return packages.find((pkg) => pkg.id === id && pkg.active) || null; },
+    async createOrder(user, _account, id, version) {
+      const pkg = packages.find((item) => item.id === id && item.active);
+      if (pkg.version !== version) return { changed: true };
+      const existing = orders.find((order) => order.owner === user.id && order.status === "PENDING_PAYMENT");
+      if (existing) return { order: existing, inProgress: true };
+      const order = { owner: user.id, orderNumber: "VPN-Itest123", plan: pkg.name,
+        price: pkg.priceMmk, totalDataGb: pkg.dataLimitGb, totalDurationDays: pkg.durationDays,
+        createdAt: new Date("2026-09-30T00:00:00Z"), status: "PENDING_PAYMENT",
+        paymentProof: "private-file-id", vpnKey: "ss://secret", customerId: 9, id: 1 };
+      orders.push(order);
+      return { order, inProgress: false };
+    },
+    async getOrder(id, number) { return orders.find((order) => order.owner === id && order.orderNumber === number) || null; },
+    async getOrders(id) { return orders.filter((order) => order.owner === id); },
+    async getPaymentMethods() { return [{ code: "mobile_wallet", name: "Wallet",
+      accountName: "Metro Secure", accountNumber: "09999999999" }]; },
+    async selectPaymentMethod(id, number, method) {
+      const order = orders.find((item) => item.owner === id && item.orderNumber === number);
+      if (!order || method !== "mobile_wallet") return null;
+      order.paymentMethod = method; return order;
+    },
+    async handoffProof(id, number) {
+      const owned = orders.find((order) => order.owner === id && order.orderNumber === number && order.paymentMethod);
+      if (owned) handoffs++;
+      return Boolean(owned);
+    },
+    async getConnectUrl() { return null; }, async sendBotFlow() {},
+  }));
+  const server = app.listen(0, "127.0.0.1");
+  await new Promise((resolve) => server.once("listening", resolve));
+  const base = `http://127.0.0.1:${server.address().port}/app/api`;
+  const post = (path, id = 42, extra = {}) => fetch(`${base}/${path}`, { method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ initData: signedData(id), ...extra }) });
+  try {
+    assert.equal((await post("packages", 42, { initData: "invalid" })).status, 401);
+    const first = (await (await post("packages")).json()).packages;
+    assert.equal(first.length, 1);
+    assert.equal(first[0].name, "Basic");
+    assert.equal(Object.hasOwn(first[0], "id"), false);
+    assert.equal((await post("order/create", 42,
+      { confirmationToken: first[0].selectionToken })).status, 400);
+    packages[0].priceMmk = 3500; packages[0].dataLimitGb = 55;
+    packages[0].durationDays = 33; packages[0].version = "v2";
+    const refreshed = (await (await post("packages")).json()).packages;
+    assert.equal(refreshed[0].priceMmk, 3500);
+    const detail = (await (await post("package/detail", 42,
+      { selectionToken: first[0].selectionToken })).json());
+    assert.equal(detail.package.changed, true);
+    assert.equal(detail.package.dataLimitGb, 55);
+    packages[0].priceMmk = 3600; packages[0].version = "v3";
+    const staleResponse = await post("order/create", 42,
+      { confirmationToken: detail.confirmationToken, price: 1, durationDays: 999, dataLimitGb: 999 });
+    assert.equal(staleResponse.status, 409);
+    const current = await staleResponse.json();
+    assert.equal(current.package.priceMmk, 3600);
+    assert.equal(orders.length, 0);
+    const created = await post("order/create", 42,
+      { confirmationToken: current.confirmationToken, price: 1, durationDays: 999, dataLimitGb: 999, customerId: 77 });
+    assert.equal(created.status, 200);
+    const order = (await created.json()).order;
+    assert.equal(order.amountMmk, 3600);
+    assert.equal(order.dataLimitGb, 55);
+    assert.equal(order.durationDays, 33);
+    assert.equal(orders.length, 1);
+    assert.equal((await (await post("order/create", 42,
+      { confirmationToken: current.confirmationToken })).json()).inProgress, true);
+    assert.equal(orders.length, 1);
+    assert.equal((await post("order/status", 77, { orderNumber: order.orderNumber })).status, 404);
+    assert.equal((await post("order/payment-method", 77,
+      { orderNumber: order.orderNumber, method: "mobile_wallet" })).status, 409);
+    const methods = (await (await post("payment-methods")).json()).methods;
+    assert.equal(methods[0].accountNumber, "09999999999");
+    assert.equal((await post("order/payment-method", 42,
+      { orderNumber: order.orderNumber, method: "mobile_wallet" })).status, 200);
+    assert.equal((await post("order/payment-proof-handoff", 77,
+      { orderNumber: order.orderNumber })).status, 409);
+    assert.equal((await post("order/payment-proof-handoff", 42,
+      { orderNumber: order.orderNumber })).status, 200);
+    assert.equal(handoffs, 1);
+    assert.equal((await (await post("orders", 77)).json()).orders.length, 0);
+    const visible = await (await post("order/status", 42, { orderNumber: order.orderNumber })).json();
+    assert.equal(visible.order.status, "PAYMENT_SUBMITTED");
+    for (const secret of ["private-file-id", "ss://", "customerId", "telegramId", '"id":1'])
+      assert.equal(JSON.stringify(visible).includes(secret), false);
+  } finally { await new Promise((resolve) => server.close(resolve)); }
+});

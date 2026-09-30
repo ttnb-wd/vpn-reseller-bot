@@ -22,7 +22,8 @@ if (typeof document !== "undefined") (() => {
   const tg = window.Telegram?.WebApp;
   const initData = tg?.initData || "";
   const $ = (id) => document.getElementById(id);
-  const state = { account: null, packages: [], tab: "home", lastLoad: 0, loading: false };
+  const state = { account: null, packages: [], tab: "home", lastLoad: 0, loading: false,
+    checkout: null, order: null, methods: [] };
   const show = (id, visible) => $(id).classList.toggle("hidden", !visible);
   const set = (id, value) => { $(id).textContent = value; };
   const notice = (value, error = false) => {
@@ -38,6 +39,10 @@ if (typeof document !== "undefined") (() => {
   };
   const sync = (value) => value ? date(value) : "Sync time unavailable";
   const days = (value) => value === null ? "Unavailable" : `${value} ${value === 1 ? "day" : "days"}`;
+  const money = (value) => `${new Intl.NumberFormat("en-US").format(Number(value))} MMK`;
+  const orderStatus = { PENDING_PAYMENT: "Pending Payment", PAYMENT_SUBMITTED: "Payment Submitted",
+    PROCESSING: "Processing", PAID: "Activated", PAYMENT_REJECTED: "Rejected",
+    CANCELLED: "Cancelled", EXPIRED: "Expired" };
   const statusLabel = { ACTIVE: "🟢 Active", EXPIRED: "⛔ Expired", REVOKED: "⛔ VPN Unavailable",
     INACTIVE: "VPN Unavailable", NONE: "No Active VPN" };
   if (tg) { tg.ready(); tg.expand(); }
@@ -46,7 +51,11 @@ if (typeof document !== "undefined") (() => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ initData, ...extra }), cache: "no-store" });
     const data = await response.json();
-    if (!response.ok) throw new Error(data.error || "Please try again.");
+    if (!response.ok) {
+      const error = new Error(data.error || "Please try again.");
+      error.data = data;
+      throw error;
+    }
     return data;
   }
   function progress(id, percent) {
@@ -57,11 +66,15 @@ if (typeof document !== "undefined") (() => {
   }
   function navigate(tab) {
     state.tab = tab;
-    for (const name of ["home", "vpn", "usage", "packages"]) show(`${name}-panel`, tab === name);
+    for (const name of ["home", "vpn", "usage", "packages", "checkout", "history"])
+      show(`${name}-panel`, tab === name);
     for (const button of document.querySelectorAll(".nav-button"))
       button.classList.toggle("active", button.dataset.tab === tab ||
-        tab === "usage" && button.dataset.tab === "vpn");
+        tab === "usage" && button.dataset.tab === "vpn" ||
+        ["checkout", "history"].includes(tab) && button.dataset.tab === "packages");
     window.scrollTo(0, 0);
+    if (tab === "packages") void refreshPackages();
+    if (tab === "history") void refreshHistory();
   }
   function empty(id, view) {
     const target = $(id);
@@ -77,8 +90,7 @@ if (typeof document !== "undefined") (() => {
     button.type = "button"; button.className = "primary-button";
     button.textContent = view.status === "REVOKED" ? "🎧 Support" :
       view.status === "EXPIRED" ? "♻️ Renew VPN" : "View Packages";
-    button.addEventListener("click", () => view.status === "REVOKED" ? openFlow("support") :
-      view.status === "EXPIRED" ? openFlow("renew") : navigate("packages"));
+    button.addEventListener("click", () => view.status === "REVOKED" ? openFlow("support") : navigate("packages"));
     target.append(title, detail, button);
   }
   function renderPackages() {
@@ -96,10 +108,188 @@ if (typeof document !== "undefined") (() => {
         `${new Intl.NumberFormat("en-US").format(Number(pkg.priceMmk))} MMK`;
       const button = document.createElement("button"); button.type = "button";
       button.className = "secondary-button";
-      button.textContent = state.account?.hasSubscription ? "Renew with this plan" : "Choose package";
-      button.addEventListener("click", () => openFlow(state.account?.hasSubscription ? "renew" : "packages", pkg.selectionToken));
+      button.textContent = dashboardView(state.account).status === "ACTIVE" ? "Renew" : "Buy";
+      button.addEventListener("click", () => selectPackage(pkg.selectionToken));
       card.append(title, detail, price, button); list.append(card);
     }
+  }
+  function line(label, value) {
+    const row = document.createElement("div"); row.className = "detail-row";
+    const left = document.createElement("span"); left.textContent = label;
+    const right = document.createElement("strong"); right.textContent = value;
+    row.append(left, right); return row;
+  }
+  function action(label, handler, primary = false) {
+    const button = document.createElement("button"); button.type = "button";
+    button.className = primary ? "primary-button" : "secondary-button";
+    button.textContent = label; button.addEventListener("click", handler); return button;
+  }
+  function paragraph(value, className = "note") {
+    const p = document.createElement("p"); p.className = className; p.textContent = value; return p;
+  }
+  function card(...children) {
+    const article = document.createElement("article"); article.className = "card";
+    article.append(...children); return article;
+  }
+  function title(value) {
+    const h = document.createElement("h3"); h.textContent = value; return h;
+  }
+  async function refreshPackages() {
+    const list = $("package-list");
+    list.replaceChildren(card(paragraph("Loading packages…")));
+    try {
+      const { packages } = await api("packages");
+      state.packages = packages; renderPackages();
+    } catch {
+      list.replaceChildren(card(paragraph("We couldn't load packages."),
+        action("Try Again", refreshPackages)));
+    }
+  }
+  function renderCheckout() {
+    const flow = state.checkout;
+    const body = $("checkout-body"); const actions = $("checkout-actions");
+    body.replaceChildren(); actions.replaceChildren();
+    if (!flow) return;
+    const pkg = flow.package;
+    const order = state.order;
+    const step = flow.step;
+    set("checkout-title", { detail: flow.renew ? "Renew VPN" : "Buy VPN",
+      methods: "Payment Method", instructions: "Payment Instructions",
+      progress: "Order in Progress", status: "Order Status" }[step] || "Checkout");
+    set("checkout-subtitle", step === "detail" ? "Review the current package before continuing." :
+      step === "methods" ? "Choose where to send your payment." :
+      step === "instructions" ? "Pay the exact amount, then send your proof in the bot." :
+      "You can check this order again in Order History.");
+    if (step === "detail" && pkg) {
+      body.append(card(title(pkg.name), line("Data allowance", gb(pkg.dataLimitGb)),
+        line("Duration", `${pkg.durationDays} days`), line("Price", money(pkg.priceMmk)),
+        line("Action", flow.renew ? "Renew" : "Buy"),
+        line("Current VPN", statusLabel[dashboardView(state.account).status]),
+        ...(pkg.changed ? [paragraph("Package details changed. Please review these current values before continuing.", "usage-warning")] : [])));
+      actions.append(action("Continue", confirmPackage, true), action("Back to Packages", () => navigate("packages")));
+    } else if (step === "methods" && order) {
+      body.append(card(title(order.plan), line("Amount", money(order.amountMmk)),
+        line("Order number", order.orderNumber),
+        paragraph("Your VPN activates after payment proof is reviewed and approved.")));
+      if (!state.methods.length) body.append(card(paragraph("Payment methods are unavailable right now."),
+        action("Try Again", loadMethods)));
+      for (const method of state.methods) body.append(card(title(method.name),
+        line("Account name", method.accountName), line("Destination", method.accountNumber),
+        action(`Pay with ${method.name}`, () => chooseMethod(method), true)));
+      actions.append(action("View Order", () => showOrder(order.orderNumber)));
+    } else if (step === "instructions" && order) {
+      const method = state.methods.find((item) => item.code === order.paymentMethod);
+      body.append(card(title(method?.name || "Payment"), line("Pay", money(order.amountMmk)),
+        line("Account name", method?.accountName || "Unavailable"),
+        line("Destination", method?.accountNumber || "Unavailable"),
+        line("Order reference", order.orderNumber),
+        paragraph("Transfer the exact amount to this account. Send a screenshot as a photo in the Metro Secure bot. Activation follows admin approval.")));
+      actions.append(action("Send Payment Proof in Bot", proofHandoff, true),
+        action("Change Payment Method", loadMethods), action("View Order", () => showOrder(order.orderNumber)));
+    } else if (step === "progress" && order) {
+      body.append(card(title("You already have an order in progress."),
+        line("Order number", order.orderNumber), line("Package", order.plan),
+        line("Status", orderStatus[order.status] || "In progress")));
+      actions.append(action("View Order", () => showOrder(order.orderNumber), true),
+        action("Back", () => navigate("packages")));
+    } else if (step === "status" && order) {
+      body.append(card(title(orderStatus[order.status] || "Order in progress"),
+        line("Order number", order.orderNumber), line("Package", order.plan),
+        line("Amount", money(order.amountMmk)), line("Created", date(order.createdAt)),
+        line("Payment method", state.methods.find((item) => item.code === order.paymentMethod)?.name ||
+          (order.paymentMethod ? "Selected" : "Not selected")),
+        line("Status", orderStatus[order.status] || "In progress"),
+        paragraph(order.status === "PAYMENT_SUBMITTED" ? "Your proof was received. Please wait for admin review." :
+          order.status === "PAID" ? "Your VPN is activated. Open My VPN to connect." :
+          "Activation follows payment proof review and approval.")));
+      if (order.status === "PENDING_PAYMENT" && order.paymentMethod)
+        actions.append(action("Send Payment Proof in Bot", proofHandoff, true));
+      else if (order.status === "PENDING_PAYMENT")
+        actions.append(action("Choose Payment Method", loadMethods, true));
+      actions.append(action("Refresh Status", () => showOrder(order.orderNumber)),
+        action("Back to Packages", () => navigate("packages")));
+    }
+  }
+  async function selectPackage(selectionToken) {
+    notice(""); navigate("checkout");
+    $("checkout-body").replaceChildren(card(paragraph("Loading package…")));
+    try {
+      const result = await api("package/detail", { selectionToken });
+      state.checkout = { step: "detail", package: result.package,
+        confirmationToken: result.confirmationToken,
+        renew: dashboardView(state.account).status === "ACTIVE" };
+      state.order = null; renderCheckout();
+    } catch { notice("We couldn't load this package. Try again.", true); navigate("packages"); }
+  }
+  async function confirmPackage() {
+    const token = state.checkout.confirmationToken;
+    $("checkout-actions").replaceChildren();
+    notice("Creating your order…");
+    try {
+      const result = await api("order/create", { confirmationToken: token });
+      state.order = result.order;
+      state.checkout.step = result.inProgress ? "progress" : "methods";
+      notice("");
+      if (result.inProgress) renderCheckout();
+      else await loadMethods();
+    } catch (error) {
+      // A changed package is returned by the server with its current values.
+      if (error.data?.package && error.data?.confirmationToken) {
+        state.checkout.package = error.data.package;
+        state.checkout.confirmationToken = error.data.confirmationToken;
+        state.checkout.step = "detail";
+        notice(""); renderCheckout();
+      } else { notice(error.message || "We couldn't create your order.", true); renderCheckout(); }
+    }
+  }
+  async function loadMethods() {
+    state.checkout.step = "methods"; state.methods = []; renderCheckout();
+    try {
+      state.methods = (await api("payment-methods")).methods;
+      renderCheckout();
+    } catch { renderCheckout(); }
+  }
+  async function chooseMethod(method) {
+    notice("Saving payment method…");
+    try {
+      const { order } = await api("order/payment-method",
+        { orderNumber: state.order.orderNumber, method: method.code });
+      state.order = order; state.checkout.step = "instructions";
+      notice(""); renderCheckout();
+    } catch { notice("We couldn't select that payment method. Try again.", true); }
+  }
+  async function proofHandoff() {
+    notice("Opening the bot for payment proof…");
+    try {
+      await api("order/payment-proof-handoff", { orderNumber: state.order.orderNumber });
+      notice("Send your payment screenshot as a photo in the Metro Secure chat.");
+      if (tg?.close) tg.close();
+    } catch { notice("We couldn't open payment proof. Try again.", true); }
+  }
+  async function showOrder(orderNumber) {
+    notice("");
+    navigate("checkout");
+    $("checkout-body").replaceChildren(card(paragraph("Loading order…")));
+    try {
+      state.order = (await api("order/status", { orderNumber })).order;
+      state.checkout = { step: "status" }; renderCheckout();
+    } catch { notice("We couldn't load this order. Try again.", true); }
+  }
+  async function refreshHistory() {
+    const list = $("history-list");
+    list.replaceChildren(card(paragraph("Loading orders…")));
+    try {
+      const { orders } = await api("orders");
+      list.replaceChildren();
+      if (!orders.length) { list.append(card(paragraph("No orders yet."))); return; }
+      for (const order of orders) {
+        list.append(card(title(order.plan), line("Order", order.orderNumber),
+          line("Amount", money(order.amountMmk)), line("Date", date(order.createdAt)),
+          line("Status", orderStatus[order.status] || "In progress"),
+          action("View Order", () => showOrder(order.orderNumber))));
+      }
+    } catch { list.replaceChildren(card(paragraph("We couldn't load orders."),
+      action("Try Again", refreshHistory))); }
   }
   function render() {
     const a = state.account;
@@ -184,12 +374,20 @@ if (typeof document !== "undefined") (() => {
   }
   for (const id of ["connect-button", "vpn-connect-button"]) $(id).addEventListener("click", connect);
   for (const id of ["renew-button", "vpn-renew-button", "usage-renew-button"])
-    $(id).addEventListener("click", () => openFlow("renew"));
+    $(id).addEventListener("click", () => navigate("packages"));
   $("support-button").addEventListener("click", () => openFlow("support"));
   for (const id of ["view-usage-button", "vpn-usage-button"])
     $(id).addEventListener("click", () => navigate("usage"));
   $("view-packages-button").addEventListener("click", () => navigate("packages"));
   $("usage-back-button").addEventListener("click", () => navigate("vpn"));
+  $("history-button").addEventListener("click", () => navigate("history"));
+  $("history-back-button").addEventListener("click", () => navigate("packages"));
+  $("checkout-back-button").addEventListener("click", () => {
+    const step = state.checkout?.step;
+    if (step === "instructions") loadMethods();
+    else if (step === "methods" || step === "progress") showOrder(state.order.orderNumber);
+    else navigate("packages");
+  });
   $("refresh-button").addEventListener("click", () => load());
   $("retry-button").addEventListener("click", () => load(true));
   for (const button of document.querySelectorAll(".nav-button"))

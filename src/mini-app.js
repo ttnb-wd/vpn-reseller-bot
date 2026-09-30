@@ -34,17 +34,17 @@ function customerAccount(account) {
   return Object.fromEntries(ACCOUNT_FIELDS.map((field) => [field, account?.[field] ?? null]));
 }
 
-function packageToken(packageId, userId, botToken) {
+function sealToken(payload, userId, botToken) {
   const key = crypto.createHash("sha256").update(botToken).digest();
   const iv = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
   cipher.setAAD(Buffer.from(String(userId)));
-  const ciphertext = Buffer.concat([cipher.update(String(packageId)), cipher.final()]);
+  const ciphertext = Buffer.concat([cipher.update(JSON.stringify(payload)), cipher.final()]);
   return Buffer.concat([iv, cipher.getAuthTag(), ciphertext]).toString("base64url");
 }
 
-function readPackageToken(token, userId, botToken) {
-  if (typeof token !== "string" || token.length > 128) return null;
+function openToken(token, userId, botToken) {
+  if (typeof token !== "string" || token.length > 512) return null;
   try {
     const bytes = Buffer.from(token, "base64url");
     if (bytes.length < 29) return null;
@@ -52,12 +52,36 @@ function readPackageToken(token, userId, botToken) {
     const decipher = crypto.createDecipheriv("aes-256-gcm", key, bytes.subarray(0, 12));
     decipher.setAAD(Buffer.from(String(userId)));
     decipher.setAuthTag(bytes.subarray(12, 28));
-    const id = Number(Buffer.concat([decipher.update(bytes.subarray(28)), decipher.final()]).toString());
-    return Number.isSafeInteger(id) && id > 0 ? id : null;
+    const value = JSON.parse(Buffer.concat([decipher.update(bytes.subarray(28)), decipher.final()]).toString());
+    if (!Number.isSafeInteger(value.id) || value.id <= 0 ||
+        !Number.isSafeInteger(value.at) || value.at > Date.now() + 60000 ||
+        Date.now() - value.at > 15 * 60000) return null;
+    return value;
   } catch { return null; }
 }
 
-function createMiniAppRouter({ botToken, getAccount, getPackages, getConnectUrl, sendBotFlow }) {
+function publicPackage(pkg, userId, botToken, changed = false) {
+  return { name: pkg.name, dataLimitGb: pkg.dataLimitGb, durationDays: pkg.durationDays,
+    priceMmk: pkg.priceMmk, changed,
+    selectionToken: sealToken({ kind: "selection", id: pkg.id, version: pkg.version,
+      at: Date.now() }, userId, botToken) };
+}
+
+function publicOrder(order) {
+  if (!order) return null;
+  const status = order.status === "PENDING_PAYMENT" && order.paymentProof
+    ? "PAYMENT_SUBMITTED" : order.status;
+  return { orderNumber: order.orderNumber, plan: order.plan,
+    amountMmk: Number(order.price), dataLimitGb: order.totalDataGb ?? null,
+    durationDays: order.totalDurationDays ?? null,
+    createdAt: order.createdAt?.toString() || null,
+    paymentMethod: order.paymentMethod || null, status };
+}
+const validOrderNumber = (value) => typeof value === "string" && /^VPN-[A-Za-z0-9-]{1,80}$/.test(value);
+
+function createMiniAppRouter({ botToken, getAccount, getPackages, getPackage,
+  createOrder, getOrder, getOrders, getPaymentMethods, selectPaymentMethod,
+  handoffProof, getConnectUrl, sendBotFlow }) {
   const router = express.Router();
   const publicDir = path.join(__dirname, "mini-app");
   router.use((req, res, next) => {
@@ -96,15 +120,101 @@ function createMiniAppRouter({ botToken, getAccount, getPackages, getConnectUrl,
   router.post("/api/overview", async (req, res) => {
     try {
       const packages = await getPackages();
-      res.json({ account: customerAccount(req.account), packages: packages.map((pkg) => ({
-        name: pkg.name, dataLimitGb: pkg.dataLimitGb, durationDays: pkg.durationDays,
-        priceMmk: pkg.priceMmk,
-        selectionToken: packageToken(pkg.id, req.telegramUser.id, botToken),
-      })) });
+      res.json({ account: customerAccount(req.account),
+        packages: packages.map((pkg) => publicPackage(pkg, req.telegramUser.id, botToken)) });
     } catch {
       console.error("Mini App account lookup failed.");
       res.status(503).json({ error: "We couldn't load your account." });
     }
+  });
+  router.post("/api/packages", async (req, res) => {
+    try {
+      const packages = await getPackages();
+      res.json({ packages: packages.map((pkg) => publicPackage(pkg, req.telegramUser.id, botToken)) });
+    } catch {
+      console.error("Mini App package lookup failed.");
+      res.status(503).json({ error: "We couldn't load packages." });
+    }
+  });
+  router.post("/api/package/detail", async (req, res) => {
+    const selected = openToken(req.body?.selectionToken, req.telegramUser.id, botToken);
+    if (selected?.kind !== "selection") return res.status(400).json({ error: "Select a package again." });
+    try {
+      const pkg = await getPackage(selected.id);
+      if (!pkg) return res.status(404).json({ error: "This package is no longer available." });
+      res.json({ package: publicPackage(pkg, req.telegramUser.id, botToken,
+        selected.version !== pkg.version),
+        confirmationToken: sealToken({ kind: "confirmation", id: pkg.id, version: pkg.version, at: Date.now() },
+          req.telegramUser.id, botToken) });
+    } catch {
+      console.error("Mini App package detail failed.");
+      res.status(503).json({ error: "We couldn't load this package." });
+    }
+  });
+  router.post("/api/order/create", async (req, res) => {
+    const selected = openToken(req.body?.confirmationToken, req.telegramUser.id, botToken);
+    if (selected?.kind !== "confirmation" || typeof selected.version !== "string")
+      return res.status(400).json({ error: "Review the package again." });
+    try {
+      const pkg = await getPackage(selected.id);
+      if (!pkg) return res.status(404).json({ error: "This package is no longer available." });
+      if (selected.version !== pkg.version) return res.status(409).json({
+        error: "Package details changed. Please review the current values.",
+        package: publicPackage(pkg, req.telegramUser.id, botToken, true),
+        confirmationToken: sealToken({ kind: "confirmation", id: pkg.id, version: pkg.version, at: Date.now() },
+          req.telegramUser.id, botToken),
+      });
+      const result = await createOrder(req.telegramUser, req.account, pkg.id, selected.version);
+      if (result?.changed) {
+        const current = await getPackage(selected.id);
+        if (!current) return res.status(404).json({ error: "This package is no longer available." });
+        return res.status(409).json({ error: "Package details changed. Please review again.",
+          package: publicPackage(current, req.telegramUser.id, botToken, true),
+          confirmationToken: sealToken({ kind: "confirmation", id: current.id, version: current.version, at: Date.now() },
+            req.telegramUser.id, botToken) });
+      }
+      if (!result?.order) return res.status(409).json({ error: "We couldn't create your order. Try again." });
+      res.json({ order: publicOrder(result.order), inProgress: Boolean(result.inProgress) });
+    } catch {
+      console.error("Mini App order creation failed.");
+      res.status(503).json({ error: "We couldn't create your order." });
+    }
+  });
+  router.post("/api/orders", async (req, res) => {
+    try { res.json({ orders: (await getOrders(req.telegramUser.id)).map(publicOrder) }); }
+    catch { console.error("Mini App order history failed."); res.status(503).json({ error: "We couldn't load orders." }); }
+  });
+  router.post("/api/order/status", async (req, res) => {
+    if (!validOrderNumber(req.body?.orderNumber))
+      return res.status(400).json({ error: "Invalid order." });
+    try {
+      const order = await getOrder(req.telegramUser.id, req.body.orderNumber);
+      if (!order) return res.status(404).json({ error: "Order not found." });
+      res.json({ order: publicOrder(order) });
+    } catch { console.error("Mini App order status failed."); res.status(503).json({ error: "We couldn't load this order." }); }
+  });
+  router.post("/api/payment-methods", async (req, res) => {
+    try { res.json({ methods: await getPaymentMethods() }); }
+    catch { console.error("Mini App payment methods failed."); res.status(503).json({ error: "Payment methods are unavailable." }); }
+  });
+  router.post("/api/order/payment-method", async (req, res) => {
+    const { orderNumber, method } = req.body || {};
+    if (!validOrderNumber(orderNumber) || typeof method !== "string" || method.length > 40)
+      return res.status(400).json({ error: "Invalid payment selection." });
+    try {
+      const order = await selectPaymentMethod(req.telegramUser.id, orderNumber, method);
+      if (!order) return res.status(409).json({ error: "This order cannot accept payment." });
+      res.json({ order: publicOrder(order) });
+    } catch { console.error("Mini App payment selection failed."); res.status(503).json({ error: "We couldn't select payment." }); }
+  });
+  router.post("/api/order/payment-proof-handoff", async (req, res) => {
+    const { orderNumber } = req.body || {};
+    if (!validOrderNumber(orderNumber)) return res.status(400).json({ error: "Invalid order." });
+    try {
+      const ok = await handoffProof(req.telegramUser.id, orderNumber);
+      if (!ok) return res.status(409).json({ error: "This order cannot accept proof." });
+      res.json({ ok: true });
+    } catch { console.error("Mini App payment proof handoff failed."); res.status(503).json({ error: "We couldn't open payment proof." }); }
   });
   router.post("/api/connect", async (req, res) => {
     try {
@@ -118,10 +228,11 @@ function createMiniAppRouter({ botToken, getAccount, getPackages, getConnectUrl,
   });
   router.post("/api/flow", async (req, res) => {
     const { flow, packageToken: selectionToken } = req.body || {};
-    const packageId = selectionToken === undefined ? undefined :
-      readPackageToken(selectionToken, req.telegramUser.id, botToken);
+    const selected = selectionToken === undefined ? undefined :
+      openToken(selectionToken, req.telegramUser.id, botToken);
+    const packageId = selected?.id;
     if (!["renew", "packages", "support"].includes(flow) ||
-        (selectionToken !== undefined && packageId === null)) {
+        (selectionToken !== undefined && selected?.kind !== "selection")) {
       return res.status(400).json({ error: "Invalid selection." });
     }
     try {

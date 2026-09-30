@@ -52,6 +52,7 @@ async function loadBot(existingTables = null, outlineKeys = new Map(), options =
           async first() { const row = selected()[0]; return row ? { ...row } : null; },
           async all() { return selected().map((row) => ({ ...row })); },
           orderBy() { return this; },
+          limit() { return this; },
           async update(data) {
             const row = selected()[0];
             assert.ok(row, `Missing ${name} for update`);
@@ -81,6 +82,7 @@ async function loadBot(existingTables = null, outlineKeys = new Map(), options =
   const keyCalls = [];
   const limitCalls = [];
   const missingKeys = new Set();
+  let miniAppCallbacks;
   let usageByKeyId = {};
   let existingKeyIds = new Set();
   let metricsUnavailable = false;
@@ -125,6 +127,7 @@ async function loadBot(existingTables = null, outlineKeys = new Map(), options =
     __dirname: __dirname,
     require(name) {
       if (name === "dotenv") return { config() {} };
+      if (name === "./mini-app") return { createMiniAppRouter(args) { miniAppCallbacks = args; return () => {}; } };
       if (name === "express") return () => fakeApp;
       if (name === "telegraf") return { ...localRequire(name), Telegraf: FakeTelegraf };
       if (name === "./db") return { async createDatabase() {
@@ -177,7 +180,8 @@ async function loadBot(existingTables = null, outlineKeys = new Map(), options =
     console: { log() {}, error(...args) { errors.push(args); }, warn() {} }, module: { exports: {} },
   });
   vm.runInContext(source.slice(0, source.lastIndexOf("\nstartBot().catch(")) + `
-    module.exports = { startBot, recoverStuckProcessingOrders, syncAccessKeyUsage };
+    module.exports = { startBot, recoverStuckProcessingOrders, syncAccessKeyUsage,
+      miniAppCreateOrder, packageVersion };
   `, context, { filename: file });
   await context.module.exports.startBot();
   await new Promise(setImmediate);
@@ -201,10 +205,13 @@ async function loadBot(existingTables = null, outlineKeys = new Map(), options =
     return call;
   }
   return { tables, client, events, handlers, sent, menuButtonCalls, menuButtonReads,
+    miniAppCallbacks,
     launchCalls, stopCalls, signals, exits, runtimeCloses, serverCloses, errors,
     keyCalls, limitCalls, missingKeys, ctx, action,
     recover: context.module.exports.recoverStuckProcessingOrders,
     syncUsage: context.module.exports.syncAccessKeyUsage,
+    miniAppCreateOrder: context.module.exports.miniAppCreateOrder,
+    packageVersion: context.module.exports.packageVersion,
     setUsage(value, ids) { usageByKeyId = value; existingKeyIds = new Set(ids); },
     setMetricsUnavailable(value) { metricsUnavailable = value; } };
 }
@@ -558,6 +565,67 @@ test("persistent reply buttons keep the existing customer actions functional", a
   assert.match((await press("⚡ Connect")).replies[0][0], /Setup VPN/);
   assert.match((await press("🎧 Support")).replies[0][0], /Metro Secure Support/);
   assert.equal(bot.tables.SupportTicket.length, 1);
+});
+
+test("Mini App checkout reuses current package snapshots and prevents rapid duplicate orders", async () => {
+  const bot = await loadBot();
+  bot.tables.Customer.push({ id: 1, telegramId: "123", firstName: "Buyer" });
+  bot.tables.Customer.push({ id: 2, telegramId: "456", firstName: "Renewing" });
+  const basic = bot.tables.Package.find((pkg) => pkg.id === 7);
+  const originalVersion = bot.packageVersion(basic);
+  basic.priceMmk = "3450";
+  basic.dataLimitGb = 55;
+  basic.durationDays = 33;
+  const changed = await bot.miniAppCreateOrder({ id: 123, first_name: "Buyer" }, {}, 7, originalVersion);
+  assert.equal(changed.changed, true);
+  assert.equal(bot.tables.Order.length, 0);
+  const currentVersion = bot.packageVersion(basic);
+  const bought = await bot.miniAppCreateOrder({ id: 123, first_name: "Buyer" }, {}, 7, currentVersion);
+  assert.equal(bought.order.status, "PENDING_PAYMENT");
+  assert.equal(bought.order.customerId, 1);
+  assert.equal(bought.order.plan, "Basic - 1 Month");
+  assert.equal(Number(bought.order.price), 3450);
+  assert.equal(bought.order.totalDataGb, 55);
+  assert.equal(bought.order.totalDurationDays, 33);
+  const repeated = await bot.miniAppCreateOrder({ id: 123, first_name: "Buyer" }, {}, 7, currentVersion);
+  assert.equal(repeated.inProgress, true);
+  assert.equal(repeated.order.orderNumber, bought.order.orderNumber);
+  assert.equal(bot.tables.Order.length, 1);
+  bot.tables.Subscription.push({ id: 1, customerId: 2, status: "ACTIVE",
+    expiresAt: Temporal.Now.instant().add({ hours: 24 * 20 }), revokedAt: null,
+    vpnKeyId: "existing-key", vpnKey: "ss://synthetic@192.0.2.1:1234" });
+  const renewed = await bot.miniAppCreateOrder({ id: 456, first_name: "Renewing" }, {}, 7, currentVersion);
+  assert.equal(renewed.order.customerId, 2);
+  assert.equal(renewed.order.status, "PENDING_PAYMENT");
+  assert.equal(renewed.order.totalDataGb, 55);
+  assert.equal(bot.tables.Subscription[0].dataLimitGb, undefined);
+  assert.equal(bot.keyCalls.length, 0);
+});
+
+test("Mini App payment handoff keeps order ownership and uses the bot photo review flow", async () => {
+  const bot = await loadBot();
+  bot.tables.Customer.push({ id: 1, telegramId: "123", firstName: "Buyer" });
+  bot.tables.Customer.push({ id: 2, telegramId: "456", firstName: "Other" });
+  const pkg = bot.tables.Package.find((item) => item.id === 7);
+  const { order } = await bot.miniAppCreateOrder({ id: 123, first_name: "Buyer" }, {},
+    pkg.id, bot.packageVersion(pkg));
+  assert.equal((await bot.miniAppCallbacks.getOrder(456, order.orderNumber)), null);
+  assert.equal((await bot.miniAppCallbacks.getOrders(456)).length, 0);
+  assert.equal((await bot.miniAppCallbacks.getOrders(123)).length, 1);
+  assert.equal((await bot.miniAppCallbacks.selectPaymentMethod(456, order.orderNumber, "mobile_wallet")), null);
+  assert.equal((await bot.miniAppCallbacks.handoffProof(456, order.orderNumber)), false);
+  const methods = await bot.miniAppCallbacks.getPaymentMethods();
+  assert.equal(methods.some((method) => method.accountNumber === "YOUR_ACCOUNT_NUMBER"), false);
+  assert.equal(methods.some((method) => method.code === "mobile_wallet"), true);
+  const selected = await bot.miniAppCallbacks.selectPaymentMethod(123, order.orderNumber, "mobile_wallet");
+  assert.equal(selected.paymentMethod, "mobile_wallet");
+  assert.equal(await bot.miniAppCallbacks.handoffProof(123, order.orderNumber), true);
+  assert.match(bot.sent.at(-1).args[1], /Send your payment screenshot/);
+  const photo = bot.ctx(123);
+  photo.message = { photo: [{ file_id: "synthetic-proof", file_size: 1024 }] };
+  await bot.events.photo(photo);
+  assert.equal(bot.tables.Order[0].paymentProof, "synthetic-proof");
+  assert.equal(bot.keyCalls.length, 0);
 });
 
 test("start registers a customer and empty VPN states stay customer friendly", async () => {

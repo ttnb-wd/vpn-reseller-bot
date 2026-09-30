@@ -60,6 +60,7 @@ app.get("/", (req, res) => {
 let server;
 
 let bot;
+let miniAppSupportService;
 
 const ADMIN_TELEGRAM_ID = String(
   process.env.ADMIN_TELEGRAM_ID
@@ -75,6 +76,7 @@ const allowNewOrder = createWindowLimiter({ windowMs: 60000, max: 6 });
 const allowMiniFlow = createWindowLimiter({ windowMs: 60000, max: 6 });
 const allowMiniConnect = createWindowLimiter({ windowMs: 60000, max: 12 });
 const recentConfirmations = new Map();
+const MINI_PAYMENT_CALLBACKS = { bank_transfer: "bank", mobile_wallet: "wallet" };
 
 const PROCESSING_TIMEOUT_MINUTES = 15;
 
@@ -1129,6 +1131,41 @@ async function createPackageOrder(
   }
 }
 
+async function miniAppOwnedOrder(telegramId, orderNumber) {
+  const { customer } = await findCustomerSubscription(telegramId);
+  if (!customer) return null;
+  return db.public.Order.where({ customerId: customer.id, orderNumber }).first();
+}
+
+async function miniAppCreateOrder(telegramUser, _account, packageId, confirmedVersion) {
+  const { customer, subscription } = await findCustomerSubscription(telegramUser.id);
+  if (!customer) return null;
+  const isRenewal = isSubscriptionActive(subscription);
+  for (const status of ["PENDING_PAYMENT", "PROCESSING"]) {
+    const current = await db.public.Order.where({ customerId: customer.id, status })
+      .orderBy((order) => order.createdAt.desc()).first();
+    const created = current?.createdAt?.epochMilliseconds === undefined
+      ? new Date(current?.createdAt).getTime() : Number(current.createdAt.epochMilliseconds);
+    if (current && Number.isFinite(created) && Date.now() - created < 24 * 60 * 60 * 1000)
+      return { order: current, inProgress: true };
+  }
+  // The existing order helper uses a Telegram confirmation message to derive
+  // an idempotent purchase ID. A stable minute bucket provides that identity
+  // for Mini App confirmations, including concurrent taps and retries.
+  const confirmationMinute = Math.floor(Date.now() / 60000);
+  const ctx = {
+    from: telegramUser,
+    chat: { id: telegramUser.id, type: "private" },
+    callbackQuery: { message: { chat: { id: telegramUser.id }, message_id: confirmationMinute } },
+    async reply() {},
+  };
+  const order = await createPackageOrder(ctx, packageId, 1, isRenewal, confirmedVersion);
+  if (order) return { order, inProgress: false };
+  const latest = await getPackageById(packageId);
+  return latest && packageVersion(latest) !== confirmedVersion
+    ? { changed: true } : { order: null };
+}
+
 const miniAppRouter = createMiniAppRouter({
   botToken: process.env.BOT_TOKEN,
   async getAccount(telegramId, telegramUser) {
@@ -1160,7 +1197,60 @@ const miniAppRouter = createMiniAppRouter({
     return (await getActivePackages()).map((pkg) => ({
       id: pkg.id, name: pkg.name, dataLimitGb: pkg.dataLimitGb,
       durationDays: pkg.durationDays, priceMmk: Number(pkg.priceMmk),
+      version: packageVersion(pkg),
     }));
+  },
+  async getPackage(packageId) {
+    const pkg = await getPackageById(packageId);
+    return pkg ? { id: pkg.id, name: pkg.name, dataLimitGb: pkg.dataLimitGb,
+      durationDays: pkg.durationDays, priceMmk: Number(pkg.priceMmk),
+      version: packageVersion(pkg) } : null;
+  },
+  createOrder: miniAppCreateOrder,
+  getOrder: miniAppOwnedOrder,
+  async getOrders(telegramId) {
+    const { customer } = await findCustomerSubscription(telegramId);
+    if (!customer) return [];
+    return db.public.Order.where({ customerId: customer.id })
+      .orderBy((order) => order.createdAt.desc()).limit(20).all();
+  },
+  async getPaymentMethods() {
+    return Object.entries(PAYMENT_METHODS)
+      .filter(([code, method]) => MINI_PAYMENT_CALLBACKS[code] && method.name &&
+        method.accountName && method.accountNumber &&
+        !String(method.accountName).startsWith("YOUR_") &&
+        !String(method.accountNumber).startsWith("YOUR_"))
+      .map(([code, method]) => ({ code, name: method.name,
+        accountName: method.accountName, accountNumber: method.accountNumber }));
+  },
+  async selectPaymentMethod(telegramId, orderNumber, methodCode) {
+    const method = PAYMENT_METHODS[methodCode];
+    if (!MINI_PAYMENT_CALLBACKS[methodCode] || !method || !method.accountName || !method.accountNumber ||
+        String(method.accountName).startsWith("YOUR_") ||
+        String(method.accountNumber).startsWith("YOUR_")) return null;
+    const order = await miniAppOwnedOrder(telegramId, orderNumber);
+    if (!order || order.status !== "PENDING_PAYMENT" || order.paymentProof) return null;
+    const updated = await db.public.Order.where({ id: order.id, customerId: order.customerId,
+      status: "PENDING_PAYMENT" }).update({ paymentMethod: methodCode });
+    if (!updated) return null;
+    await miniAppSupportService.pauseCustomer(telegramId);
+    pendingProofs.set(String(telegramId), order.id);
+    return updated;
+  },
+  async handoffProof(telegramId, orderNumber) {
+    const order = await miniAppOwnedOrder(telegramId, orderNumber);
+    if (!order || order.status !== "PENDING_PAYMENT" || !MINI_PAYMENT_CALLBACKS[order.paymentMethod] ||
+        order.paymentProof) return false;
+    await miniAppSupportService.pauseCustomer(telegramId);
+    pendingProofs.set(String(telegramId), order.id);
+    await bot.telegram.sendMessage(telegramId,
+      `🧾 Order ${order.orderNumber}\n\nSend your payment screenshot as a photo in this chat. Admin review starts after your proof is received.`,
+      Markup.inlineKeyboard([[
+        Markup.button.callback(`Use ${PAYMENT_METHODS[order.paymentMethod].name}`,
+          `payment_${MINI_PAYMENT_CALLBACKS[order.paymentMethod]}_${order.id}`),
+        Markup.button.callback("🗂️ My Orders", "my_orders"),
+      ]]));
+    return true;
   },
   async getConnectUrl(telegramId) {
     if (!allowMiniConnect(telegramId)) return null;
@@ -1313,6 +1403,7 @@ async function startBot() {
     db, bot, adminTelegramId: ADMIN_TELEGRAM_ID, isAdmin,
     helpKeyboard: buildHelpKeyboard,
   });
+  miniAppSupportService = supportService;
   telegramAdmin = createTelegramAdmin({ bot, db, adminTelegramId: ADMIN_TELEGRAM_ID,
     supportService });
   async function renderNavigationScreen(ctx, screen) {
