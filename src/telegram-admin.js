@@ -1,6 +1,7 @@
 const { Markup } = require("telegraf");
 const data = require("./admin-data");
 const { logHandlerFailure } = require("./safe-diagnostics");
+const { effectiveSubscriptionState } = require("./subscription-state");
 
 const FIELDS = { name: "Name", priceMmk: "Price", dataLimitGb: "Data Limit GB",
   durationDays: "Duration Days", sortOrder: "Sort Order" };
@@ -17,11 +18,8 @@ function date(value) {
 }
 function status(sub) {
   if (!sub) return "No subscription";
-  if (sub.revokedAt || sub.status !== "ACTIVE") return "Inactive";
-  if (!sub.expiresAt) return "Inactive";
-  const expiry = sub.expiresAt?.epochMilliseconds === undefined
-    ? new Date(sub.expiresAt).getTime() : Number(sub.expiresAt.epochMilliseconds);
-  return Number.isFinite(expiry) && expiry <= Date.now() ? "Expired" : "Active";
+  return ({ ACTIVE: "Active", DATA_LIMIT_REACHED: "Data Limit Reached",
+    EXPIRED: "Expired", REVOKED: "Revoked" })[effectiveSubscriptionState(sub)];
 }
 const nav = (back) => [[button("⬅️ Back", back), button("🏠 Admin Menu", "menu")]];
 function pager(page, pages, section) {

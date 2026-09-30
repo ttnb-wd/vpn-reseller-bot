@@ -7,9 +7,8 @@ function dashboardView(account, now = Date.now()) {
   const remaining = limit !== null && used !== null ? Math.max(0, limit - used) : null;
   const expiry = a.expiresAt ? new Date(a.expiresAt).getTime() : NaN;
   const days = Number.isFinite(expiry) ? Math.max(0, Math.ceil((expiry - now) / 86400000)) : null;
-  const status = !hasSubscription ? "NONE" : a.status === "REVOKED" ? "REVOKED" :
-    a.status === "EXPIRED" || Number.isFinite(expiry) && expiry <= now ? "EXPIRED" :
-    a.status === "ACTIVE" ? "ACTIVE" : "INACTIVE";
+  // The backend applies the shared subscription-state rule for every customer surface.
+  const status = hasSubscription ? a.status : "NONE";
   const warning = percent === null || percent < 80 ? "" :
     percent >= 100 ? "Data limit reached" :
     percent >= 95 ? "Very little data remains. Renew your VPN to keep browsing." :
@@ -48,7 +47,8 @@ if (typeof document !== "undefined") (() => {
   const orderStatus = { PENDING_PAYMENT: "Pending Payment", PAYMENT_SUBMITTED: "Payment Submitted",
     PROCESSING: "Processing", PAID: "Activated", PAYMENT_REJECTED: "Rejected",
     CANCELLED: "Cancelled", EXPIRED: "Expired" };
-  const statusLabel = { ACTIVE: "🟢 Active", EXPIRED: "⛔ Expired", REVOKED: "⛔ VPN Unavailable",
+  const statusLabel = { ACTIVE: "🟢 Active", DATA_LIMIT_REACHED: "⛔ Data Limit Reached",
+    EXPIRED: "⛔ VPN Expired", REVOKED: "⛔ VPN Unavailable",
     INACTIVE: "VPN Unavailable", NONE: "No Active VPN" };
   if (tg) { tg.ready(); tg.expand(); }
   async function api(endpoint, extra = {}) {
@@ -93,8 +93,8 @@ if (typeof document !== "undefined") (() => {
     title.textContent = view.status === "REVOKED" ? "VPN Unavailable" :
       view.status === "EXPIRED" ? "VPN Expired" : "No active VPN yet";
     const detail = document.createElement("p");
-    detail.textContent = view.status === "REVOKED" ? "Please contact Support for help with this VPN." :
-      view.status === "EXPIRED" ? `Expired on ${date(state.account.expiresAt)}` :
+    detail.textContent = view.status === "REVOKED" ? "Contact Support" :
+      view.status === "EXPIRED" ? "Your subscription period has ended." :
         "Choose a package to get started.";
     const button = document.createElement("button");
     button.type = "button"; button.className = "primary-button";
@@ -549,8 +549,9 @@ if (typeof document !== "undefined") (() => {
     set("greeting", a.displayName ? `Welcome, ${a.displayName}` : "Your private network");
     set("home-status", statusLabel[v.status]);
     $("home-status").dataset.status = v.status;
-    set("home-status-detail", v.status === "EXPIRED" ? `Expired on ${date(a.expiresAt)}` :
-      v.status === "REVOKED" ? "Contact Support for help with this VPN." :
+    set("home-status-detail", v.status === "EXPIRED" ? "Your subscription period has ended. Renew VPN." :
+      v.status === "DATA_LIMIT_REACHED" ? "Your package data has been fully used. Renew VPN." :
+      v.status === "REVOKED" ? "Contact Support" :
       v.status === "NONE" ? "Choose a package to get started." :
         v.status === "ACTIVE" && v.days !== null && v.days <= 7 ? "⚠️ Expiring Soon" : "");
     const normal = v.status === "ACTIVE";
@@ -589,7 +590,7 @@ if (typeof document !== "undefined") (() => {
       set("usage-expiry", date(a.expiresAt));
       set("usage-warning", v.warning); show("usage-warning", Boolean(v.warning));
     }
-    show("usage-renew-button", v.status === "EXPIRED" || v.percent !== null && v.percent >= 100);
+    show("usage-renew-button", v.status === "EXPIRED" || v.status === "DATA_LIMIT_REACHED");
     renderPackages();
   }
   async function load(force = false) {

@@ -253,6 +253,12 @@ test("existing-key HTTPS setup", async (t) => {
       assert.equal(account.status, "EXPIRED");
       assert.equal(account.canConnect, false);
       assert.equal((await post("connect")).status, 409);
+      subscription = { ...original, dataUsedGb: 100, dataLimitGb: 100 };
+      account = (await (await post("overview")).json()).account;
+      assert.equal(account.status, "DATA_LIMIT_REACHED");
+      assert.equal(account.canConnect, false);
+      assert.equal((await post("connect")).status, 409);
+      assert.equal(bot.createKeyCalls, 0);
       subscription = { ...original, revokedAt: Temporal.Now.instant() };
       account = (await (await post("overview")).json()).account;
       assert.equal(account.status, "REVOKED");
@@ -288,6 +294,7 @@ test("existing-key HTTPS setup", async (t) => {
     for (const change of [
       { status: "EXPIRED" }, { revokedAt: Temporal.Now.instant() },
       { expiresAt: Temporal.Now.instant().subtract({ seconds: 1 }) },
+      { dataUsedGb: 100, dataLimitGb: 100 },
       { vpnKey: null }, { vpnKeyId: null }, { vpnKeyId: "" },
       { vpnKeyId: "mock-123" }, { vpnKey: "https://wrong.example.test" },
       { vpnKey: "ssconf://wrong.example.test" },

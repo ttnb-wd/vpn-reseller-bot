@@ -18,6 +18,8 @@ const { buildCustomerMenu, buildPersistentCustomerKeyboard,
   buildPersistentAdminKeyboard } = require("./customer-menu");
 const { createWindowLimiter } = require("./abuse-limits");
 const { createMiniAppRouter } = require("./mini-app");
+const { effectiveSubscriptionState } = require("./subscription-state");
+const { createExpiryWorker } = require("./expiry-worker");
 const { safeDiagnosticCode, sanitizeDiagnosticMessage,
   logHandlerFailure } = require("./safe-diagnostics");
 
@@ -29,6 +31,7 @@ const {
   getAllAccessKeyUsage,
   getExistingAccessKeyIds,
   isAccessKeyNotFoundError,
+  deleteAccessKey,
 } = require("./outline");
 
 const app = express();
@@ -70,6 +73,7 @@ const ADMIN_TELEGRAM_ID = String(
 let db;
 let usageSyncTimer;
 let usageSyncRunning = false;
+let expiryWorker;
 
 const pendingProofs = new Map();
 const allowConnect = createWindowLimiter({ windowMs: 60000, max: 30 });
@@ -395,13 +399,7 @@ function formatInstant(instant) {
 }
 
 function isSubscriptionActive(subscription, now = Temporal.Now.instant()) {
-  return Boolean(
-    subscription &&
-      subscription.status === "ACTIVE" &&
-      !subscription.revokedAt &&
-      subscription.expiresAt &&
-      Temporal.Instant.compare(subscription.expiresAt, now) > 0
-  );
+  return effectiveSubscriptionState(subscription, now) === "ACTIVE";
 }
 
 function isValidOutlineAccessKey(value) {
@@ -899,7 +897,10 @@ async function syncAccessKeyUsage() {
   try {
     const usageByKeyId = await getAllAccessKeyUsage();
     const existingKeyIds = await getExistingAccessKeyIds();
-    const subscriptions = await db.public.Subscription.where({ status: "ACTIVE" }).all();
+    const subscriptions = [
+      ...await db.public.Subscription.where({ status: "ACTIVE" }).all(),
+      ...await db.public.Subscription.where({ status: "DATA_LIMIT_REACHED" }).all(),
+    ];
     let updated = 0;
     let skipped = 0;
 
@@ -922,10 +923,27 @@ async function syncAccessKeyUsage() {
       try {
         // Match the same 1024^3 GB unit used for Outline data limits.
         const dataUsedGb = bytes / GB_IN_BYTES;
+        if (subscription.status === "DATA_LIMIT_REACHED") {
+          // Outline's rolling counter can later decrease. Keep the reached
+          // purchase blocked until an approved renewal restores the allowance.
+          await setAccessKeyDataLimit(keyId, 0);
+          updated++;
+          continue;
+        }
+        const limitGb = Number(subscription.dataLimitGb);
+        const reached = Number.isFinite(limitGb) && limitGb > 0 &&
+          dataUsedGb >= limitGb;
+        if (!Number.isFinite(limitGb) || limitGb <= 0) {
+          skipped++;
+          continue;
+        }
+        await setAccessKeyDataLimit(keyId, gbToBytes(limitGb));
         const changed = await db.public.Subscription
-          .where({ id: subscription.id, vpnKeyId: keyId, status: "ACTIVE" })
-          .updateAll({ dataUsedGb });
+          .where({ id: subscription.id, vpnKeyId: keyId, status: "ACTIVE",
+            dataLimitGb: subscription.dataLimitGb })
+          .updateAll({ dataUsedGb, ...(reached ? { status: "DATA_LIMIT_REACHED" } : {}) });
         updated += changed.length;
+        if (reached && changed.length) await setAccessKeyDataLimit(keyId, 0);
       } catch {
         skipped++;
       }
@@ -1166,7 +1184,7 @@ async function sendAdminProofReview(order, photo, deferActions = false) {
 async function miniAppCreateOrder(telegramUser, _account, packageId, confirmedVersion) {
   const { customer, subscription } = await findCustomerSubscription(telegramUser.id);
   if (!customer) return null;
-  const isRenewal = isSubscriptionActive(subscription);
+  const isRenewal = Boolean(subscription);
   for (const status of ["PENDING_PAYMENT", "PROCESSING"]) {
     const current = await db.public.Order.where({ customerId: customer.id, status })
       .orderBy((order) => order.createdAt.desc()).first();
@@ -1199,17 +1217,15 @@ const miniAppRouter = createMiniAppRouter({
   getSupportService: () => miniAppSupportService,
   async getAccount(telegramId, telegramUser) {
     const { customer, subscription } = await findCustomerSubscription(telegramId);
-    const active = isSubscriptionActive(subscription);
-    const expired = Boolean(subscription?.expiresAt &&
-      Temporal.Instant.compare(subscription.expiresAt, Temporal.Now.instant()) <= 0);
+    const state = subscription ? effectiveSubscriptionState(subscription) : "NONE";
+    const active = state === "ACTIVE";
     const configuredLabel = process.env.VPN_SERVER_LABEL || process.env.VPN_REGION || "";
     const serverLabel = /^[\p{L}][\p{L}\p{N} '-]{0,39}$/u.test(configuredLabel)
       ? configuredLabel : "VPN server";
     return {
       customerExists: Boolean(customer),
       hasSubscription: Boolean(subscription),
-      status: subscription?.revokedAt ? "REVOKED" : active ? "ACTIVE" :
-        expired ? "EXPIRED" : subscription ? "INACTIVE" : "NONE",
+      status: state,
       displayName: customer?.firstName || telegramUser?.first_name || null,
       plan: subscription?.plan || null,
       dataUsedGb: subscription?.dataUsedGb ?? null,
@@ -1396,6 +1412,12 @@ async function startBot() {
   db = database.client;
   console.log("PostgreSQL connected.");
 
+  expiryWorker = createExpiryWorker({ client: db, deleteAccessKey,
+    blockAccessKey: (keyId) => setAccessKeyDataLimit(keyId, 0),
+    restoreAccessKey: (keyId, limitGb) => setAccessKeyDataLimit(keyId, gbToBytes(limitGb)),
+    isAccessKeyNotFoundError, schedule: setInterval, cancel: clearInterval });
+  expiryWorker.start();
+
   startupStage = "PROCESSING recovery";
   await recoverStuckProcessingOrders();
   startProcessingRecovery();
@@ -1576,15 +1598,18 @@ async function startBot() {
         );
       }
 
-      const subscriptionActive = isSubscriptionActive(subscription);
-      const statusLabel = subscriptionActive
-        ? "အသုံးပြုနိုင်ပါသည်"
-        : "အသုံးပြုမရပါ";
+      const state = effectiveSubscriptionState(subscription);
+      const subscriptionActive = state === "ACTIVE";
+      const statusLabel = subscriptionActive ? "Active" : state === "DATA_LIMIT_REACHED"
+        ? "Data Limit Reached" : state === "EXPIRED" ? "VPN Expired" : "VPN Unavailable";
 
       if (!subscriptionActive) {
         return await ctx.reply(
-          `🌐 My VPN\n\nအခြေအနေ: ${statusLabel}\n\nVPN ကို လက်ရှိ အသုံးပြုမရပါ။ သက်တမ်းတိုးဖို့ ♻️ Renew ကိုနှိပ်ပါ။`,
-          renewBuyKeyboard()
+          `🌐 My VPN\n\n${statusLabel}\n\n${state === "DATA_LIMIT_REACHED"
+            ? "Your package data has been fully used.\nRenew VPN"
+            : state === "EXPIRED" ? "Your subscription period has ended.\nRenew VPN"
+              : "Contact Support"}`,
+          state === "REVOKED" ? buildHelpKeyboard() : renewBuyKeyboard()
         );
       }
 
@@ -2788,6 +2813,10 @@ async function startBot() {
                 null,
             });
 
+          // Expiry recovery may have blocked this key while the order was
+          // PROCESSING. Confirm the approved allowance after the DB extension.
+          await setAccessKeyDataLimit(renewalAccessKey.id, newDataLimitBytes);
+
           // ---------------------------------
           // 18. Mark renewal order PAID
           // ---------------------------------
@@ -3205,6 +3234,7 @@ async function startBot() {
     );
 
     clearInterval(usageSyncTimer);
+    await expiryWorker?.stop();
     try {
       bot.stop(signal);
     } catch (error) {

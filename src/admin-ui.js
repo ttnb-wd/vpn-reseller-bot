@@ -1,5 +1,6 @@
 const crypto = require("crypto");
 const { Temporal } = require("@js-temporal/polyfill");
+const { effectiveSubscriptionState } = require("./subscription-state");
 
 function escapeHtml(value) {
   return String(value).replace(/[&<>"']/g, (char) => ({
@@ -46,14 +47,10 @@ function formatDate(value) {
 
 function subscriptionState(subscription, now = Temporal.Now.instant()) {
   if (!subscription) return { label: "No subscription", className: "muted" };
-  if (subscription.revokedAt) return { label: "Revoked", className: "inactive" };
-  if (subscription.status !== "ACTIVE") {
-    return { label: `Inactive (${subscription.status})`, className: "inactive" };
-  }
-  if (!subscription.expiresAt) return { label: "Inactive", className: "inactive" };
-  const expires = subscription.expiresAt.epochMilliseconds !== undefined
-    ? Number(subscription.expiresAt.epochMilliseconds) : new Date(subscription.expiresAt).getTime();
-  if (expires <= Number(now.epochMilliseconds)) return { label: "Expired", className: "expired" };
+  const state = effectiveSubscriptionState(subscription, now);
+  if (state === "REVOKED") return { label: "Revoked", className: "inactive" };
+  if (state === "EXPIRED") return { label: "Expired", className: "expired" };
+  if (state === "DATA_LIMIT_REACHED") return { label: "Data Limit Reached", className: "expired" };
   return { label: "Active", className: "active" };
 }
 

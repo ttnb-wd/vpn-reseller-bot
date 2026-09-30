@@ -146,6 +146,9 @@ async function loadBot(existingTables = null, outlineKeys = new Map(), options =
     require(name) {
       if (name === "dotenv") return { config() {} };
       if (name === "./mini-app") return { createMiniAppRouter(args) { miniAppCallbacks = args; return () => {}; } };
+      if (name === "./expiry-worker") return { createExpiryWorker() {
+        return { start() {}, stop() {} };
+      } };
       if (name === "express") return () => fakeApp;
       if (name === "telegraf") return { ...localRequire(name), Telegraf: FakeTelegraf };
       if (name === "./db") return { async createDatabase() {
@@ -282,6 +285,31 @@ test("usage sync records real 30-day key usage and skips unsafe or missing metri
   bot.setUsage({}, ["real-1"]);
   await bot.syncUsage();
   assert.equal(subscription.dataUsedGb, 0);
+  assert.equal(bot.keyCalls.length, 0);
+});
+
+test("reaching a purchased quota latches the existing key closed until renewal", async () => {
+  const bot = await loadBot();
+  bot.tables.Customer.push({ id: 1, telegramId: "123" });
+  const subscription = { id: 1, customerId: 1, packageId: 7, plan: "Basic",
+    status: "ACTIVE", vpnKeyId: "real-quota-1",
+    vpnKey: "ss://synthetic@192.0.2.1:1234", dataUsedGb: 0,
+    dataLimitGb: 50, revokedAt: null,
+    expiresAt: Temporal.Now.instant().add({ hours: 24 }) };
+  bot.tables.Subscription.push(subscription);
+  bot.setUsage({ "real-quota-1": 50 * 1024 ** 3 }, ["real-quota-1"]);
+  await bot.syncUsage();
+  assert.equal(subscription.status, "DATA_LIMIT_REACHED");
+  assert.equal(subscription.dataUsedGb, 50);
+  assert.equal(bot.limitCalls.at(-1).bytes, 0);
+  assert.equal((await bot.miniAppCallbacks.getAccount(123)).status, "DATA_LIMIT_REACHED");
+  assert.equal(await bot.miniAppCallbacks.getConnectUrl(123), null);
+  assert.match((await bot.action("my_vpn")).replies[0][0], /Data Limit Reached/);
+  bot.setUsage({ "real-quota-1": 1 * 1024 ** 3 }, ["real-quota-1"]);
+  await bot.syncUsage();
+  assert.equal(subscription.dataUsedGb, 50);
+  assert.equal(subscription.status, "DATA_LIMIT_REACHED");
+  assert.equal(bot.limitCalls.at(-1).bytes, 0);
   assert.equal(bot.keyCalls.length, 0);
 });
 
@@ -1206,6 +1234,8 @@ test("renewal retry after the subscription write keeps the exact expiry and data
   const bot = await loadBot();
   await bot.action(await confirmationButton(bot, 19));
   await bot.action("approve_payment_1", 999);
+  bot.tables.Subscription[0].status = "DATA_LIMIT_REACHED";
+  bot.tables.Subscription[0].dataUsedGb = bot.tables.Subscription[0].dataLimitGb;
   await bot.action(await confirmationButton(bot, 19, 1, true), 123, 88);
   const originalWhere = bot.client.public.Order.where;
   let failed = false;
@@ -1225,6 +1255,7 @@ test("renewal retry after the subscription write keeps the exact expiry and data
   const subscription = bot.tables.Subscription[0];
   const expiry = subscription.expiresAt.toString();
   const limit = subscription.dataLimitGb;
+  assert.equal(subscription.status, "ACTIVE");
   assert.equal(bot.tables.Order[1].status, "PROCESSING");
   bot.tables.Order[1].processingAt = Temporal.Now.instant().subtract({ minutes: 20 });
   await bot.recover();

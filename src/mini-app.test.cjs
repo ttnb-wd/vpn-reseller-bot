@@ -139,8 +139,10 @@ test("dashboard handles subscription and usage states", () => {
   assert.equal(dashboardView({}, now).status, "NONE");
   assert.deepEqual([dashboardView(base, now).status, dashboardView(base, now).days,
     dashboardView(base, now).remaining], ["ACTIVE", 18, 65]);
-  assert.equal(dashboardView({ ...base, expiresAt: "2026-09-30T00:00:00Z" }, now).status, "EXPIRED");
+  assert.equal(dashboardView({ ...base, status: "EXPIRED", expiresAt: "2026-09-30T00:00:00Z" }, now).status, "EXPIRED");
   assert.equal(dashboardView({ ...base, status: "REVOKED" }, now).status, "REVOKED");
+  assert.equal(dashboardView({ ...base, status: "DATA_LIMIT_REACHED",
+    dataUsedGb: 100 }, now).status, "DATA_LIMIT_REACHED");
   assert.equal(dashboardView(base, now).warning, "");
   assert.match(dashboardView({ ...base, dataUsedGb: 80 }, now).warning, /getting close/);
   assert.match(dashboardView({ ...base, dataUsedGb: 95 }, now).warning, /Very little/);
