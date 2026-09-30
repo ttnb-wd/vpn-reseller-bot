@@ -25,6 +25,62 @@ test("Telegram Mini App rejects tampering and stale sessions", () => {
   assert.equal(verifyTelegramInitData(signedData(42) + "&user=%7B%7D", token), null);
 });
 
+test("Mini App Support stays inside the app and validates every customer request", async () => {
+  const calls = [];
+  const conversations = new Map();
+  const service = {
+    async openOrResumeTicket(id) { calls.push(["open", id]); return { customer: { id } }; },
+    async listMessages(id) { calls.push(["list", id]); return { messages: conversations.get(id) || [] }; },
+    async sendCustomerMessage(id, text) {
+      calls.push(["send", id, text]);
+      conversations.set(id, [...(conversations.get(id) || []),
+        { sender: "customer", text, createdAt: "2026-09-30T00:00:00Z" }]);
+      return { ok: true };
+    },
+  };
+  const app = express();
+  app.use("/app", createMiniAppRouter({ botToken: token,
+    async getAccount() { return { customerExists: true }; },
+    getSupportService() { return service; },
+  }));
+  const server = app.listen(0, "127.0.0.1");
+  await new Promise((resolve) => server.once("listening", resolve));
+  const base = `http://127.0.0.1:${server.address().port}/app`;
+  const post = (route, initData, extra = {}) => fetch(`${base}/api/support/${route}`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ initData, ...extra }),
+  });
+  try {
+    const html = await (await fetch(base)).text();
+    const js = await (await fetch(`${base}/app.js`)).text();
+    const css = await (await fetch(`${base}/app.css`)).text();
+    assert.match(html, /id="support-panel"/);
+    assert.match(js, /navigate\("support"\)/);
+    assert.doesNotMatch(html + js, /Send Payment Proof in Bot|Contact Support in Bot|Opening Support in the bot|Send your payment screenshot as a photo/);
+    assert.doesNotMatch(html, /<button[^>]*>[^<]*[⚡♻🎧📊🗂↻←⌂⬡◆]/u);
+    assert.match(css, /\.action-stack\{display:flex;flex-direction:column;gap:15px/);
+    assert.match(css, /\.primary-button\{border:0;background:linear-gradient/);
+    assert.match(css, /\.secondary-button\{border:1px solid/);
+    assert.match(js, /api\("support\/send"/);
+    assert.match(js, /setInterval\([\s\S]*?10000\)/);
+    assert.match(js, /clearInterval\(state\.supportTimer\)/);
+    assert.match(js, /api\/order\/payment-proof-upload/);
+    assert.doesNotMatch(js, /payment-proof-handoff|api\("flow"/);
+    assert.match(readFileSync(path.join(__dirname, "customer-menu.js"), "utf8"), /🎧 Support/);
+    assert.equal((await post("open", "invalid")).status, 401);
+    assert.equal((await post("messages", signedData(42, Math.floor(Date.now() / 1000) - 3601))).status, 401);
+    assert.equal(calls.length, 0);
+    assert.equal((await post("open", signedData(42))).status, 200);
+    assert.equal((await post("send", signedData(42), { text: "My order needs help", customerId: 77, ticketId: 777 })).status, 200);
+    const other = await (await post("messages", signedData(77), { customerId: 42, ticketId: 1 })).json();
+    assert.deepEqual(other, { messages: [] });
+    const own = await (await post("messages", signedData(42))).json();
+    assert.equal(own.messages[0].text, "My order needs help");
+    assert.equal(JSON.stringify(own).includes("ticketId"), false);
+    assert.deepEqual(calls.filter(([kind]) => kind === "send"), [["send", 42, "My order needs help"]]);
+  } finally { await new Promise((resolve) => server.close(resolve)); }
+});
+
 test("Mini App serves live account data and gates connect and checkout by Telegram identity", async () => {
   const calls = [];
   const app = express();
@@ -34,7 +90,6 @@ test("Mini App serves live account data and gates connect and checkout by Telegr
     async getAccount(id) { calls.push(["account", id]); return { customerExists: true, status: "ACTIVE", plan: "Basic", dataUsedGb: 35, dataLimitGb: 100 }; },
     async getPackages() { return [{ id: 7, name: "Basic", dataLimitGb: 100, durationDays: 31, priceMmk: 5000 }]; },
     async getConnectUrl(id) { calls.push(["connect", id]); return "https://vpn.example.test/connect/synthetic-token"; },
-    async sendBotFlow(id, flow, packageId) { calls.push(["flow", id, flow, packageId]); },
   }));
   const server = app.listen(0, "127.0.0.1");
   await new Promise((resolve) => server.once("listening", resolve));
@@ -67,16 +122,10 @@ test("Mini App serves live account data and gates connect and checkout by Telegr
     assert.equal(data.packages[0].name, "Basic");
     assert.equal(Object.hasOwn(data.packages[0], "id"), false);
     assert.ok(data.packages[0].selectionToken);
-    assert.equal((await post("flow", { initData: signedData(77), flow: "renew",
-      packageToken: data.packages[0].selectionToken })).status, 400);
     assert.equal(JSON.stringify(data).includes("ss://"), false);
     assert.equal((await post("connect", { initData: signedData() })).status, 200);
-    assert.equal((await post("flow", { initData: signedData(), flow: "renew",
-      packageToken: data.packages[0].selectionToken })).status, 200);
-    assert.equal((await post("flow", { initData: signedData(), flow: "support" })).status, 200);
-    assert.equal((await post("flow", { initData: signedData(), flow: "arbitrary" })).status, 400);
-    assert.deepEqual(calls.filter(([kind]) => kind === "connect" || kind === "flow"),
-      [["connect", 42], ["flow", 42, "renew", 7], ["flow", 42, "support", undefined]]);
+    assert.equal((await post("flow", { initData: signedData(), flow: "support" })).status, 404);
+    assert.deepEqual(calls.filter(([kind]) => kind === "connect"), [["connect", 42]]);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
@@ -162,13 +211,12 @@ test("account lookup failure returns a safe message", async () => {
   } finally { await new Promise((resolve) => server.close(resolve)); }
 });
 
-test("Phase 2 checkout rechecks packages, scopes orders, and keeps payment proof in the bot", async () => {
+test("Phase 2 checkout rechecks packages and scopes orders", async () => {
   const packages = [
     { id: 7, name: "Basic", dataLimitGb: 50, durationDays: 30, priceMmk: 3200, active: true, sortOrder: 1, version: "v1" },
     { id: 8, name: "Hidden", dataLimitGb: 10, durationDays: 10, priceMmk: 1000, active: false, sortOrder: 2, version: "v1" },
   ];
   const orders = [];
-  let handoffs = 0;
   const app = express();
   app.use("/app", createMiniAppRouter({ botToken: token,
     async getAccount(id) { return { customerExists: id === 42 || id === 77,
@@ -196,11 +244,6 @@ test("Phase 2 checkout rechecks packages, scopes orders, and keeps payment proof
       const order = orders.find((item) => item.owner === id && item.orderNumber === number);
       if (!order || method !== "mobile_wallet") return null;
       order.paymentMethod = method; return order;
-    },
-    async handoffProof(id, number) {
-      const owned = orders.find((order) => order.owner === id && order.orderNumber === number && order.paymentMethod);
-      if (owned) handoffs++;
-      return Boolean(owned);
     },
     async getConnectUrl() { return null; }, async sendBotFlow() {},
   }));
@@ -251,11 +294,8 @@ test("Phase 2 checkout rechecks packages, scopes orders, and keeps payment proof
     assert.equal(methods[0].accountNumber, "09999999999");
     assert.equal((await post("order/payment-method", 42,
       { orderNumber: order.orderNumber, method: "mobile_wallet" })).status, 200);
-    assert.equal((await post("order/payment-proof-handoff", 77,
-      { orderNumber: order.orderNumber })).status, 409);
     assert.equal((await post("order/payment-proof-handoff", 42,
-      { orderNumber: order.orderNumber })).status, 200);
-    assert.equal(handoffs, 1);
+      { orderNumber: order.orderNumber })).status, 404);
     assert.equal((await (await post("orders", 77)).json()).orders.length, 0);
     const visible = await (await post("order/status", 42, { orderNumber: order.orderNumber })).json();
     assert.equal(visible.order.status, "PAYMENT_SUBMITTED");

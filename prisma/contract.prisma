@@ -8,6 +8,7 @@ model Customer {
   orders       Order[]
   subscription Subscription?
   supportTickets SupportTicket[]
+  supportMessages SupportMessage[]
 }
 
 model SupportTicket {
@@ -22,6 +23,18 @@ model SupportTicket {
   createdAt            DateTime @default(now())
   updatedAt            DateTime @default(now())
   closedAt             DateTime?
+  messages             SupportMessage[]
+}
+
+model SupportMessage {
+  id         Int @id @default(autoincrement())
+  ticketId   Int
+  ticket     SupportTicket @relation(fields: [ticketId], references: [id])
+  customerId Int
+  customer   Customer @relation(fields: [customerId], references: [id])
+  sender     String
+  text       String
+  createdAt  DateTime @default(now())
 }
 
 model Package {

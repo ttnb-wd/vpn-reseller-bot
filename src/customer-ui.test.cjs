@@ -15,7 +15,7 @@ async function loadBot(existingTables = null, outlineKeys = new Map(), options =
   const source = readFileSync(file, "utf8");
   const localRequire = createRequire(file);
   const tables = existingTables || {
-    Customer: [], Order: [], Subscription: [], SupportTicket: [],
+    Customer: [], Order: [], Subscription: [], SupportTicket: [], SupportMessage: [],
     Package: [
       { id: 7, name: "Basic", dataLimitGb: 50, durationDays: 30, priceMmk: "3200", active: true, sortOrder: 1 },
       { id: 19, name: "Standard", dataLimitGb: 213, durationDays: 31, priceMmk: "7650", active: true, sortOrder: 2 },
@@ -23,6 +23,7 @@ async function loadBot(existingTables = null, outlineKeys = new Map(), options =
       { id: 99, name: "Retired", active: false, sortOrder: 4 },
     ],
   };
+  existingTables && (tables.SupportMessage ||= []);
   const matches = (row, filter) => Object.entries(filter).every(([key, value]) =>
     row[key] === value || value === null && row[key] == null);
   const predicateFor = (filter) => typeof filter === "function"
@@ -797,6 +798,29 @@ test("support opens persistent per-customer tickets and relays text and photos t
   assert.equal(repeat.replies[0][0], startText);
   assertNoCustomerTicketDetails(repeat.replies[0][0]);
   assert.equal(bot.tables.SupportTicket.length, 2);
+});
+
+test("bot and Mini App share support messages and keep customer conversations separate", async () => {
+  const bot = await loadBot();
+  await bot.action("contact_support", 123);
+  await bot.action("contact_support", 456);
+  const service = bot.miniAppCallbacks.getSupportService();
+  const botMessage = bot.ctx(123);
+  botMessage.message = { text: "Bot question" };
+  await bot.events.text(botMessage);
+  assert.equal((await service.listMessages(123)).messages[0].text, "Bot question");
+  assert.equal((await service.listMessages(456)).messages.length, 0);
+  assert.deepEqual(await service.sendCustomerMessage(456, "App question"), { ok: true });
+  assert.match(bot.sent.at(-1).args[1], /App question/);
+  assert.equal((await service.listMessages(456)).messages[0].text, "App question");
+  await bot.action("support_reply_2", 999);
+  const admin = bot.ctx(999);
+  admin.message = { text: "Support answer" };
+  await bot.events.text(admin);
+  assert.equal((await service.listMessages(456)).messages[1].text, "Support answer");
+  assert.equal((await service.listMessages(456)).messages[1].sender, "support");
+  assert.equal((await service.listMessages(123)).messages.length, 1);
+  assert.equal(Object.hasOwn((await service.listMessages(456)).messages[0], "ticketId"), false);
 });
 
 test("simultaneous first support messages claim only one acknowledgement", async () => {

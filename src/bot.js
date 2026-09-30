@@ -1193,6 +1193,7 @@ async function miniAppCreateOrder(telegramUser, _account, packageId, confirmedVe
 
 const miniAppRouter = createMiniAppRouter({
   botToken: process.env.BOT_TOKEN,
+  getSupportService: () => miniAppSupportService,
   async getAccount(telegramId, telegramUser) {
     const { customer, subscription } = await findCustomerSubscription(telegramId);
     const active = isSubscriptionActive(subscription);
@@ -1258,8 +1259,6 @@ const miniAppRouter = createMiniAppRouter({
     const updated = await db.public.Order.where({ id: order.id, customerId: order.customerId,
       status: "PENDING_PAYMENT" }).update({ paymentMethod: methodCode });
     if (!updated) return null;
-    await miniAppSupportService.pauseCustomer(telegramId);
-    pendingProofs.set(String(telegramId), order.id);
     return updated;
   },
   async handoffProof(telegramId, orderNumber) {

@@ -84,11 +84,12 @@ const validOrderNumber = (value) => typeof value === "string" && /^VPN-[A-Za-z0-
 
 function createMiniAppRouter({ botToken, getAccount, getPackages, getPackage,
   createOrder, getOrder, getOrders, getPaymentMethods, selectPaymentMethod,
-  handoffProof, uploadProof, getConnectUrl, sendBotFlow }) {
+  uploadProof, getConnectUrl, getSupportService }) {
   const router = express.Router();
   const publicDir = path.join(__dirname, "mini-app");
   const allowUploadIp = createWindowLimiter({ windowMs: 10 * 60000, max: 30 });
   const allowUploadCustomer = createWindowLimiter({ windowMs: 10 * 60000, max: 5 });
+  const allowSupportRead = createWindowLimiter({ windowMs: 60000, max: 15 });
   router.use((req, res, next) => {
     // Telegram Web may embed Mini Apps in a frame; the main server's DENY
     // header is appropriate for the admin and setup pages, but not here.
@@ -113,7 +114,7 @@ function createMiniAppRouter({ botToken, getAccount, getPackages, getPackage,
   const resolveCustomer = async (req, res, next) => {
     try {
       const account = await getAccount(req.telegramUser.id, req.telegramUser);
-      if (!account?.customerExists) return res.status(403).json({ error: "Open Metro from the Telegram bot to continue." });
+      if (!account?.customerExists) return res.status(403).json({ error: "Your Metro Secure account is unavailable." });
       req.account = account;
       next();
     } catch {
@@ -254,14 +255,31 @@ function createMiniAppRouter({ botToken, getAccount, getPackages, getPackage,
       res.json({ order: publicOrder(order) });
     } catch { console.error("Mini App payment selection failed."); res.status(503).json({ error: "We couldn't select payment." }); }
   });
-  router.post("/api/order/payment-proof-handoff", async (req, res) => {
-    const { orderNumber } = req.body || {};
-    if (!validOrderNumber(orderNumber)) return res.status(400).json({ error: "Invalid order." });
+  router.post("/api/support/open", async (req, res) => {
+    if (!allowSupportRead(req.telegramUser.id))
+      return res.status(429).json({ error: "Please wait before refreshing Support." });
     try {
-      const ok = await handoffProof(req.telegramUser.id, orderNumber);
-      if (!ok) return res.status(409).json({ error: "This order cannot accept proof." });
+      const service = getSupportService();
+      const target = await service.openOrResumeTicket(req.telegramUser.id);
+      if (!target) return res.status(403).json({ error: "Your account is unavailable." });
+      res.json(await service.listMessages(req.telegramUser.id));
+    } catch { console.error("Mini App support opening failed.");
+      res.status(503).json({ error: "Support is temporarily unavailable." }); }
+  });
+  router.post("/api/support/messages", async (req, res) => {
+    if (!allowSupportRead(req.telegramUser.id))
+      return res.status(429).json({ error: "Please wait before refreshing Support." });
+    try { res.json(await getSupportService().listMessages(req.telegramUser.id)); }
+    catch { console.error("Mini App support messages failed.");
+      res.status(503).json({ error: "We couldn't load Support messages." }); }
+  });
+  router.post("/api/support/send", async (req, res) => {
+    try {
+      const result = await getSupportService().sendCustomerMessage(req.telegramUser.id, req.body?.text);
+      if (result.error) return res.status(result.status).json({ error: result.error });
       res.json({ ok: true });
-    } catch { console.error("Mini App payment proof handoff failed."); res.status(503).json({ error: "We couldn't open payment proof." }); }
+    } catch { console.error("Mini App support send failed.");
+      res.status(503).json({ error: "We couldn't send your message. Please try again." }); }
   });
   router.post("/api/connect", async (req, res) => {
     try {
@@ -271,22 +289,6 @@ function createMiniAppRouter({ botToken, getAccount, getPackages, getPackage,
     } catch {
       console.error("Mini App connect failed.");
       res.status(503).json({ error: "VPN setup is temporarily unavailable." });
-    }
-  });
-  router.post("/api/flow", async (req, res) => {
-    const { flow, packageToken: selectionToken } = req.body || {};
-    const selected = selectionToken === undefined ? undefined :
-      openToken(selectionToken, req.telegramUser.id, botToken);
-    const packageId = selected?.id;
-    if (!["renew", "packages", "support"].includes(flow) ||
-        (selectionToken !== undefined && selected?.kind !== "selection")) {
-      return res.status(400).json({ error: "Invalid selection." });
-    }
-    try {
-      await sendBotFlow(req.telegramUser.id, flow, packageId);
-      res.json({ ok: true });
-    } catch {
-      res.status(503).json({ error: "Could not open the bot checkout. Try again." });
     }
   });
   return router;

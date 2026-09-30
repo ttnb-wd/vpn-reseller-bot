@@ -24,7 +24,8 @@ if (typeof document !== "undefined") (() => {
   const $ = (id) => document.getElementById(id);
   const state = { account: null, packages: [], tab: "home", lastLoad: 0, loading: false,
     checkout: null, order: null, methods: [], uploadFile: null, previewUrl: null,
-    uploading: false, uploadPercent: 0 };
+    uploading: false, uploadPercent: 0, uploadFailed: false,
+    supportTimer: null, supportLoading: false };
   const show = (id, visible) => $(id).classList.toggle("hidden", !visible);
   const set = (id, value) => { $(id).textContent = value; };
   const notice = (value, error = false) => {
@@ -66,8 +67,9 @@ if (typeof document !== "undefined") (() => {
     $(id).setAttribute("aria-valuetext", percent === null ? "Usage unavailable" : `${percent}% used`);
   }
   function navigate(tab) {
+    if (state.supportTimer) { clearInterval(state.supportTimer); state.supportTimer = null; }
     state.tab = tab;
-    for (const name of ["home", "vpn", "usage", "packages", "checkout", "history"])
+    for (const name of ["home", "vpn", "usage", "packages", "checkout", "history", "support"])
       show(`${name}-panel`, tab === name);
     for (const button of document.querySelectorAll(".nav-button"))
       button.classList.toggle("active", button.dataset.tab === tab ||
@@ -76,6 +78,12 @@ if (typeof document !== "undefined") (() => {
     window.scrollTo(0, 0);
     if (tab === "packages") void refreshPackages();
     if (tab === "history") void refreshHistory();
+    if (tab === "support") {
+      void refreshSupport(true);
+      state.supportTimer = setInterval(() => {
+        if (!document.hidden && state.tab === "support") void refreshSupport();
+      }, 10000);
+    }
   }
   function empty(id, view) {
     const target = $(id);
@@ -89,9 +97,9 @@ if (typeof document !== "undefined") (() => {
         "Choose a package to get started.";
     const button = document.createElement("button");
     button.type = "button"; button.className = "primary-button";
-    button.textContent = view.status === "REVOKED" ? "🎧 Support" :
-      view.status === "EXPIRED" ? "♻️ Renew VPN" : "View Packages";
-    button.addEventListener("click", () => view.status === "REVOKED" ? openFlow("support") : navigate("packages"));
+    button.textContent = view.status === "REVOKED" ? "Support" :
+      view.status === "EXPIRED" ? "Renew VPN" : "View Packages";
+    button.addEventListener("click", () => navigate(view.status === "REVOKED" ? "support" : "packages"));
     target.append(title, detail, button);
   }
   function renderPackages() {
@@ -160,7 +168,7 @@ if (typeof document !== "undefined") (() => {
       progress: "Order in Progress", status: "Order Status" }[step] || "Checkout");
     set("checkout-subtitle", step === "detail" ? "Review the current package before continuing." :
       step === "methods" ? "Choose where to send your payment." :
-      step === "instructions" ? "Pay the exact amount, then upload or send your proof." :
+      step === "instructions" ? "Pay the exact amount, then upload your proof here." :
       step === "upload" ? "Choose a clear screenshot of your payment." :
       step === "submitted" ? "Your payment proof is waiting for review." :
       "You can check this order again in Order History.");
@@ -187,9 +195,8 @@ if (typeof document !== "undefined") (() => {
         line("Account name", method?.accountName || "Unavailable"),
         line("Destination", method?.accountNumber || "Unavailable"),
         line("Order reference", order.orderNumber),
-        paragraph("Transfer the exact amount to this account. Upload a screenshot here or send it as a photo in the bot. Activation follows admin approval.")));
+        paragraph("Transfer the exact amount to this account, then upload a screenshot here. Activation follows approval.")));
       actions.append(action("Upload Payment Proof", () => { state.checkout.step = "upload"; renderCheckout(); }, true),
-        action("Send Payment Proof in Bot", proofHandoff),
         action("Change Payment Method", loadMethods), action("View Order", () => showOrder(order.orderNumber)));
     } else if (step === "upload" && order) {
       const input = document.createElement("input"); input.type = "file";
@@ -214,12 +221,13 @@ if (typeof document !== "undefined") (() => {
         body.append(card(progressText, bar));
       }
       if (state.uploadFile) {
-        const submit = action(state.uploading ? "Uploading…" : "Submit Payment Proof", submitProof, true);
+        const submit = action(state.uploading ? "Uploading…" :
+          state.uploadFailed ? "Retry Upload" : "Submit Payment Proof", submitProof, true);
         submit.disabled = state.uploading; actions.append(submit);
       }
       if (!state.uploading) actions.append(action("Back to Instructions", () => {
         state.checkout.step = "instructions"; renderCheckout();
-      }), action("Contact Support", () => openFlow("support")));
+      }), action("Contact Support", () => navigate("support")));
     } else if (step === "submitted" && order) {
       body.append(card(title("Payment Submitted"), line("Order number", order.orderNumber),
         line("Package", order.plan), line("Amount", money(order.amountMmk)),
@@ -247,7 +255,7 @@ if (typeof document !== "undefined") (() => {
       if (order.status === "PENDING_PAYMENT" && order.paymentMethod)
         actions.append(action("Upload Payment Proof", () => {
           state.checkout.step = "upload"; renderCheckout();
-        }, true), action("Send Payment Proof in Bot", proofHandoff));
+        }, true));
       else if (order.status === "PENDING_PAYMENT")
         actions.append(action("Choose Payment Method", loadMethods, true));
       actions.append(action("Refresh Status", () => showOrder(order.orderNumber)),
@@ -305,6 +313,7 @@ if (typeof document !== "undefined") (() => {
   function clearProofFile() {
     if (state.previewUrl) URL.revokeObjectURL(state.previewUrl);
     state.previewUrl = null; state.uploadFile = null; state.uploadPercent = 0;
+    state.uploadFailed = false;
   }
   function chooseProofFile(file) {
     if (!file) return;
@@ -370,18 +379,11 @@ if (typeof document !== "undefined") (() => {
         state.checkout.step = "submitted";
         notice(""); renderCheckout();
       } else {
+        state.uploadFailed = true;
         notice(error.message || "We couldn't upload your payment proof. Please try again.", true);
         renderCheckout();
       }
     } finally { state.uploading = false; if (state.checkout.step === "upload") renderCheckout(); }
-  }
-  async function proofHandoff() {
-    notice("Opening the bot for payment proof…");
-    try {
-      await api("order/payment-proof-handoff", { orderNumber: state.order.orderNumber });
-      notice("Send your payment screenshot as a photo in the Metro Secure chat.");
-      if (tg?.close) tg.close();
-    } catch { notice("We couldn't open payment proof. Try again.", true); }
   }
   async function showOrder(orderNumber) {
     notice("");
@@ -407,6 +409,48 @@ if (typeof document !== "undefined") (() => {
       }
     } catch { list.replaceChildren(card(paragraph("We couldn't load orders."),
       action("Try Again", refreshHistory))); }
+  }
+  function renderSupport(messages) {
+    const conversation = $("support-conversation");
+    conversation.replaceChildren();
+    if (!messages.length) {
+      conversation.append(paragraph("No messages yet. Send us a message to start the conversation.", "support-empty"));
+      return;
+    }
+    for (const message of messages) {
+      const item = document.createElement("div");
+      item.className = `support-message ${message.sender === "support" ? "from-support" : "from-customer"}`;
+      const sender = document.createElement("strong");
+      sender.textContent = message.sender === "support" ? "Metro Secure Support" : "You";
+      const body = document.createElement("p"); body.textContent = message.text;
+      const time = document.createElement("time");
+      const stamp = new Date(message.createdAt);
+      time.textContent = Number.isNaN(stamp.getTime()) ? "" :
+        new Intl.DateTimeFormat("en-GB", { dateStyle: "medium", timeStyle: "short" }).format(stamp);
+      item.append(sender, body, time); conversation.append(item);
+    }
+  }
+  async function refreshSupport(open = false) {
+    if (state.supportLoading) return;
+    state.supportLoading = true;
+    try {
+      const data = await api(open ? "support/open" : "support/messages");
+      if (state.tab === "support") { renderSupport(data.messages); notice(""); }
+    } catch { if (state.tab === "support") notice("We couldn't load Support messages. Try again shortly.", true); }
+    finally { state.supportLoading = false; }
+  }
+  async function sendSupport(event) {
+    event.preventDefault();
+    const input = $("support-input");
+    const text = input.value.trim();
+    if (!text) return;
+    $("support-send").disabled = true;
+    try {
+      await api("support/send", { text });
+      input.value = ""; notice("");
+      void refreshSupport();
+    } catch (error) { notice(error.message || "We couldn't send your message. Try again.", true); }
+    finally { $("support-send").disabled = false; }
   }
   function render() {
     const a = state.account;
@@ -481,18 +525,11 @@ if (typeof document !== "undefined") (() => {
       else window.location.assign(url);
     } catch { notice("We couldn't open VPN setup. Try again.", true); }
   }
-  async function openFlow(flow, packageToken) {
-    notice(flow === "support" ? "Opening Support in the bot…" : "Opening packages in the bot…");
-    try {
-      await api("flow", { flow, packageToken });
-      notice("Continue in your Telegram chat with Metro Secure.");
-      if (tg?.close) setTimeout(() => tg.close(), 900);
-    } catch { notice("We couldn't open the bot flow. Try again.", true); }
-  }
   for (const id of ["connect-button", "vpn-connect-button"]) $(id).addEventListener("click", connect);
   for (const id of ["renew-button", "vpn-renew-button", "usage-renew-button"])
     $(id).addEventListener("click", () => navigate("packages"));
-  $("support-button").addEventListener("click", () => openFlow("support"));
+  $("support-button").addEventListener("click", () => navigate("support"));
+  $("support-form").addEventListener("submit", sendSupport);
   for (const id of ["view-usage-button", "vpn-usage-button"])
     $(id).addEventListener("click", () => navigate("usage"));
   $("view-packages-button").addEventListener("click", () => navigate("packages"));

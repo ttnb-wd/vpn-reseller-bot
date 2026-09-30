@@ -39,6 +39,59 @@ function createSupportService({ db, bot, adminTelegramId, isAdmin, helpKeyboard 
     return db.public.SupportTicket.where({ customerId, status: "OPEN" }).first();
   }
 
+  async function openOrResumeTicket(telegramId, activateInput = false) {
+    const customer = await customerForTelegramId(telegramId);
+    if (!customer) return null;
+    let ticket = await openTicketForCustomer(customer.id);
+    if (!ticket) {
+      try {
+        ticket = await db.public.SupportTicket.create({
+          customerId: customer.id, status: "OPEN", customerInputActive: activateInput,
+          adminReplySelected: false,
+        });
+      } catch {
+        ticket = await openTicketForCustomer(customer.id);
+        if (!ticket) throw new Error("Support ticket could not be opened.");
+      }
+    }
+    if (activateInput && !ticket.customerInputActive) {
+      ticket = await db.public.SupportTicket.where({ id: ticket.id, status: "OPEN" })
+        .update({ customerInputActive: true, acknowledgedAt: null,
+          updatedAt: Temporal.Now.instant() });
+    }
+    return { customer, ticket };
+  }
+
+  async function recordMessage(ticket, sender, text) {
+    return db.public.SupportMessage.create({ ticketId: ticket.id,
+      customerId: ticket.customerId, sender, text, createdAt: Temporal.Now.instant() });
+  }
+
+  async function listMessages(telegramId) {
+    const customer = await customerForTelegramId(telegramId);
+    if (!customer) return null;
+    const ticket = await openTicketForCustomer(customer.id);
+    if (!ticket) return { messages: [] };
+    const rows = await db.public.SupportMessage.where({ ticketId: ticket.id,
+      customerId: customer.id }).orderBy((message) => message.createdAt.desc()).limit(100).all();
+    return { messages: rows.sort((a, b) => a.id - b.id).map((message) => ({ sender: message.sender,
+      text: message.text, createdAt: message.createdAt?.toString() || null })) };
+  }
+
+  async function sendCustomerMessage(telegramId, text) {
+    if (typeof text !== "string" || !text.trim() || text.length > 3000)
+      return { error: "Enter a message of up to 3000 characters.", status: 400 };
+    const target = await openOrResumeTicket(telegramId);
+    if (!target) return { error: "Your account is unavailable.", status: 403 };
+    if (!allowText(telegramId)) return { error: limitMessage, status: 429 };
+    const content = safeText(text.trim());
+    await relayCustomerText(target.customer, target.ticket, content);
+    await recordMessage(target.ticket, "customer", content);
+    await db.public.SupportTicket.where({ id: target.ticket.id, status: "OPEN" })
+      .update({ updatedAt: Temporal.Now.instant() });
+    return { ok: true };
+  }
+
   async function activeCustomerTicket(telegramId) {
     const customer = await customerForTelegramId(telegramId);
     if (!customer) return null;
@@ -62,24 +115,7 @@ function createSupportService({ db, bot, adminTelegramId, isAdmin, helpKeyboard 
           firstName: ctx.from.first_name || null,
         },
       });
-      let ticket = await openTicketForCustomer(customer.id);
-      if (!ticket) {
-        try {
-          ticket = await db.public.SupportTicket.create({
-            customerId: customer.id, status: "OPEN", customerInputActive: true,
-            adminReplySelected: false,
-          });
-        } catch {
-          // The unique open-ticket index handles two simultaneous taps.
-          ticket = await openTicketForCustomer(customer.id);
-          if (!ticket) throw new Error("Support ticket could not be opened.");
-        }
-      }
-      if (!ticket.customerInputActive) {
-        ticket = await db.public.SupportTicket.where({ id: ticket.id, status: "OPEN" })
-          .update({ customerInputActive: true, acknowledgedAt: null,
-            updatedAt: Temporal.Now.instant() });
-      }
+      await openOrResumeTicket(customer.telegramId, true);
       await ctx.reply(
         "🎧 Metro Secure Support\n\nမေးလိုတာကို အောက်မှာ တိုက်ရိုက်ရေးပို့ပါ။\nScreenshot / photo လည်း ပို့နိုင်ပါတယ်။\n\nSupport team က ဒီ chat ထဲမှာပဲ ပြန်လည်ဖြေကြားပေးပါမယ်။",
         supportPromptKeyboard()
@@ -212,6 +248,7 @@ function createSupportService({ db, bot, adminTelegramId, isAdmin, helpKeyboard 
         await bot.telegram.sendMessage(target.customer.telegramId,
           content.slice(offset, offset + 3500), supportPromptKeyboard());
       }
+      await recordMessage(target.ticket, "support", content);
       await db.public.SupportTicket.where({ id: target.ticket.id, status: "OPEN" })
         .update({ adminReplySelected: false, adminReplySelectedAt: null,
           updatedAt: Temporal.Now.instant() });
@@ -222,6 +259,7 @@ function createSupportService({ db, bot, adminTelegramId, isAdmin, helpKeyboard 
     if (!target) return false;
     if (!allowText(ctx.from.id)) { await ctx.reply(limitMessage); return true; }
     await relayCustomerText(target.customer, target.ticket, ctx.message.text);
+    await recordMessage(target.ticket, "customer", safeText(ctx.message.text));
     await db.public.SupportTicket.where({ id: target.ticket.id, status: "OPEN" })
       .update({ updatedAt: Temporal.Now.instant() });
     await acknowledgeFirstMessage(ctx, target.ticket);
@@ -245,6 +283,7 @@ function createSupportService({ db, bot, adminTelegramId, isAdmin, helpKeyboard 
         await bot.telegram.sendMessage(target.customer.telegramId,
           caption.slice(available), supportPromptKeyboard());
       }
+      await recordMessage(target.ticket, "support", caption || "Support sent an image.");
       await db.public.SupportTicket.where({ id: target.ticket.id, status: "OPEN" })
         .update({ adminReplySelected: false, adminReplySelectedAt: null,
           updatedAt: Temporal.Now.instant() });
@@ -260,6 +299,7 @@ function createSupportService({ db, bot, adminTelegramId, isAdmin, helpKeyboard 
       return true;
     }
     await relayCustomerPhoto(target.customer, target.ticket, photo, ctx.message.caption);
+    await recordMessage(target.ticket, "customer", safeText(ctx.message.caption) || "Customer sent an image.");
     await db.public.SupportTicket.where({ id: target.ticket.id, status: "OPEN" })
       .update({ updatedAt: Temporal.Now.instant() });
     await acknowledgeFirstMessage(ctx, target.ticket);
@@ -282,7 +322,7 @@ function createSupportService({ db, bot, adminTelegramId, isAdmin, helpKeyboard 
   }
 
   return { contact, cancel, selectReply, close, handleText, handlePhoto, pauseCustomer,
-    clearAdminReply };
+    clearAdminReply, openOrResumeTicket, listMessages, sendCustomerMessage };
 }
 
 module.exports = { createSupportService, ticketNumber };

@@ -34,7 +34,7 @@ import type {
 } from '@prisma/orm-postgres/contract/types';
 
 export type StorageHash =
-  StorageHashBase<'f2c94b120fa40f02663f6be029f500fa2ea8326350b5f8984b056aa02c63918e'>;
+  StorageHashBase<'b6f285c09bc827a8628e661a44302a9c2a1cb77da7a66a2b9c1f62f4ced3bd41'>;
 export type ExecutionHash = ExecutionHashBase<string>;
 export type ProfileHash =
   ProfileHashBase<'3916f444a8a17ad749191acf9e08dad97d1a327b88c2f1d45d12f240296aa8b2'>;
@@ -301,6 +301,14 @@ export type FieldOutputTypes = {
       readonly createdAt: CodecTypes['pg/timestamptz-temporal@1']['output'];
       readonly updatedAt: CodecTypes['pg/timestamptz-temporal@1']['output'];
     };
+    readonly SupportMessage: {
+      readonly id: CodecTypes['pg/int4@1']['output'];
+      readonly ticketId: CodecTypes['pg/int4@1']['output'];
+      readonly customerId: CodecTypes['pg/int4@1']['output'];
+      readonly sender: CodecTypes['pg/text@1']['output'];
+      readonly text: CodecTypes['pg/text@1']['output'];
+      readonly createdAt: CodecTypes['pg/timestamptz-temporal@1']['output'];
+    };
     readonly SupportTicket: {
       readonly id: CodecTypes['pg/int4@1']['output'];
       readonly customerId: CodecTypes['pg/int4@1']['output'];
@@ -376,6 +384,14 @@ export type FieldInputTypes = {
       readonly dataUsedGb: CodecTypes['pg/float8@1']['input'];
       readonly createdAt: CodecTypes['pg/timestamptz-temporal@1']['input'];
       readonly updatedAt: CodecTypes['pg/timestamptz-temporal@1']['input'];
+    };
+    readonly SupportMessage: {
+      readonly id: CodecTypes['pg/int4@1']['input'];
+      readonly ticketId: CodecTypes['pg/int4@1']['input'];
+      readonly customerId: CodecTypes['pg/int4@1']['input'];
+      readonly sender: CodecTypes['pg/text@1']['input'];
+      readonly text: CodecTypes['pg/text@1']['input'];
+      readonly createdAt: CodecTypes['pg/timestamptz-temporal@1']['input'];
     };
     readonly SupportTicket: {
       readonly id: CodecTypes['pg/int4@1']['input'];
@@ -453,6 +469,14 @@ export type StorageColumnTypes = {
       readonly vpnKeyCreatedAt: CodecTypes['pg/timestamptz-temporal@1']['output'] | null;
       readonly vpnKeyId: CodecTypes['pg/text@1']['output'] | null;
     };
+    readonly supportMessage: {
+      readonly createdAt: CodecTypes['pg/timestamptz-temporal@1']['output'];
+      readonly customerId: CodecTypes['pg/int4@1']['output'];
+      readonly id: CodecTypes['pg/int4@1']['output'];
+      readonly sender: CodecTypes['pg/text@1']['output'];
+      readonly text: CodecTypes['pg/text@1']['output'];
+      readonly ticketId: CodecTypes['pg/int4@1']['output'];
+    };
     readonly supportTicket: {
       readonly acknowledgedAt: CodecTypes['pg/timestamptz-temporal@1']['output'] | null;
       readonly adminReplySelected: CodecTypes['pg/bool@1']['output'];
@@ -529,6 +553,14 @@ export type StorageColumnInputTypes = {
       readonly vpnKeyCreatedAt: CodecTypes['pg/timestamptz-temporal@1']['input'] | null;
       readonly vpnKeyId: CodecTypes['pg/text@1']['input'] | null;
     };
+    readonly supportMessage: {
+      readonly createdAt: CodecTypes['pg/timestamptz-temporal@1']['input'];
+      readonly customerId: CodecTypes['pg/int4@1']['input'];
+      readonly id: CodecTypes['pg/int4@1']['input'];
+      readonly sender: CodecTypes['pg/text@1']['input'];
+      readonly text: CodecTypes['pg/text@1']['input'];
+      readonly ticketId: CodecTypes['pg/int4@1']['input'];
+    };
     readonly supportTicket: {
       readonly acknowledgedAt: CodecTypes['pg/timestamptz-temporal@1']['input'] | null;
       readonly adminReplySelected: CodecTypes['pg/bool@1']['input'];
@@ -553,8 +585,9 @@ export namespace Models {
     createdAt: CodecTypes['pg/timestamptz-temporal@1']['output'];
     orders: public_Order[];
     subscription: public_Subscription | null;
+    supportMessages: public_SupportMessage[];
     supportTickets: public_SupportTicket[];
-    readonly [RelationKeys]?: 'orders' | 'subscription' | 'supportTickets';
+    readonly [RelationKeys]?: 'orders' | 'subscription' | 'supportMessages' | 'supportTickets';
   };
   export type public_SupportTicket = {
     id: CodecTypes['pg/int4@1']['output'];
@@ -568,7 +601,19 @@ export namespace Models {
     updatedAt: CodecTypes['pg/timestamptz-temporal@1']['output'];
     closedAt: CodecTypes['pg/timestamptz-temporal@1']['output'] | null;
     customer: public_Customer;
-    readonly [RelationKeys]?: 'customer';
+    messages: public_SupportMessage[];
+    readonly [RelationKeys]?: 'customer' | 'messages';
+  };
+  export type public_SupportMessage = {
+    id: CodecTypes['pg/int4@1']['output'];
+    ticketId: CodecTypes['pg/int4@1']['output'];
+    customerId: CodecTypes['pg/int4@1']['output'];
+    sender: CodecTypes['pg/text@1']['output'];
+    text: CodecTypes['pg/text@1']['output'];
+    createdAt: CodecTypes['pg/timestamptz-temporal@1']['output'];
+    customer: public_Customer;
+    ticket: public_SupportTicket;
+    readonly [RelationKeys]?: 'customer' | 'ticket';
   };
   export type public_Package = {
     id: CodecTypes['pg/int4@1']['output'];
@@ -638,6 +683,7 @@ export declare const models: {
   public: {
     Customer: Models.public_Customer;
     SupportTicket: Models.public_SupportTicket;
+    SupportMessage: Models.public_SupportMessage;
     Package: Models.public_Package;
     Order: Models.public_Order;
     Subscription: Models.public_Subscription;
@@ -1066,6 +1112,87 @@ type ContractBase = Omit<
                 },
               ];
             };
+            readonly supportMessage: {
+              columns: {
+                readonly id: {
+                  readonly nativeType: 'int4';
+                  readonly codecId: 'pg/int4@1';
+                  readonly nullable: false;
+                  readonly default: {
+                    readonly kind: 'function';
+                    readonly expression: 'autoincrement()';
+                  };
+                };
+                readonly ticketId: {
+                  readonly nativeType: 'int4';
+                  readonly codecId: 'pg/int4@1';
+                  readonly nullable: false;
+                };
+                readonly customerId: {
+                  readonly nativeType: 'int4';
+                  readonly codecId: 'pg/int4@1';
+                  readonly nullable: false;
+                };
+                readonly sender: {
+                  readonly nativeType: 'text';
+                  readonly codecId: 'pg/text@1';
+                  readonly nullable: false;
+                };
+                readonly text: {
+                  readonly nativeType: 'text';
+                  readonly codecId: 'pg/text@1';
+                  readonly nullable: false;
+                };
+                readonly createdAt: {
+                  readonly nativeType: 'timestamptz';
+                  readonly codecId: 'pg/timestamptz-temporal@1';
+                  readonly nullable: false;
+                  readonly default: { readonly kind: 'function'; readonly expression: 'now()' };
+                };
+              };
+              primaryKey: { readonly columns: readonly ['id'] };
+              uniques: readonly [];
+              indexes: readonly [
+                {
+                  readonly name: 'supportMessage_ticketId_idx_2fe526c3';
+                  readonly prefix: 'supportMessage_ticketId_idx';
+                  readonly columns: readonly ['ticketId'];
+                  readonly unique: false;
+                },
+                {
+                  readonly name: 'supportMessage_customerId_idx_b2a8a46c';
+                  readonly prefix: 'supportMessage_customerId_idx';
+                  readonly columns: readonly ['customerId'];
+                  readonly unique: false;
+                },
+              ];
+              foreignKeys: readonly [
+                {
+                  readonly source: {
+                    readonly namespaceId: 'public' & NamespaceId;
+                    readonly tableName: 'supportMessage';
+                    readonly columns: readonly ['ticketId'];
+                  };
+                  readonly target: {
+                    readonly namespaceId: 'public' & NamespaceId;
+                    readonly tableName: 'supportTicket';
+                    readonly columns: readonly ['id'];
+                  };
+                },
+                {
+                  readonly source: {
+                    readonly namespaceId: 'public' & NamespaceId;
+                    readonly tableName: 'supportMessage';
+                    readonly columns: readonly ['customerId'];
+                  };
+                  readonly target: {
+                    readonly namespaceId: 'public' & NamespaceId;
+                    readonly tableName: 'customer';
+                    readonly columns: readonly ['id'];
+                  };
+                },
+              ];
+            };
             readonly supportTicket: {
               columns: {
                 readonly id: {
@@ -1178,6 +1305,10 @@ type ContractBase = Omit<
       readonly namespace: 'public' & NamespaceId;
       readonly model: 'SupportTicket';
     };
+    readonly supportMessage: {
+      readonly namespace: 'public' & NamespaceId;
+      readonly model: 'SupportMessage';
+    };
     readonly package: { readonly namespace: 'public' & NamespaceId; readonly model: 'Package' };
     readonly order: { readonly namespace: 'public' & NamespaceId; readonly model: 'Order' };
     readonly subscription: {
@@ -1234,6 +1365,17 @@ type ContractBase = Omit<
                 };
                 readonly cardinality: '1:1';
                 readonly nullable: true;
+                readonly on: {
+                  readonly localFields: readonly ['id'];
+                  readonly targetFields: readonly ['customerId'];
+                };
+              };
+              readonly supportMessages: {
+                readonly to: {
+                  readonly namespace: 'public' & NamespaceId;
+                  readonly model: 'SupportMessage';
+                };
+                readonly cardinality: '1:N';
                 readonly on: {
                   readonly localFields: readonly ['id'];
                   readonly targetFields: readonly ['customerId'];
@@ -1649,6 +1791,75 @@ type ContractBase = Omit<
               };
             };
           };
+          readonly SupportMessage: {
+            readonly fields: {
+              readonly id: {
+                readonly nullable: false;
+                readonly type: { readonly kind: 'scalar'; readonly codecId: 'pg/int4@1' };
+              };
+              readonly ticketId: {
+                readonly nullable: false;
+                readonly type: { readonly kind: 'scalar'; readonly codecId: 'pg/int4@1' };
+              };
+              readonly customerId: {
+                readonly nullable: false;
+                readonly type: { readonly kind: 'scalar'; readonly codecId: 'pg/int4@1' };
+              };
+              readonly sender: {
+                readonly nullable: false;
+                readonly type: { readonly kind: 'scalar'; readonly codecId: 'pg/text@1' };
+              };
+              readonly text: {
+                readonly nullable: false;
+                readonly type: { readonly kind: 'scalar'; readonly codecId: 'pg/text@1' };
+              };
+              readonly createdAt: {
+                readonly nullable: false;
+                readonly type: {
+                  readonly kind: 'scalar';
+                  readonly codecId: 'pg/timestamptz-temporal@1';
+                };
+              };
+            };
+            readonly relations: {
+              readonly customer: {
+                readonly to: {
+                  readonly namespace: 'public' & NamespaceId;
+                  readonly model: 'Customer';
+                };
+                readonly cardinality: 'N:1';
+                readonly nullable: false;
+                readonly on: {
+                  readonly localFields: readonly ['customerId'];
+                  readonly targetFields: readonly ['id'];
+                };
+              };
+              readonly ticket: {
+                readonly to: {
+                  readonly namespace: 'public' & NamespaceId;
+                  readonly model: 'SupportTicket';
+                };
+                readonly cardinality: 'N:1';
+                readonly nullable: false;
+                readonly on: {
+                  readonly localFields: readonly ['ticketId'];
+                  readonly targetFields: readonly ['id'];
+                };
+              };
+            };
+            readonly storage: {
+              readonly table: 'supportMessage';
+              readonly namespaceId: 'public';
+              readonly fields: {
+                readonly id: { readonly column: 'id' };
+                readonly ticketId: { readonly column: 'ticketId' };
+                readonly customerId: { readonly column: 'customerId' };
+                readonly sender: { readonly column: 'sender' };
+                readonly text: { readonly column: 'text' };
+                readonly createdAt: { readonly column: 'createdAt' };
+              };
+            };
+          };
           readonly SupportTicket: {
             readonly fields: {
               readonly id: {
@@ -1718,6 +1929,17 @@ type ContractBase = Omit<
                 readonly on: {
                   readonly localFields: readonly ['customerId'];
                   readonly targetFields: readonly ['id'];
+                };
+              };
+              readonly messages: {
+                readonly to: {
+                  readonly namespace: 'public' & NamespaceId;
+                  readonly model: 'SupportMessage';
+                };
+                readonly cardinality: '1:N';
+                readonly on: {
+                  readonly localFields: readonly ['id'];
+                  readonly targetFields: readonly ['ticketId'];
                 };
               };
             };
