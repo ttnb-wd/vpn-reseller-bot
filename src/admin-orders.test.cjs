@@ -13,7 +13,7 @@ const email = "admin@example.test";
 const password = "synthetic-test-password";
 const createdAt = Temporal.Instant.from("2026-01-01T00:00:00Z");
 const order = {
-  id: 7, orderNumber: '<script>order</script>', plan: "Standard", durationMonths: 2,
+  id: 7, orderNumber: '<script>order</script>', plan: "Standard", totalDurationDays: 60,
   price: "120000", paymentMethod: "KBZPay", paymentReference: '<img src=x onerror=alert(2)>',
   paymentProof: "telegram-photo-file-id", status: "PENDING_PAYMENT", createdAt,
   paidAt: null, startedAt: null, expiresAt: null, vpnKeyId: "key-7",
@@ -109,7 +109,7 @@ test("orders list searches, filters, paginates, and escapes customer text", asyn
   assert.deepEqual(api.calls[0], {
     route: "orders", q: "123456789", status: "PENDING_PAYMENT", page: "2",
   });
-  for (const value of ["Orders", "2 months", "120,000 MMK", "KBZPay", "Page 2 of 3"]) {
+  for (const value of ["Orders", "60 days", "120,000 MMK", "KBZPay", "Page 2 of 3"]) {
     assert.ok(html.includes(value), value);
   }
   assert.match(html, /q=123456789&amp;status=PENDING_PAYMENT&amp;page=3/);

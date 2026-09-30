@@ -33,7 +33,9 @@ function verifyTelegramInitData(initData, botToken, nowSeconds = Math.floor(Date
 const ACCOUNT_FIELDS = ["hasSubscription", "status", "displayName", "plan", "serverLabel",
   "dataUsedGb", "dataLimitGb", "startedAt", "expiresAt", "lastUsageSyncedAt", "canConnect"];
 function customerAccount(account) {
-  return Object.fromEntries(ACCOUNT_FIELDS.map((field) => [field, account?.[field] ?? null]));
+  const result = Object.fromEntries(ACCOUNT_FIELDS.map((field) => [field, account?.[field] ?? null]));
+  if (result.plan) result.plan = String(result.plan).replace(/ - \d+ Months?$/, "");
+  return result;
 }
 
 function sealToken(payload, userId, botToken) {
@@ -73,7 +75,9 @@ function publicOrder(order) {
   if (!order) return null;
   const status = order.status === "PENDING_PAYMENT" && order.paymentProof
     ? "PAYMENT_SUBMITTED" : order.status;
-  return { orderNumber: order.orderNumber, plan: order.plan,
+  const plan = String(order.plan || "VPN package").replace(/ - \d+ Months?$/,
+    order.totalDurationDays == null ? "" : ` - ${order.totalDurationDays} Days`);
+  return { orderNumber: order.orderNumber, plan,
     amountMmk: Number(order.price), dataLimitGb: order.totalDataGb ?? null,
     durationDays: order.totalDurationDays ?? null,
     createdAt: order.createdAt?.toString() || null,

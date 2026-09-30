@@ -25,7 +25,7 @@ async function main() {
       {
         name: "Basic",
         dataLimitGb: 100,
-        durationDays: 31,
+        durationDays: 30,
         priceMmk: 5000,
         active: true,
         sortOrder: 1,
@@ -33,7 +33,7 @@ async function main() {
       {
         name: "Standard",
         dataLimitGb: 200,
-        durationDays: 31,
+        durationDays: 30,
         priceMmk: 7500,
         active: true,
         sortOrder: 2,
@@ -41,7 +41,7 @@ async function main() {
       {
         name: "Premium",
         dataLimitGb: 400,
-        durationDays: 31,
+        durationDays: 30,
         priceMmk: 18000,
         active: true,
         sortOrder: 3,

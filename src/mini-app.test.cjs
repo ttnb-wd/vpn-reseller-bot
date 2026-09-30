@@ -5,7 +5,7 @@ const path = require("node:path");
 const { test } = require("node:test");
 const express = require("express");
 const { verifyTelegramInitData, createMiniAppRouter } = require("./mini-app");
-const { dashboardView, formatUsageSync } = require("./mini-app/app");
+const { dashboardView, formatUsageSync, remainingDays, formatRemainingDays } = require("./mini-app/app");
 
 const token = "123456:synthetic-telegram-token";
 function signedData(userId = 42, authDate = Math.floor(Date.now() / 1000)) {
@@ -148,6 +148,24 @@ test("dashboard handles subscription and usage states", () => {
   assert.match(dashboardView({ ...base, dataUsedGb: 95 }, now).warning, /Very little/);
   assert.equal(dashboardView({ ...base, dataUsedGb: 100 }, now).warning, "Data limit reached");
   assert.equal(dashboardView({ ...base, dataUsedGb: null }, now).percent, null);
+});
+
+test("Mini App derives exact remaining days from expiry and always labels them as days", () => {
+  const now = Date.parse("2026-10-01T00:00:00Z");
+  for (const [milliseconds, expected] of [
+    [60 * 86400000, 60], [30 * 86400000, 30],
+    [29 * 86400000 + 10 * 3600000, 30], [86400000, 1],
+    [1, 1], [0, 0], [-1, 0],
+  ]) {
+    const expiresAt = new Date(now + milliseconds).toISOString();
+    assert.equal(remainingDays(expiresAt, now), expected);
+    assert.equal(dashboardView({ hasSubscription: true, status: "ACTIVE", expiresAt }, now).days, expected);
+  }
+  assert.equal(formatRemainingDays(60), "60 days remaining");
+  assert.equal(formatRemainingDays(1), "1 day remaining");
+  assert.equal(formatRemainingDays(0), "Expired");
+  assert.doesNotMatch(formatRemainingDays(60), /month/i);
+  assert.equal(remainingDays(null, now), null);
 });
 
 test("usage sync timestamps render as relative text with a first-sync fallback", () => {

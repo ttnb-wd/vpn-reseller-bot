@@ -166,7 +166,7 @@ async function getOrdersData(client, params = {}) {
   const totalPages = Math.max(1, Math.ceil(count / pageSize));
   const page = Math.min(parsePage(params.page), totalPages);
   const orders = await query
-    .select("id", "orderNumber", "plan", "durationMonths", "price", "paymentMethod",
+    .select("id", "orderNumber", "plan", "totalDurationDays", "price", "paymentMethod",
       "paymentReference", "status", "createdAt", "paidAt", "startedAt", "expiresAt", "vpnKeyId")
     .include("customer", (customer) => customer.select("telegramId", "username", "firstName"))
     .include("package", (pkg) => pkg.select("name"))
@@ -180,7 +180,7 @@ async function getOrdersData(client, params = {}) {
 async function getOrderDetail(client, id) {
   return client.public.Order
     .where({ id })
-    .select("id", "orderNumber", "plan", "durationMonths", "price", "status",
+    .select("id", "orderNumber", "plan", "totalDurationDays", "price", "status",
       "paymentMethod", "paymentReference", "paymentProof", "createdAt", "paidAt",
       "startedAt", "expiresAt", "vpnKeyId")
     .include("customer", (customer) => customer.select("telegramId", "username", "firstName"))

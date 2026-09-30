@@ -15,6 +15,16 @@ function formatUsageSync(value, now = Date.now()) {
     year: "numeric", hour: "numeric", minute: "2-digit" }).format(new Date(timestamp));
 }
 
+function remainingDays(expiresAt, now = Date.now()) {
+  const expiry = expiresAt ? new Date(expiresAt).getTime() : NaN;
+  return Number.isFinite(expiry) ? Math.max(0, Math.ceil((expiry - now) / 86400000)) : null;
+}
+
+function formatRemainingDays(value) {
+  return value === null ? "Unavailable" : value === 0 ? "Expired" :
+    `${value} ${value === 1 ? "day" : "days"} remaining`;
+}
+
 function dashboardView(account, now = Date.now()) {
   const a = account || {};
   const hasSubscription = Boolean(a.hasSubscription);
@@ -22,8 +32,7 @@ function dashboardView(account, now = Date.now()) {
   const used = Number.isFinite(a.dataUsedGb) && a.dataUsedGb >= 0 ? a.dataUsedGb : null;
   const percent = limit !== null && used !== null ? Math.max(0, Math.round(used / limit * 100)) : null;
   const remaining = limit !== null && used !== null ? Math.max(0, limit - used) : null;
-  const expiry = a.expiresAt ? new Date(a.expiresAt).getTime() : NaN;
-  const days = Number.isFinite(expiry) ? Math.max(0, Math.ceil((expiry - now) / 86400000)) : null;
+  const days = remainingDays(a.expiresAt, now);
   // The backend applies the shared subscription-state rule for every customer surface.
   const status = hasSubscription ? a.status : "NONE";
   const warning = percent === null || percent < 80 ? "" :
@@ -32,7 +41,9 @@ function dashboardView(account, now = Date.now()) {
       "You're getting close to your data limit.";
   return { status, limit, used, percent, remaining, days, warning };
 }
-if (typeof module !== "undefined") module.exports = { dashboardView, formatUsageSync };
+if (typeof module !== "undefined") module.exports = {
+  dashboardView, formatUsageSync, remainingDays, formatRemainingDays,
+};
 
 if (typeof document !== "undefined") (() => {
   const tg = window.Telegram?.WebApp;
@@ -59,7 +70,6 @@ if (typeof document !== "undefined") (() => {
     return parsed && !Number.isNaN(parsed.getTime()) ?
       new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" }).format(parsed) : "Unavailable";
   };
-  const days = (value) => value === null ? "Unavailable" : `${value} ${value === 1 ? "day" : "days"}`;
   const money = (value) => `${new Intl.NumberFormat("en-US").format(Number(value))} MMK`;
   const orderStatus = { PENDING_PAYMENT: "Pending Payment", PAYMENT_SUBMITTED: "Payment Submitted",
     PROCESSING: "Processing", PAID: "Activated", PAYMENT_REJECTED: "Rejected",
@@ -595,7 +605,7 @@ if (typeof document !== "undefined") (() => {
       set("home-usage", `${v.percent === null ? "Usage unavailable" : v.percent + "% used"} · ${gb(v.limit)} allowance`);
       progress("home-progress", v.percent);
       set("home-remaining", gb(v.remaining)); set("home-used", gb(v.used));
-      set("home-expiry", date(a.expiresAt)); set("home-days", days(v.days));
+      set("home-expiry", date(a.expiresAt)); set("home-days", formatRemainingDays(v.days));
       set("home-sync", formatUsageSync(a.lastUsageSyncedAt));
     }
     $("connect-button").disabled = $("vpn-connect-button").disabled = !normal || !a.canConnect;
@@ -609,7 +619,7 @@ if (typeof document !== "undefined") (() => {
       set("vpn-limit", gb(v.limit)); set("vpn-used", gb(v.used));
       set("vpn-remaining", gb(v.remaining)); set("vpn-percent", v.percent === null ? "Unavailable" : `${v.percent}%`);
       set("vpn-start", date(a.startedAt)); set("vpn-expiry", date(a.expiresAt));
-      set("vpn-days", days(v.days)); set("vpn-subscription-status", statusLabel[v.status]);
+      set("vpn-days", formatRemainingDays(v.days)); set("vpn-subscription-status", statusLabel[v.status]);
     }
     show("usage-empty", !a.hasSubscription || v.status === "REVOKED");
     show("usage-details", a.hasSubscription && v.status !== "REVOKED");

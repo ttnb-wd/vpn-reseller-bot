@@ -627,7 +627,7 @@ function buildPackageDetailKeyboard(pkg, isRenewal = false) {
   const prefix = isRenewal ? "renew_duration" : "duration";
   return Markup.inlineKeyboard([
     [Markup.button.callback(isRenewal ? "♻️ Renew This Plan" : "🧾 Buy This Plan", `${prefix}_${pkg.id}_1`)],
-    // Retain the existing multi-month purchases with database-derived day counts.
+    // Retain longer purchases with database-derived day counts.
     [3, 6].map((months) => Markup.button.callback(
       `⏳ ${Number(pkg.durationDays) * months} Days`, `${prefix}_${pkg.id}_${months}`
     )),
@@ -691,7 +691,7 @@ function buildPaymentKeyboard(order) {
 }
 
 function formatPayment(order) {
-  return `🧾 Payment — ငွေပေးချေပါ\n\nမှာယူမှု: ${order.orderNumber}\nPackage: ${order.plan}\n` +
+  return `🧾 Payment — ငွေပေးချေပါ\n\nမှာယူမှု: ${order.orderNumber}\nPackage: ${customerPlan(order.plan, order.totalDurationDays)}\n` +
     `ပေးချေရန်: ${formatMmk(order.price)}\n\n` +
     "1️⃣ အောက်က ငွေပေးချေနည်းခလုတ်တစ်ခုကို နှိပ်ပါ\n" +
     "2️⃣ ပေါ်လာမယ့် အကောင့်ကို ငွေပမာဏအတိအကျ လွှဲပါ\n" +
@@ -699,8 +699,9 @@ function formatPayment(order) {
     "4️⃣ Admin စစ်ဆေးအတည်ပြုတာကို စောင့်ပါ\n\nအတည်ပြုပြီးရင် VPN အဆင်သင့်ဖြစ်ကြောင်းနဲ့ Setup လုပ်နည်းကို ပို့ပေးပါမယ်။";
 }
 
-function getDurationLabel(months) {
-  return `${months} Month${months > 1 ? "s" : ""}`;
+function customerPlan(plan, durationDays) {
+  const name = String(plan || "VPN package");
+  return name.replace(/ - \d+ Months?$/, durationDays == null ? "" : ` - ${durationDays} Days`);
 }
 
 function calculatePackage(pkg, durationMonths) {
@@ -1104,10 +1105,7 @@ async function createPackageOrder(
       }
     }
 
-    const plan =
-      `${pkg.name} - ${getDurationLabel(
-        durationMonths
-      )}`;
+    const plan = `${pkg.name} - ${durationDays} Days`;
 
     // One confirmation message identifies one order, including after a restart.
     // The existing unique orderNumber constraint makes concurrent presses atomic.
@@ -1139,7 +1137,7 @@ async function createPackageOrder(
     const pendingAt = recentPending?.createdAt?.epochMilliseconds === undefined
       ? new Date(recentPending?.createdAt).getTime()
       : Number(recentPending.createdAt.epochMilliseconds);
-    if (recentPending && recentPending.plan === plan &&
+    if (recentPending && customerPlan(recentPending.plan, recentPending.totalDurationDays) === plan &&
         Number(recentPending.price) === Number(totalPriceMmk) &&
         Number.isFinite(pendingAt) && Date.now() - pendingAt < 60000) {
       await ctx.reply(formatPayment(recentPending), buildPaymentKeyboard(recentPending));
@@ -1203,8 +1201,8 @@ async function sendAdminProofReview(order, photo, deferActions = false) {
   const caption =
     `💰 PAYMENT VERIFICATION\n\n` +
     `Order: ${order.orderNumber}\n` +
-    `Package: ${pkg?.name || order.plan}\n` +
-    `Duration: ${getDurationLabel(order.durationMonths || 1)}\n` +
+    `Package: ${pkg?.name || customerPlan(order.plan, order.totalDurationDays)}\n` +
+    `Duration: ${order.totalDurationDays == null ? "Unavailable" : `${order.totalDurationDays} Days`}\n` +
     `Data: ${formatNumber(order.totalDataGb || 0)} GB\n` +
     `Price: ${formatMmk(order.price)}\n\n` +
     `Customer: ${customer?.firstName || "N/A"}\n` +
@@ -1261,7 +1259,7 @@ const miniAppRouter = createMiniAppRouter({
       hasSubscription: Boolean(subscription),
       status: state,
       displayName: customer?.firstName || telegramUser?.first_name || null,
-      plan: subscription?.plan || null,
+      plan: subscription ? customerPlan(subscription.plan) : null,
       dataUsedGb: subscription?.dataUsedGb ?? null,
       dataLimitGb: subscription?.dataLimitGb ?? null,
       startedAt: subscription?.startedAt?.toString() || null,
@@ -1647,7 +1645,7 @@ async function startBot() {
         );
       }
 
-      const packageLabel = subscription.plan || "VPN package";
+      const packageLabel = customerPlan(subscription.plan);
       const hasReusableKey = Boolean(subscription.vpnKeyId &&
         isReusableAccessKey(subscription.vpnKeyId, subscription.vpnKey) &&
         isValidOutlineAccessKey(subscription.vpnKey));
@@ -2147,7 +2145,7 @@ async function startBot() {
 
       await ctx.reply(
         `🧾 Payment — ${payment.name}\n\n` +
-          `မှာယူမှု: ${order.orderNumber}\nPackage: ${order.plan}\nပေးချေရန်: ${formatMmk(order.price)}\n\n` +
+          `မှာယူမှု: ${order.orderNumber}\nPackage: ${customerPlan(order.plan, order.totalDurationDays)}\nပေးချေရန်: ${formatMmk(order.price)}\n\n` +
           `အကောင့်အမည်: ${payment.accountName}\nအကောင့်နံပါတ်: ${payment.accountNumber}\n\n` +
           "အပေါ်ကအကောင့်ကို ငွေပမာဏအတိအကျ လွှဲပါ။\n" +
           "ပြီးရင် ငွေလွှဲ screenshot ကို ဒီ chat မှာ ပုံအဖြစ်ပို့ပြီး Admin စစ်ဆေးတာကို စောင့်ပါ။\n" +
@@ -2657,7 +2655,7 @@ async function startBot() {
 
           await bot.telegram.sendMessage(
             customer.telegramId,
-            formatActivation({ name: order.plan }, totalDataGb, expiresAt),
+            formatActivation({ name: customerPlan(order.plan, order.totalDurationDays) }, totalDataGb, expiresAt),
             buildMyVpnKeyboard(subscription, true)
           );
 
@@ -2893,7 +2891,7 @@ async function startBot() {
 
           await bot.telegram.sendMessage(
             customer.telegramId,
-            formatActivation({ name: order.plan }, newTotalDataGb, newExpiresAt, true),
+            formatActivation({ name: customerPlan(order.plan, order.totalDurationDays) }, newTotalDataGb, newExpiresAt, true),
             buildMyVpnKeyboard({ vpnKeyId: renewalAccessKey.id, vpnKey: renewalAccessKey.accessUrl }, true)
           );
 
@@ -3158,33 +3156,21 @@ async function startBot() {
 
         let message =
           "🗂️ My Orders — သင့်မှာယူမှုများ\n\n" +
-          "အခြေအနေမှာ ငွေပေးချေရန် / စစ်ဆေးရန် စောင့်နေသလား၊ VPN ဖွင့်ပေးနေသလား၊ ပြီးပြီလားဆိုတာ ပြထားပါတယ်။\n" +
+          "စောင့်ဆိုင်းနေသော မှာယူမှုများ၏ အခြေအနေကို အောက်တွင် ကြည့်နိုင်ပါတယ်။\n" +
           "Screenshot ပို့ပြီးသားဆိုရင် အတည်ပြုတာကို စောင့်ပါ။ ငွေပေးချေပြီးဆိုရင် Setup VPN ကိုနှိပ်ပြီး ချိတ်ဆက်ပါ။\n" +
           "အတည်မပြုနိုင်တာ၊ ပယ်ဖျက်ထားတာနဲ့ ပတ်သက်ပြီး အကူအညီလိုရင် Help ကိုနှိပ်ပါ။\n\n";
 
         for (const order of orders) {
-          const pkg =
-            order.packageId
-              ? await db.public.Package
-                  .where({
-                    id: order.packageId,
-                  })
-                  .first()
-              : null;
-
           message +=
             `🧾 ${order.orderNumber}\n` +
-            `Package: ${
-              pkg?.name ||
-              order.plan
-            }\n` +
+            `Package: ${customerPlan(order.plan, order.totalDurationDays)}\n` +
             `📡 Data: ${
               order.totalDataGb ||
               0
             } GB\n` +
-            `⏳ ကာလ: ${order.durationMonths || 1} လ\n` +
+            `⏳ ကာလ: ${order.totalDurationDays == null ? "မသိရ" : `${order.totalDurationDays} ရက်`}\n` +
             `🧾 ဈေးနှုန်း: ${formatMmk(order.price)}\n` +
-            `အခြေအနေ: ${formatOrderStatus(order.status)}\n`;
+            (order.status === "PAID" ? "" : `အခြေအနေ: ${formatOrderStatus(order.status)}\n`);
 
           if (order.expiresAt) {
             message +=

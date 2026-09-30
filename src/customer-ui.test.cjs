@@ -718,7 +718,7 @@ test("Mini App checkout reuses current package snapshots and prevents rapid dupl
   const bought = await bot.miniAppCreateOrder({ id: 123, first_name: "Buyer" }, {}, 7, currentVersion);
   assert.equal(bought.order.status, "PENDING_PAYMENT");
   assert.equal(bought.order.customerId, 1);
-  assert.equal(bought.order.plan, "Basic - 1 Month");
+  assert.equal(bought.order.plan, "Basic - 33 Days");
   assert.equal(Number(bought.order.price), 3450);
   assert.equal(bought.order.totalDataGb, 55);
   assert.equal(bought.order.totalDurationDays, 33);
@@ -1184,7 +1184,7 @@ test("orders and approved entitlements keep snapshots when an admin edits the Pa
     name: "Renamed", dataLimitGb: 300, durationDays: 45,
     priceMmk: "9000", active: true, sortOrder: 2,
   });
-  assert.equal(firstOrder.plan, "Standard - 1 Month");
+  assert.equal(firstOrder.plan, "Standard - 31 Days");
   assert.equal(firstOrder.totalDataGb, 213);
   assert.equal(firstOrder.totalDurationDays, 31);
   assert.equal(firstOrder.price, 7650);
@@ -1194,7 +1194,7 @@ test("orders and approved entitlements keep snapshots when an admin edits the Pa
   assert.equal(subscription.dataLimitGb, 213);
   assert.equal(subscription.expiresAt.toString(), firstOrder.expiresAt.toString());
   const myVpn = await bot.action("my_vpn");
-  assert.match(myVpn.replies[0][0], /Package: Standard - 1 Month/);
+  assert.match(myVpn.replies[0][0], /Package: Standard - 31 Days/);
   assert.doesNotMatch(myVpn.replies[0][0], /Renamed/);
   const originalExpiry = subscription.expiresAt;
   await updatePackage(bot.client, 19, {
@@ -1206,7 +1206,7 @@ test("orders and approved entitlements keep snapshots when an admin edits the Pa
   const renewalCallback = await confirmationButton(bot, 19, 1, true);
   await bot.action(renewalCallback, 123, 2);
   const renewal = bot.tables.Order[1];
-  assert.equal(renewal.plan, "Renamed - 1 Month");
+  assert.equal(renewal.plan, "Renamed - 46 Days");
   assert.equal(renewal.price, 9500);
   assert.equal(renewal.totalDataGb, 320);
   assert.equal(renewal.totalDurationDays, 46);
@@ -1215,6 +1215,63 @@ test("orders and approved entitlements keep snapshots when an admin edits the Pa
   await bot.action("approve_payment_2", 999);
   assert.equal(subscription.dataLimitGb, 533);
   assert.equal(subscription.expiresAt.toString(), originalExpiry.add({ hours: 46 * 24 }).toString());
+});
+
+test("30-day activation and renewal add exactly 60 days in total, including retry", async () => {
+  const bot = await loadBot();
+  await bot.action(await confirmationButton(bot, 7));
+  const first = bot.tables.Order[0];
+  assert.equal(first.totalDurationDays, 30);
+  await bot.action("approve_payment_1", 999);
+  const subscription = bot.tables.Subscription[0];
+  assert.equal(first.status, "PAID");
+  assert.equal(first.expiresAt.epochMilliseconds - first.startedAt.epochMilliseconds, 30 * 86400000);
+  const initialExpiry = subscription.expiresAt;
+  await bot.action(await confirmationButton(bot, 7, 1, true), 123, 140);
+  const renewal = bot.tables.Order[1];
+  assert.equal(renewal.totalDurationDays, 30);
+  await bot.action("approve_payment_2", 999);
+  assert.equal(renewal.status, "PAID");
+  assert.equal(subscription.expiresAt.epochMilliseconds - initialExpiry.epochMilliseconds, 30 * 86400000);
+  assert.equal(subscription.expiresAt.epochMilliseconds - first.startedAt.epochMilliseconds, 60 * 86400000);
+  await bot.action("approve_payment_2", 999);
+  assert.equal(subscription.expiresAt.epochMilliseconds - first.startedAt.epochMilliseconds, 60 * 86400000);
+});
+
+test("expired 30-day renewal restarts from approval time", async () => {
+  const bot = await loadBot();
+  await bot.action(await confirmationButton(bot, 7));
+  await bot.action("approve_payment_1", 999);
+  const subscription = bot.tables.Subscription[0];
+  subscription.expiresAt = Temporal.Now.instant().subtract({ hours: 5 * 24 });
+  await bot.action(await confirmationButton(bot, 7, 1, true), 123, 141);
+  const before = Temporal.Now.instant().epochMilliseconds;
+  await bot.action("approve_payment_2", 999);
+  const after = Temporal.Now.instant().epochMilliseconds;
+  assert.equal(bot.tables.Order[1].totalDurationDays, 30);
+  assert.ok(subscription.expiresAt.epochMilliseconds >= before + 30 * 86400000);
+  assert.ok(subscription.expiresAt.epochMilliseconds <= after + 30 * 86400000);
+});
+
+test("My Orders uses saved days and omits activated status without changing database status", async () => {
+  const bot = await loadBot();
+  await bot.action(await confirmationButton(bot, 7));
+  const first = bot.tables.Order[0];
+  first.status = "PAID";
+  first.plan = "Basic - 1 Month"; // Historical label, preserved in storage.
+  bot.tables.Order.push({ ...first, id: 2, orderNumber: "VPN-HISTORICAL-60",
+    totalDurationDays: 60, durationMonths: 2, status: "PROCESSING" });
+  bot.tables.Package[0].durationDays = 45;
+  const result = await bot.action("my_orders");
+  const message = result.replies[0][0];
+  assert.match(message, /ကာလ: 30 ရက်/);
+  assert.match(message, /ကာလ: 60 ရက်/);
+  assert.doesNotMatch(message, /ကာလ: .* လ|1 Month|2 Months/);
+  assert.doesNotMatch(message, /အခြေအနေ: ငွေပေးချေပြီး/);
+  assert.match(message, /အခြေအနေ: VPN ဖွင့်ပေးနေသည်/);
+  assert.equal(first.status, "PAID");
+  assert.equal(first.totalDurationDays, 30);
+  assert.equal(first.plan, "Basic - 1 Month");
 });
 
 test("repeated confirmations reuse one order and preserve its price and terminal status", async () => {
@@ -1321,11 +1378,11 @@ test("restart after failed order key write recovers the same Outline key", async
 
 test("renewal retry after the subscription write keeps the exact expiry and data limit", async () => {
   const bot = await loadBot();
-  await bot.action(await confirmationButton(bot, 19));
+  await bot.action(await confirmationButton(bot, 7));
   await bot.action("approve_payment_1", 999);
   bot.tables.Subscription[0].status = "DATA_LIMIT_REACHED";
   bot.tables.Subscription[0].dataUsedGb = bot.tables.Subscription[0].dataLimitGb;
-  await bot.action(await confirmationButton(bot, 19, 1, true), 123, 88);
+  await bot.action(await confirmationButton(bot, 7, 1, true), 123, 88);
   const originalWhere = bot.client.public.Order.where;
   let failed = false;
   bot.client.public.Order.where = (filter) => {

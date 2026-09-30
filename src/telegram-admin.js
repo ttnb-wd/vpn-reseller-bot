@@ -81,7 +81,7 @@ function createTelegramAdmin({ bot, db, adminTelegramId, supportService, dataApi
   async function order(ctx, id, page) {
     const o = await dataApi.getOrderDetail(db, id);
     if (!o) return show(ctx, "Order not found.", nav(`orders_${page}`));
-    await show(ctx, `🗂️ Order: ${clean(o.orderNumber)}\nCustomer: ${clean(o.customer?.username || o.customer?.firstName)}\nTelegram ID: ${clean(o.customer?.telegramId)}\nPackage: ${clean(o.plan)}\nPrice: ${number(o.price)}\nDuration: ${number(o.durationMonths)} months\nPayment Method: ${clean(o.paymentMethod)}\nPayment Reference: ${clean(o.paymentReference)}\nStatus: ${clean(o.status)}\nCreated: ${date(o.createdAt)}\nPaid At: ${date(o.paidAt)}\nStarted At: ${date(o.startedAt)}\nExpires At: ${date(o.expiresAt)}\nVPN Key ID: ${clean(o.vpnKeyId)}`,
+    await show(ctx, `🗂️ Order: ${clean(o.orderNumber)}\nCustomer: ${clean(o.customer?.username || o.customer?.firstName)}\nTelegram ID: ${clean(o.customer?.telegramId)}\nPackage: ${clean(String(o.plan || "").replace(/ - \d+ Months?$/, ""))}\nPrice: ${number(o.price)}\nDuration: ${o.totalDurationDays == null ? "Unavailable" : `${number(o.totalDurationDays)} days`}\nPayment Method: ${clean(o.paymentMethod)}\nPayment Reference: ${clean(o.paymentReference)}\nStatus: ${clean(o.status)}\nCreated: ${date(o.createdAt)}\nPaid At: ${date(o.paidAt)}\nStarted At: ${date(o.startedAt)}\nExpires At: ${date(o.expiresAt)}\nVPN Key ID: ${clean(o.vpnKeyId)}`,
       [...(o.paymentProof ? [[button("🖼️ View Slip", `slip_${id}`)]] : []), ...nav(`orders_${page}`)]);
   }
   async function payments(ctx, page) {

@@ -67,10 +67,10 @@ function customerName(customer) {
     : customer?.firstName || customer?.telegramId || "-";
 }
 
-function duration(months) {
-  const count = Number(months);
+function duration(days) {
+  const count = Number(days);
   return Number.isInteger(count) && count > 0
-    ? `${formatNumber(count)} month${count === 1 ? "" : "s"}` : "-";
+    ? `${formatNumber(count)} day${count === 1 ? "" : "s"}` : "-";
 }
 
 function proofAvailable(order) {
@@ -294,7 +294,7 @@ function renderOrders(res, email, formToken, data) {
     <div class="user-head"><h3><a href="/admin/orders/${order.id}">${text(order.orderNumber)}</a></h3>${badge(order.status)}${legacyMockBadge(order.vpnKeyId)}</div>
     <dl>
       ${field("Customer", text(customerName(order.customer)))}${field("Telegram ID", text(order.customer?.telegramId))}
-      ${field("Package", text(order.package?.name || order.plan))}${field("Duration", duration(order.durationMonths))}
+      ${field("Package", text(order.package?.name || String(order.plan || "").replace(/ - \d+ Months?$/, "")))}${field("Duration", duration(order.totalDurationDays))}
       ${field("Price", `${formatNumber(order.price)} MMK`)}${field("Payment method", text(order.paymentMethod))}
       ${field("Payment reference", text(order.paymentReference))}${field("Created at", formatDate(order.createdAt))}
       ${field("Paid at", formatDate(order.paidAt))}${field("Started at", formatDate(order.startedAt))}
@@ -326,8 +326,8 @@ function renderOrderDetail(res, email, formToken, order) {
         ${field("First name", text(order.customer?.firstName))}
       </dl></section>
       <section class="panel"><h3>Order</h3><dl>
-        ${field("Order number", text(order.orderNumber))}${field("Package", text(order.package?.name || order.plan))}
-        ${field("Duration", duration(order.durationMonths))}${field("Price", `${formatNumber(order.price)} MMK`)}
+        ${field("Order number", text(order.orderNumber))}${field("Package", text(order.package?.name || String(order.plan || "").replace(/ - \d+ Months?$/, "")))}
+        ${field("Duration", duration(order.totalDurationDays))}${field("Price", `${formatNumber(order.price)} MMK`)}
         ${field("Status", badge(order.status))}${field("Payment method", text(order.paymentMethod))}
         ${field("Payment reference", text(order.paymentReference))}${field("Created at", formatDate(order.createdAt))}
         ${field("Paid at", formatDate(order.paidAt))}${field("Started at", formatDate(order.startedAt))}
