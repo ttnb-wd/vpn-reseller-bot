@@ -113,7 +113,31 @@ model Subscription {
   dataLimitGb Float?
   dataUsedGb  Float @default(0)
   lastUsageSyncedAt DateTime?
+  dataUsedBytes BigInt?
+  expiryWarningSentAt Timestamptz(3)?
+  lowDataWarningSentAt Timestamptz(3)?
+  expiredNoticeSentAt Timestamptz(3)?
+  quotaNoticeSentAt Timestamptz(3)?
+  migrationNoticeSentAt Timestamptz(3)?
+  dynamicTokenHash String? @unique
+  dynamicTokenEncrypted String?
+  dynamicDeliveryMode String @default("MIGRATION")
+  notifications SubscriptionNotification[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @default(now())
+}
+
+model SubscriptionNotification {
+  id String @id
+  subscriptionId Int
+  subscription Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  cycle String
+  kind String
+  status String
+  attemptedAt Timestamptz(3)
+  nextAttemptAt Timestamptz(3)?
+  sentAt Timestamptz(3)?
+  telegramMessageId Int?
+  @@unique([subscriptionId, cycle, kind])
 }

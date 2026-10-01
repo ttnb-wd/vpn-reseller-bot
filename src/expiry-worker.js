@@ -3,6 +3,7 @@ const { EXPIRY_INTERVAL_MS } = require("./worker-intervals");
 
 function createExpiryWorker({ client, deleteAccessKey, blockAccessKey, restoreAccessKey,
   isAccessKeyNotFoundError, log = console,
+  evaluateNotifications = async () => {},
   now = () => Temporal.Now.instant(), intervalMs = EXPIRY_INTERVAL_MS,
   schedule = setInterval, cancel = clearInterval }) {
   let currentRun;
@@ -13,7 +14,6 @@ function createExpiryWorker({ client, deleteAccessKey, blockAccessKey, restoreAc
       const expiredAt = now();
       const subscriptions = await client.public.Subscription
         .where((subscription) => subscription.expiresAt.lte(expiredAt))
-        .where((subscription) => subscription.revokedAt.isNull())
         .where((subscription) => subscription.vpnKeyId.isNotNull()).all();
       for (const subscription of subscriptions) {
         try {
@@ -21,7 +21,7 @@ function createExpiryWorker({ client, deleteAccessKey, blockAccessKey, restoreAc
           if (typeof keyId !== "string" || !keyId || keyId.startsWith("mock-")) continue;
           // A stale worker read must not delete a key after a renewal.
           const current = await client.public.Subscription.where({ id: subscription.id }).first();
-          if (!current || current.vpnKeyId !== keyId || current.revokedAt ||
+          if (!current || current.vpnKeyId !== keyId || (current.revokedAt && !current.dynamicTokenHash) ||
               !current.expiresAt ||
               Temporal.Instant.compare(Temporal.Instant.from(current.expiresAt), now()) > 0) continue;
           // Approval may be extending this subscription with the same key.
@@ -47,7 +47,16 @@ function createExpiryWorker({ client, deleteAccessKey, blockAccessKey, restoreAc
             continue;
           }
           try {
-            await deleteAccessKey(keyId);
+            if (current.dynamicTokenHash) {
+              await blockAccessKey(keyId);
+              const afterBlock = await client.public.Subscription.where({ id: current.id }).first();
+              if (afterBlock?.vpnKeyId === keyId && !afterBlock.revokedAt &&
+                  afterBlock.status === "ACTIVE" && afterBlock.expiresAt &&
+                  Temporal.Instant.compare(Temporal.Instant.from(afterBlock.expiresAt), now()) > 0) {
+                await restoreAccessKey(keyId, afterBlock.dataLimitGb);
+              }
+            }
+            else await deleteAccessKey(keyId);
           } catch (error) {
             if (!isAccessKeyNotFoundError(error)) throw error;
           }
@@ -64,6 +73,9 @@ function createExpiryWorker({ client, deleteAccessKey, blockAccessKey, restoreAc
       log.error("Expiry scan failed; it will retry.", {
         status: Number.isInteger(error?.response?.status) ? error.response.status : undefined,
       });
+    } finally {
+      try { await evaluateNotifications(); }
+      catch { log.error("Subscription notification evaluation unavailable; it will retry."); }
     }
   }
 

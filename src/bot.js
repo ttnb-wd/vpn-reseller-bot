@@ -21,6 +21,9 @@ const { createMiniAppRouter } = require("./mini-app");
 const { connectCopy } = require("./mini-app-connect-copy");
 const { effectiveSubscriptionState } = require("./subscription-state");
 const { createExpiryWorker } = require("./expiry-worker");
+const { createDynamicKeys, createDynamicConfigRouter } = require("./dynamic-config");
+const { createSubscriptionNotifications, renewalNotificationReset } = require("./subscription-notifications");
+const { createNotificationStore } = require("./notification-store");
 const { USAGE_SYNC_INTERVAL_MS } = require("./worker-intervals");
 const { safeDiagnosticCode, sanitizeDiagnosticMessage,
   logHandlerFailure } = require("./safe-diagnostics");
@@ -77,6 +80,20 @@ let usageSyncTimer;
 let usageSyncRunning = false;
 let usageSyncCompletion;
 let expiryWorker;
+let dynamicKeys;
+let subscriptionNotifications;
+let notificationStore;
+
+app.use("/vpn/config", createDynamicConfigRouter({ getClient: () => db }));
+
+function customerAccessUrl(subscription) {
+  return dynamicKeys && subscription.dynamicTokenHash
+    ? dynamicKeys.accessUrl(subscription) : subscription.vpnKey;
+}
+
+async function prepareDynamicSubscription(subscription) {
+  return dynamicKeys ? dynamicKeys.ensure(subscription) : subscription;
+}
 
 const pendingProofs = new Map();
 const allowConnect = createWindowLimiter({ windowMs: 60000, max: 30 });
@@ -333,7 +350,7 @@ app.get("/connect/:token", async (req, res) => {
     const remainingMs = Math.min(payload.expiresAt,
       Number(Temporal.Instant.from(subscription.expiresAt).epochMilliseconds)) - Date.now();
     if (remainingMs <= 0) return invalidLink();
-    return res.type("html").send(renderVpnConnectPage(subscription.vpnKey, nonce, remainingMs, language));
+    return res.type("html").send(renderVpnConnectPage(customerAccessUrl(subscription), nonce, remainingMs, language));
   } catch {
     console.error("VPN setup page could not be loaded.");
     return res.status(503).type("text").send(t("Connect ကို အခုဖွင့်လို့မရသေးပါဘူး။ ခဏနေရင် My VPN မှာ ပြန်စမ်းကြည့်ပေးပါ။"));
@@ -472,7 +489,7 @@ async function getUsableVpnSubscription(ctx) {
     return null;
   }
 
-  return subscription;
+  return prepareDynamicSubscription(subscription);
 }
 
 async function sendVpnSetup(ctx) {
@@ -487,7 +504,7 @@ async function sendVpnSetup(ctx) {
       "မပွင့်ရင် Safari / Chrome နဲ့ ဖွင့်ကြည့်ပေးပါ။\n" +
       "Link က 10 မိနစ်အတွင်း သက်တမ်းကုန်ပါတယ်။ လိုရင် Setup VPN ကို ပြန်နှိပ်ပေးပါ။ VPN key ကို မမျှဝေပေးပါနဲ့။",
     Markup.inlineKeyboard([
-      [copyVpnKeyButton(subscription.vpnKey), Markup.button.url("🧭 Open Outline", createVpnConnectUrl(subscription))],
+      [copyVpnKeyButton(customerAccessUrl(subscription)), Markup.button.url("🧭 Open Outline", createVpnConnectUrl(subscription))],
       [Markup.button.callback("⬅️ Back", "my_vpn")],
     ])
   );
@@ -524,8 +541,9 @@ async function sendExistingVpnKey(ctx, actionTitle) {
     return;
   }
 
+  const prepared = await prepareDynamicSubscription(subscription);
   await ctx.reply(
-    `${actionTitle}\n\nဒါက လက်ရှိ VPN key ပါ။ အောက်က key ကို ကူးပေးပါ။\n\n${subscription.vpnKey}\n\nOutline ထဲမှာ key ထည့်ပြီး Add → Connect ကိုနှိပ်ပေးပါ။ VPN key ကို မမျှဝေပေးပါနဲ့။`
+    `${actionTitle}\n\nဒါက လက်ရှိ VPN key ပါ။ အောက်က key ကို ကူးပေးပါ။\n\n${customerAccessUrl(prepared)}\n\nOutline ထဲမှာ key ထည့်ပြီး Add → Connect ကိုနှိပ်ပေးပါ။ VPN key ကို မမျှဝေပေးပါနဲ့။`
   );
 }
 
@@ -652,7 +670,7 @@ function buildMyVpnKeyboard(subscription, activated = false) {
   const hasKey = isReusableAccessKey(subscription.vpnKeyId, subscription.vpnKey);
   return Markup.inlineKeyboard([
     hasKey
-      ? [Markup.button.callback("🛰️ Setup VPN", "setup_vpn"), copyVpnKeyButton(subscription.vpnKey)]
+      ? [Markup.button.callback("🛰️ Setup VPN", "setup_vpn"), copyVpnKeyButton(customerAccessUrl(subscription))]
       : [Markup.button.callback("🎧 Support", "help")],
     [activated ? Markup.button.callback("🌐 My VPN", "my_vpn") : Markup.button.callback("♻️ Renew", "renew_vpn"),
       Markup.button.callback("🗂️ My Orders", "my_orders")],
@@ -915,6 +933,7 @@ async function syncAccessKeyUsage() {
       const hasUsage = Object.hasOwn(usageByKeyId, String(keyId));
       if (!keyId || String(keyId).startsWith("mock-") ||
           subscription.revokedAt ||
+          (subscription.expiresAt && Temporal.Instant.compare(subscription.expiresAt, Temporal.Now.instant()) <= 0) ||
           (existingKeyIds && !existingKeyIds.has(String(keyId))) ||
           (!existingKeyIds && !hasUsage)) {
         skipped++;
@@ -940,6 +959,7 @@ async function syncAccessKeyUsage() {
           const changed = await db.public.Subscription
             .where({ id: subscription.id, vpnKeyId: keyId, status: "DATA_LIMIT_REACHED" })
             .updateAll({ dataUsedGb: Math.max(Number(subscription.dataUsedGb) || 0, dataUsedGb),
+              dataUsedBytes: BigInt(Math.max(Number(subscription.dataUsedBytes) || 0, bytes)),
               lastUsageSyncedAt: Temporal.Now.instant() });
           updated += changed.length;
           continue;
@@ -957,16 +977,16 @@ async function syncAccessKeyUsage() {
         if (reached) {
           // Latch the quota state before the second Outline call. Only record
           // a completed sync after its zero-limit read-back also succeeds.
-          const latched = await current.updateAll({ dataUsedGb, status: "DATA_LIMIT_REACHED" });
+          const latched = await current.updateAll({ dataUsedGb, dataUsedBytes: BigInt(bytes), status: "DATA_LIMIT_REACHED" });
           if (latched.length) {
             await setAccessKeyDataLimit(keyId, 0);
             const changed = await db.public.Subscription
               .where({ id: subscription.id, vpnKeyId: keyId, status: "DATA_LIMIT_REACHED" })
-              .updateAll({ dataUsedGb, lastUsageSyncedAt: Temporal.Now.instant() });
+              .updateAll({ dataUsedGb, dataUsedBytes: BigInt(bytes), lastUsageSyncedAt: Temporal.Now.instant() });
             updated += changed.length;
           }
         } else {
-          const changed = await current.updateAll({ dataUsedGb,
+          const changed = await current.updateAll({ dataUsedGb, dataUsedBytes: BigInt(bytes),
             lastUsageSyncedAt: Temporal.Now.instant() });
           updated += changed.length;
         }
@@ -983,6 +1003,7 @@ async function syncAccessKeyUsage() {
       status: safeHttpStatus(error?.response?.status),
     });
   } finally {
+    await subscriptionNotifications?.run();
     usageSyncRunning = false;
     finishSync();
     usageSyncCompletion = null;
@@ -1363,10 +1384,11 @@ const miniAppRouter = createMiniAppRouter({
   },
   async getConnectUrl(telegramId) {
     if (!allowMiniConnect(telegramId)) return null;
-    const { subscription } = await findCustomerSubscription(telegramId);
+    let { subscription } = await findCustomerSubscription(telegramId);
     if (!isSubscriptionActive(subscription) ||
         !isReusableAccessKey(subscription.vpnKeyId, subscription.vpnKey) ||
         !isValidOutlineAccessKey(subscription.vpnKey)) return null;
+    subscription = await prepareDynamicSubscription(subscription);
     return `${createVpnConnectUrl(subscription)}?lang=en`;
   },
   async sendBotFlow(telegramId, flow, packageId) {
@@ -1431,11 +1453,33 @@ async function startBot() {
   db = database.client;
   console.log("PostgreSQL connected.");
 
+  dynamicKeys = createDynamicKeys({ client: db, baseUrl: connectConfig.baseUrl,
+    secret: process.env.CONNECT_TOKEN_SECRET });
+  notificationStore = createNotificationStore();
+  subscriptionNotifications = createSubscriptionNotifications({ store: notificationStore,
+    sendMessage: (chatId, text, extra) => bot.telegram.callApi("sendMessage",
+      { chat_id: chatId, text, ...extra }, { signal: AbortSignal.timeout(15000) }),
+    async prepareMigration(subscription) {
+      const prepared = await dynamicKeys.ensure(subscription);
+      const accessUrl = dynamicKeys.accessUrl(prepared);
+      return { accessUrl,
+        text: prepared.dynamicDeliveryMode === "NEW"
+          ? formatActivation({ name: customerPlan(prepared.plan) }, prepared.dataLimitGb,
+            Temporal.Instant.from(prepared.expiresAt.toISOString?.() || prepared.expiresAt.toString())) : undefined,
+        extra: { link_preview_options: { is_disabled: true }, reply_markup: { inline_keyboard: [
+          [{ text: "ချိတ်ဆက်ရန်", url: createVpnConnectUrl({ ...prepared,
+            expiresAt: Temporal.Instant.from(prepared.expiresAt.toISOString?.() || prepared.expiresAt.toString()) }) }],
+          [{ ...copyVpnKeyButton(accessUrl), text: "ကီးကို ကူးယူရန်" }],
+        ] } },
+      };
+    },
+  });
+
   expiryWorker = createExpiryWorker({ client: db, deleteAccessKey,
     blockAccessKey: (keyId) => setAccessKeyDataLimit(keyId, 0),
     restoreAccessKey: (keyId, limitGb) => setAccessKeyDataLimit(keyId, gbToBytes(limitGb)),
-    isAccessKeyNotFoundError, schedule: setInterval, cancel: clearInterval });
-  expiryWorker.start();
+    isAccessKeyNotFoundError, schedule: setInterval, cancel: clearInterval,
+    evaluateNotifications: () => subscriptionNotifications.run() });
 
   startupStage = "PROCESSING recovery";
   await recoverStuckProcessingOrders();
@@ -1443,6 +1487,7 @@ async function startBot() {
 
   startupStage = "Telegram launch";
   bot = new Telegraf(process.env.BOT_TOKEN);
+  expiryWorker.start();
   navigation = createNavigation();
   const screenActions = [];
   const originalAction = bot.action.bind(bot);
@@ -1645,7 +1690,7 @@ async function startBot() {
           (hasReusableKey
             ? "ချိတ်ဆက်ဖို့ Setup VPN ကိုနှိပ်ပေးပါ။\nသက်တမ်းတိုးချင်ရင် Renew ကိုနှိပ်လို့ရပါတယ်။"
             : "VPN key ကို အခုယူလို့မရသေးပါဘူး။ Support မှာ ဆက်သွယ်ပေးပါ။"),
-        buildMyVpnKeyboard(subscription)
+        buildMyVpnKeyboard(await prepareDynamicSubscription(subscription))
       );
     } catch (error) {
       logHandlerFailure("my_vpn", error);
@@ -2591,6 +2636,8 @@ async function startBot() {
                   totalDataGb,
 
                 dataUsedGb: 0,
+                dataUsedBytes: 0n,
+                dynamicDeliveryMode: "NEW",
               }
             );
 
@@ -2633,11 +2680,8 @@ async function startBot() {
           // 14. Notify customer
           // ---------------------------------
 
-          await bot.telegram.sendMessage(
-            customer.telegramId,
-            formatActivation({ name: customerPlan(order.plan, order.totalDurationDays) }, totalDataGb, expiresAt),
-            buildMyVpnKeyboard(subscription, true)
-          );
+          subscription = await prepareDynamicSubscription(subscription);
+          await subscriptionNotifications.deliver(subscription.id, "migrationNotice");
 
           console.log(
             `New subscription created for customer ${customer.id}. Order ${order.orderNumber} approved.`
@@ -2805,6 +2849,7 @@ async function startBot() {
               id: subscription.id,
             })
             .update({
+              ...renewalNotificationReset(alreadyApplied),
               packageId:
                 pkg.id,
 
@@ -2869,10 +2914,12 @@ async function startBot() {
           // 19. Notify customer
           // ---------------------------------
 
+          const renewedSubscription = await db.public.Subscription.where({ id: subscription.id }).first();
+          const preparedRenewal = await prepareDynamicSubscription(renewedSubscription);
           await bot.telegram.sendMessage(
             customer.telegramId,
             formatActivation({ name: customerPlan(order.plan, order.totalDurationDays) }, newTotalDataGb, newExpiresAt, true),
-            buildMyVpnKeyboard({ vpnKeyId: renewalAccessKey.id, vpnKey: renewalAccessKey.accessUrl }, true)
+            buildMyVpnKeyboard(preparedRenewal, true)
           );
 
           console.log(
@@ -3231,6 +3278,7 @@ async function startBot() {
     clearInterval(usageSyncTimer);
     if (usageSyncCompletion) await usageSyncCompletion;
     await expiryWorker?.stop();
+    await notificationStore?.close();
     try {
       bot.stop(signal);
     } catch (error) {

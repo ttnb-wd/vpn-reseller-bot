@@ -20,7 +20,8 @@ function sanitizeDiagnosticMessage(value) {
     if (secret) message = message.split(secret).join("[redacted]");
   }
   return message
-    .replace(/(?:https?|ss|postgres(?:ql)?):\/\/[^\s"'<>)]*/gi, "[redacted URL]")
+    .replace(/(?:https?|ssconf|ss|postgres(?:ql)?):\/\/[^\s"'<>)]*/gi, "[redacted URL]")
+    .replace(/\/vpn\/config\/[^\s"'<>)]*/gi, "/vpn/config/[redacted]")
     .replace(/\b\d{5,}:[A-Za-z0-9_-]{20,}\b/g, "[redacted token]")
     .replace(/(?:password|token|secret)\s*[:=]\s*[^\s,;]+/gi, "[redacted credential]")
     .replace(/[\r\n\t]+/g, " ")

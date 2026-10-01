@@ -136,3 +136,21 @@ test("a renewal completed during expiry blocking has its allowance restored", as
   assert.deepEqual(calls, [["block", "renewing"], ["restore", "renewing", 325]]);
   assert.equal(rows[0].revokedAt, null);
 });
+
+test("dynamic expiry blocks the same Outline key, retains credentials and re-enforces on restart", async () => {
+  const rows = [{ id: 1, customerId: 11, vpnKeyId: "dynamic-existing", vpnKey: "ss://synthetic",
+    dynamicTokenHash: "synthetic-hash", status: "ACTIVE", expiresAt: expired, revokedAt: null }];
+  const blocked = [], deleted = [];
+  const worker = fixture(rows, async (id) => deleted.push(id), [], async (id) => blocked.push(id)).worker;
+  await worker.run(); assert.ok(rows[0].revokedAt); assert.equal(rows[0].vpnKey, "ss://synthetic");
+  const restarted = fixture(rows, async (id) => deleted.push(id), [], async (id) => blocked.push(id)).worker;
+  await restarted.run(); assert.deepEqual(deleted, []); assert.deepEqual(blocked, ["dynamic-existing", "dynamic-existing"]);
+});
+
+test("the existing expiry timer evaluates notifications even when enforcement has no candidates", async () => {
+  let scans = 0;
+  const client = { public: { Subscription: { where() { return { where() { return this; }, async all() { return []; } }; } } } };
+  const worker = createExpiryWorker({ client, now: () => clock,
+    async evaluateNotifications() { scans++; }, log: { error() {} } });
+  await worker.run(); await worker.run(); assert.equal(scans, 2);
+});

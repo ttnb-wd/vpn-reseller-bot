@@ -105,7 +105,7 @@ async function wipeDatabase(client) {
   try {
     const packages = await client.query('SELECT count(*)::int AS count FROM public."package"');
     if (packages.rows[0].count < 1) throw new Error("Package table is empty; reset stopped.");
-    await client.query('TRUNCATE TABLE public."supportTicket", public."subscription", public."order", public."customer" RESTART IDENTITY');
+    await client.query('TRUNCATE TABLE public."subscriptionNotification", public."supportTicket", public."subscription", public."order", public."customer" RESTART IDENTITY');
     for (const table of TABLES.filter((t) => t !== "Package")) {
       const result = await client.query(`SELECT count(*)::int AS count FROM public."${PHYSICAL[table]}"`);
       if (result.rows[0].count !== 0) throw new Error("Operational rows remain; rolling back.");

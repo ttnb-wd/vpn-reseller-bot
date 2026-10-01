@@ -24,6 +24,7 @@ async function loadBot(existingTables = null, outlineKeys = new Map(), options =
     ],
   };
   existingTables && (tables.SupportMessage ||= []);
+  if (!tables.notificationAttempts) Object.defineProperty(tables, "notificationAttempts", { value: [], enumerable: false });
   const matches = (row, filter) => Object.entries(filter).every(([key, value]) =>
     row[key] === value || value === null && row[key] == null);
   const predicateFor = (filter) => typeof filter === "function"
@@ -106,7 +107,13 @@ async function loadBot(existingTables = null, outlineKeys = new Map(), options =
   class FakeTelegraf {
     constructor() {
       this.telegram = {
-        async sendMessage(...args) { sent.push({ type: "message", args }); },
+        async callApi(method, payload) {
+          assert.equal(method, "sendMessage");
+          const { chat_id, text, ...extra } = payload;
+          sent.push({ type: "message", args: [chat_id, text, extra] });
+          return { message_id: sent.length };
+        },
+        async sendMessage(...args) { sent.push({ type: "message", args }); return { message_id: sent.length }; },
         async sendPhoto(...args) {
           if (typeof args[1] !== "string" && rejectMiniPhotoOnce) {
             rejectMiniPhotoOnce = false;
@@ -149,6 +156,9 @@ async function loadBot(existingTables = null, outlineKeys = new Map(), options =
     __dirname: __dirname,
     require(name) {
       if (name === "dotenv") return { config() {} };
+      if (name === "./notification-store") return { createNotificationStore() {
+        return localRequire("./notification-test-fixture.cjs").createMemoryStore(tables.Subscription, tables.notificationAttempts, tables.Order);
+      } };
       if (name === "./mini-app") return { createMiniAppRouter(args) { miniAppCallbacks = args; return () => {}; } };
       if (name === "./expiry-worker") return { createExpiryWorker() {
         return { start() {}, stop() {} };
@@ -207,7 +217,7 @@ async function loadBot(existingTables = null, outlineKeys = new Map(), options =
       once(signal, handler) { signals[signal] = handler; },
       exit(code) { exits.push(code); },
     },
-    Buffer, URL, setTimeout, clearTimeout, clearInterval,
+    Buffer, URL, AbortSignal, setTimeout, clearTimeout, clearInterval,
     setInterval(fn, ms) { scheduledIntervals.push({ fn, ms }); return scheduledIntervals.length; },
     console: { log() {}, error(...args) { errors.push(args); }, warn() {} }, module: { exports: {} },
   });
@@ -1322,7 +1332,10 @@ test("payment proof, approval, My VPN, setup and renewal retain a single real ke
   const activated = bot.sent.find((sent) => sent.type === "message").args;
   assert.match(activated[1], /VPN ကို စတင်အသုံးပြုလို့ရပါပြီ/);
   assert.equal(activated[1].includes(key), false);
-  assert.equal(activated[2].reply_markup.inline_keyboard[0][1].copy_text.text, key);
+  const dynamicKey = activated[2].reply_markup.inline_keyboard[1][0].copy_text.text;
+  assert.match(dynamicKey, /^ssconf:\/\//);
+  assert.match(activated[1], /ssconf:\/\//);
+  assert.equal(activated[1].includes(key), false);
   subscription.dataUsedGb = 35;
   const myVpn = await bot.action("my_vpn");
   assert.match(myVpn.replies[0][0], /35 GB \/ 213 GB/);
@@ -1330,7 +1343,7 @@ test("payment proof, approval, My VPN, setup and renewal retain a single real ke
   assert.deepEqual(plain(buttons(myVpn.replies[0]).map((row) => row.length)), [2, 2, 1]);
   for (const callback of ["setup_vpn", "add_device", "connection_link", "setup_platform_ios"]) {
     const setup = await bot.action(callback);
-    assert.equal(buttons(setup.replies[0])[0][0].copy_text.text, key);
+    assert.equal(buttons(setup.replies[0])[0][0].copy_text.text, dynamicKey);
     assert.match(buttons(setup.replies[0])[0][1].url, /^https:\/\/vpn.example.test\/connect\/v1\./);
   }
   await bot.action("copy_vpn_key");
@@ -1346,6 +1359,8 @@ test("payment proof, approval, My VPN, setup and renewal retain a single real ke
   assert.equal(bot.keyCalls.length, 1);
   assert.equal(bot.tables.Subscription.length, 1);
   assert.equal(subscription.vpnKey, key);
+  const renewed = await bot.action("setup_vpn");
+  assert.equal(buttons(renewed.replies[0])[0][0].copy_text.text, dynamicKey);
   assert.equal(subscription.dataLimitGb, 852);
   assert.equal(subscription.expiresAt.toString(), originalExpiry.add({ hours: 93 * 24 }).toString());
   assert.equal(bot.limitCalls.at(-1).bytes, 852 * 1024 ** 3);
