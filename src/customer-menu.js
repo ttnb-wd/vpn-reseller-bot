@@ -14,7 +14,7 @@ function buildPersistentCustomerKeyboard() {
     ["🛡️ Buy VPN", "🌐 My VPN"],
     ["📊 Usage", "♻️ Renew"],
     ["⚡ Connect", "🎧 Support"],
-  ]).resize().persistent().oneTime(false).placeholder("အောက်ကနေ ရွေးပေးပါ");
+  ]).resize().persistent().oneTime(false).placeholder("Select an option");
 }
 
 function buildPersistentAdminKeyboard() {
@@ -23,7 +23,7 @@ function buildPersistentAdminKeyboard() {
     ["📊 Admin Panel"],
     ["👥 Users", "🗂️ Orders"],
     ["🧾 Payments", "💎 Packages"],
-  ]).resize().persistent().oneTime(false).placeholder("အောက်ကနေ ရွေးပေးပါ");
+  ]).resize().persistent().oneTime(false).placeholder("Select an option");
 }
 
 module.exports = { buildCustomerMenu, buildPersistentCustomerKeyboard, buildPersistentAdminKeyboard };

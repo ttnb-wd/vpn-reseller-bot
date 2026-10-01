@@ -605,7 +605,7 @@ test("welcome, packages, confirmation and help only read customer data", async (
   assert.deepEqual(plain(welcome.replies[1][1].reply_markup.keyboard), [
     ["🛡️ Buy VPN", "🌐 My VPN"], ["📊 Usage", "♻️ Renew"], ["⚡ Connect", "🎧 Support"],
   ]);
-  assert.equal(welcome.replies[1][1].reply_markup.input_field_placeholder, "အောက်ကနေ ရွေးပေးပါ");
+  assert.equal(welcome.replies[1][1].reply_markup.input_field_placeholder, "Send a message");
   assert.equal(welcome.replies[1][1].reply_markup.is_persistent, true);
   assert.equal(welcome.replies[1][1].reply_markup.resize_keyboard, true);
   assert.equal(welcome.replies[1][1].reply_markup.one_time_keyboard, false);
@@ -647,7 +647,7 @@ test("polling remains active while the native menu is configured and callbacks s
   assert.deepEqual(plain(keyboard.keyboard.slice(3)), [
     ["📊 Admin Panel"], ["👥 Users", "🗂️ Orders"], ["🧾 Payments", "💎 Packages"],
   ]);
-  assert.equal(keyboard.input_field_placeholder, "အောက်ကနေ ရွေးပေးပါ");
+  assert.equal(keyboard.input_field_placeholder, "Send a message");
 });
 
 test("one polling launch stops and closes resources on SIGTERM or SIGINT", async () => {
