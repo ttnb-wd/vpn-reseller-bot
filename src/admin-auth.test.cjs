@@ -42,6 +42,7 @@ async function startServer(production = false, options = {}) {
     expectedOrigin: options.expectedOrigin || base.replace("http:", "https:"),
     getClient: () => ({}),
     dataApi: options.dataApi || emptyDataApi,
+    now: options.now,
   }));
   return {
     server, base,
@@ -63,6 +64,29 @@ test("admin configuration rejects missing or invalid values by name", () => {
     ADMIN_SESSION_SECRET: sessionSecret,
     RENDER_EXTERNAL_HOSTNAME: "metro-secure.onrender.com",
   }).renderOrigin, "https://metro-secure.onrender.com");
+});
+
+test('parallel login budgets are identical for nonexistent email and reset after cooldown', async () => {
+  let clock = Date.now();
+  const site = await startServer(false, { now: () => clock });
+  try {
+    const attempt = (account, submittedPassword = 'wrong') => fetch(site.base + '/admin/login', {
+      method: 'POST', redirect: 'manual', headers: {
+        'Content-Type': 'application/x-www-form-urlencoded', Origin: site.base },
+      body: new URLSearchParams({ email: account, password: submittedPassword }),
+    });
+    const known = await Promise.all(Array.from({ length: 8 }, () => attempt(email)));
+    const statuses = known.map(res => res.status).sort();
+    assert.deepEqual(statuses, [401, 401, 401, 401, 401, 429, 429, 429]);
+    assert.equal((await attempt(email)).status, 429);
+    clock += 15 * 60 * 1000 + 1;
+    const unknown = await Promise.all(Array.from({ length: 8 }, () => attempt('missing@example.test')));
+    assert.deepEqual(unknown.map(res => res.status).sort(), statuses);
+    assert.equal((await attempt('missing@example.test')).status, 429);
+    clock += 15 * 60 * 1000 + 1;
+    assert.equal((await attempt(email, password)).status, 303);
+    assert.equal((await attempt(email)).status, 401);
+  } finally { await site.close(); }
 });
 
 test("admin routes require a session; login, CSRF checks, and logout work", async (t) => {

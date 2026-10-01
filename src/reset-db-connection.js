@@ -5,7 +5,13 @@ function databaseConnection(databaseUrl, source) {
       !url.username || !url.pathname || url.pathname === "/") {
     throw new Error("DATABASE_URL must be a PostgreSQL URL with a host, user, and database.");
   }
-  const sslMode = url.searchParams.get("sslmode") || "prefer";
+  const sslMode = url.searchParams.get("sslmode") || "verify-full";
+  const internal = /^dpg-[a-z0-9]+-a(?:\.render\.internal)?$/.test(url.hostname);
+  const local = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+  if (!internal && !local && (sslMode === "disable" || sslMode === "prefer" ||
+      (sslMode !== "verify-full" && url.searchParams.get("uselibpqcompat") === "true"))) {
+    throw new Error("External database requires verified TLS.");
+  }
   if (!["disable", "prefer", "require", "verify-ca", "verify-full"].includes(sslMode)) {
     throw new Error("DATABASE_URL has an unsupported sslmode.");
   }
@@ -16,10 +22,7 @@ function databaseConnection(databaseUrl, source) {
     password: decodeURIComponent(url.password),
     database: decodeURIComponent(url.pathname.slice(1)),
     connectionTimeoutMillis: 10000,
-    // Render's External Database URL commonly uses sslmode=require. This
-    // matches libpq/psql's encrypted transport behavior for that mode.
-    ssl: sslMode === "disable" ? false : sslMode === "require" || sslMode === "prefer"
-      ? { rejectUnauthorized: false } : { rejectUnauthorized: true },
+    ssl: sslMode === "disable" && local ? false : { rejectUnauthorized: !internal },
   };
   const options = url.searchParams.get("options");
   if (options) config.options = options;

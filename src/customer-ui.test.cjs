@@ -32,6 +32,18 @@ async function loadBot(existingTables = null, outlineKeys = new Map(), options =
       isNull: () => (row) => row[field] == null,
     }) }))
     : (row) => matches(row, filter);
+  const lockTails = new Map();
+  const coordination = { owned: true, async acquire() { return true; },
+    async release() { this.owned = false; }, async close() {},
+    async customer(id, work) {
+      const previous = lockTails.get(id) || Promise.resolve();
+      let release;
+      const next = new Promise(resolve => { release = resolve; });
+      lockTails.set(id, next);
+      await previous;
+      try { return await work(() => {}); }
+      finally { release(); if (lockTails.get(id) === next) lockTails.delete(id); }
+    } };
   const client = { public: {} };
   for (const [name, rows] of Object.entries(tables)) {
     const create = (data) => {
@@ -91,6 +103,7 @@ async function loadBot(existingTables = null, outlineKeys = new Map(), options =
   let metricsCalls = 0;
   let metricsGate = null;
   const scheduledIntervals = [];
+  const cancelledIntervals = [];
   let existingKeyIds = new Set();
   let metricsUnavailable = false;
   let rejectMiniPhotoOnce = Boolean(options.rejectMiniPhotoOnce);
@@ -146,8 +159,9 @@ async function loadBot(existingTables = null, outlineKeys = new Map(), options =
     action(pattern, fn) { handlers.push({ pattern, fn }); }
     on(event, fn) { events[event] = fn; }
     catch() {}
-    async launch() {
+    async launch(_config, onLaunch) {
       launchCalls.push(true);
+      onLaunch?.();
       if (options.pollingStaysActive) await new Promise(() => {});
     }
     stop(signal) { stopCalls.push(signal); }
@@ -166,7 +180,7 @@ async function loadBot(existingTables = null, outlineKeys = new Map(), options =
       if (name === "express") return () => fakeApp;
       if (name === "telegraf") return { ...localRequire(name), Telegraf: FakeTelegraf };
       if (name === "./db") return { async createDatabase() {
-        return { client, runtime: { async close() { runtimeCloses.push(true); } } };
+        return { client, coordination, runtime: { async close() { runtimeCloses.push(true); } } };
       } };
       if (name === "./admin-auth") return {
         validateAdminConfig() { return { email: "admin@example.test" }; },
@@ -217,7 +231,8 @@ async function loadBot(existingTables = null, outlineKeys = new Map(), options =
       once(signal, handler) { signals[signal] = handler; },
       exit(code) { exits.push(code); },
     },
-    Buffer, URL, AbortSignal, setTimeout, clearTimeout, clearInterval,
+    Buffer, URL, AbortSignal, setTimeout, clearTimeout,
+    clearInterval(id) { cancelledIntervals.push(id); },
     setInterval(fn, ms) { scheduledIntervals.push({ fn, ms }); return scheduledIntervals.length; },
     console: { log() {}, error(...args) { errors.push(args); }, warn() {} }, module: { exports: {} },
   });
@@ -255,7 +270,7 @@ async function loadBot(existingTables = null, outlineKeys = new Map(), options =
     miniAppCreateOrder: context.module.exports.miniAppCreateOrder,
     packageVersion: context.module.exports.packageVersion,
     setUsage(value, ids) { usageByKeyId = value; existingKeyIds = new Set(ids); },
-    scheduledIntervals,
+    scheduledIntervals, cancelledIntervals,
     get metricsCalls() { return metricsCalls; },
     setMetricsGate(value) { metricsGate = value; },
     failNextZeroLimit() { failZeroLimitOnce = true; },
@@ -1404,8 +1419,8 @@ test("renewal retry after the subscription write keeps the exact expiry and data
   let failed = false;
   bot.client.public.Order.where = (filter) => {
     const query = originalWhere(filter);
-    const originalUpdate = query.update;
-    query.update = async (data) => {
+    const originalUpdate = query.updateAll;
+    query.updateAll = async (data) => {
       if (filter.id === 2 && data.status === "PAID" && !failed) {
         failed = true;
         throw new Error("synthetic order write failure");

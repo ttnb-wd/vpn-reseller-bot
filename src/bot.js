@@ -7,6 +7,13 @@ const path = require("path");
 const { Telegraf, Markup, Input } = require("telegraf");
 const { Temporal } = require("@js-temporal/polyfill");
 
+const { createCoordination } = require("./coordination");
+const { writeEntitlementAllowance } = require("./entitlement-write");
+const { validateProductionEnvironment, createReadiness } = require("./startup-health");
+const { createLifecycle } = require("./lifecycle");
+const lifecycle = createLifecycle({ exit: code => process.exit(code) });
+let coordination, recoveryTimer, recoveryRun, shutdownProcess;
+let botHealthy = false, envValidated = false;
 const { createDatabase } = require("./db");
 const { createNavigation } = require("./navigation");
 const { PAYMENT_METHODS } = require("./payment-config");
@@ -29,15 +36,32 @@ const { safeDiagnosticCode, sanitizeDiagnosticMessage,
   logHandlerFailure } = require("./safe-diagnostics");
 
 const {
-  createOrderAccessKey,
-  setAccessKeyDataLimit,
+  createOrderAccessKey: createRemoteOrderAccessKey,
+  setAccessKeyDataLimit: writeRemoteAccessKeyLimit,
   validateOutlineConfig,
   testOutlineConnection,
   getAllAccessKeyUsage,
   getExistingAccessKeyIds,
   isAccessKeyNotFoundError,
-  deleteAccessKey,
+  deleteAccessKey: deleteRemoteAccessKey,
 } = require("./outline");
+
+async function createOrderAccessKey(order) {
+  coordination?.assertCurrent?.();
+  const key = await createRemoteOrderAccessKey(order);
+  coordination?.assertCurrent?.();
+  return key;
+}
+async function setAccessKeyDataLimit(id, bytes) {
+  coordination?.assertCurrent?.();
+  await writeRemoteAccessKeyLimit(id, bytes);
+  coordination?.assertCurrent?.();
+}
+async function deleteAccessKey(id) {
+  coordination?.assertCurrent?.();
+  await deleteRemoteAccessKey(id);
+  coordination?.assertCurrent?.();
+}
 
 const app = express();
 app.disable("x-powered-by");
@@ -62,10 +86,20 @@ app.set("trust proxy", process.env.RENDER === "true"
 
 const PORT = process.env.PORT || 3000;
 
-app.get("/", (req, res) => {
-  res.send("VPN Bot is running!");
+const isReady = createReadiness({ configured: () => envValidated,
+  botHealthy: () => botHealthy, ownsLease: () => Boolean(coordination?.owned),
+  stopping: () => lifecycle.stopping,
+  checkDatabase: () => db.public.Customer.where({ id: 0 }).first() });
+app.get("/", async (_req, res) => {
+  const ready = await isReady();
+  res.status(ready ? 200 : 503).send(ready ? "VPN Bot is running!" : "Service is not ready.");
 });
-
+app.get("/live", (_req, res) => res.sendStatus(lifecycle.stopping ? 503 : 200));
+app.get("/ready", async (_req, res) => {
+  const ready = await isReady();
+  res.status(ready ? 200 : 503).json({ ready });
+});
+app.use((_req, res, next) => lifecycle.stopping ? res.sendStatus(503) : next());
 let server;
 
 let bot;
@@ -96,6 +130,7 @@ async function prepareDynamicSubscription(subscription) {
 }
 
 const pendingProofs = new Map();
+const allowProofUpload = createWindowLimiter({ windowMs: 60000, max: 6 });
 const allowConnect = createWindowLimiter({ windowMs: 60000, max: 30 });
 const allowNewOrder = createWindowLimiter({ windowMs: 60000, max: 6 });
 const allowMiniFlow = createWindowLimiter({ windowMs: 60000, max: 6 });
@@ -787,7 +822,7 @@ function isReusableAccessKey(keyId, vpnKey) {
 async function persistReplacementAccessKey(order, subscription, accessKey, createdAt) {
   // The order is the retry checkpoint if the subscription write fails.
   await db.public.Order
-    .where({ id: order.id, status: "PROCESSING" })
+    .where({ id: order.id, status: "PROCESSING", processingAt: order.processingAt })
     .update({
       vpnKey: accessKey.accessUrl,
       vpnKeyId: accessKey.id,
@@ -822,7 +857,7 @@ async function persistReplacementAccessKey(order, subscription, accessKey, creat
  * another one.
  */
 async function recoverStuckProcessingOrders() {
-  if (!db) return;
+  if (!db || lifecycle.stopping) return;
 
   try {
     const now = Temporal.Now.instant();
@@ -868,17 +903,19 @@ async function recoverStuckProcessingOrders() {
         continue;
       }
 
-      const recoveredOrders =
-        await db.public.Order
+      const recoveredOrders = await coordination.customer(order.customerId, async () => {
+        return await db.public.Order
           .where({
             id: order.id,
             status: "PROCESSING",
+            processingAt: order.processingAt,
           })
           .updateAll({
             status: "PENDING_PAYMENT",
             processingAt: null,
           });
 
+      });
       if (recoveredOrders.length > 0) {
         console.log(
           `Recovered stuck order ${order.orderNumber}. It was PROCESSING for ${Math.floor(
@@ -893,8 +930,8 @@ async function recoverStuckProcessingOrders() {
 }
 
 function startProcessingRecovery() {
-  setInterval(
-    () => recoverStuckProcessingOrders(),
+  recoveryTimer = setInterval(
+    () => { if (!lifecycle.stopping && !recoveryRun) recoveryRun = recoverStuckProcessingOrders().finally(() => { recoveryRun = undefined; }); },
     RECOVERY_INTERVAL_MS
   );
 
@@ -904,7 +941,7 @@ function startProcessingRecovery() {
 }
 
 async function syncAccessKeyUsage() {
-  if (!db || usageSyncRunning) return;
+  if (!db || usageSyncRunning || lifecycle.stopping) return;
   usageSyncRunning = true;
   let finishSync;
   usageSyncCompletion = new Promise((resolve) => { finishSync = resolve; });
@@ -928,71 +965,76 @@ async function syncAccessKeyUsage() {
     let updated = 0;
     let skipped = 0;
 
-    for (const subscription of subscriptions) {
-      const keyId = subscription.vpnKeyId;
-      const hasUsage = Object.hasOwn(usageByKeyId, String(keyId));
-      if (!keyId || String(keyId).startsWith("mock-") ||
-          subscription.revokedAt ||
-          (subscription.expiresAt && Temporal.Instant.compare(subscription.expiresAt, Temporal.Now.instant()) <= 0) ||
-          (existingKeyIds && !existingKeyIds.has(String(keyId))) ||
-          (!existingKeyIds && !hasUsage)) {
-        skipped++;
-        continue;
-      }
-
-      // Outline treats a missing key in a successful rolling metrics map as
-      // zero usage. A failed metrics request never reaches this branch.
-      const bytes = hasUsage
-        ? usageByKeyId[String(keyId)] : 0;
-      if (!Number.isSafeInteger(bytes) || bytes < 0) {
-        skipped++;
-        continue;
-      }
-
-      try {
-        // Match the same 1024^3 GB unit used for Outline data limits.
-        const dataUsedGb = bytes / GB_IN_BYTES;
-        if (subscription.status === "DATA_LIMIT_REACHED") {
-          // Outline's rolling counter can later decrease. Keep the reached
-          // purchase blocked until an approved renewal restores the allowance.
-          await setAccessKeyDataLimit(keyId, 0);
-          const changed = await db.public.Subscription
-            .where({ id: subscription.id, vpnKeyId: keyId, status: "DATA_LIMIT_REACHED" })
-            .updateAll({ dataUsedGb: Math.max(Number(subscription.dataUsedGb) || 0, dataUsedGb),
-              dataUsedBytes: BigInt(Math.max(Number(subscription.dataUsedBytes) || 0, bytes)),
-              lastUsageSyncedAt: Temporal.Now.instant() });
-          updated += changed.length;
-          continue;
-        }
-        const limitGb = Number(subscription.dataLimitGb);
-        const reached = Number.isFinite(limitGb) && limitGb > 0 &&
-          dataUsedGb >= limitGb;
-        if (!Number.isFinite(limitGb) || limitGb <= 0) {
+    for (const candidate of subscriptions) {
+      if (lifecycle.stopping) break;
+      await coordination.customer(candidate.customerId, async () => {
+        const subscription = await db.public.Subscription.where({ id: candidate.id }).first();
+        if (!subscription) return;
+        const keyId = subscription.vpnKeyId;
+        const hasUsage = Object.hasOwn(usageByKeyId, String(keyId));
+        if (!keyId || String(keyId).startsWith("mock-") ||
+            subscription.revokedAt ||
+            (subscription.expiresAt && Temporal.Instant.compare(subscription.expiresAt, Temporal.Now.instant()) <= 0) ||
+            (existingKeyIds && !existingKeyIds.has(String(keyId))) ||
+            (!existingKeyIds && !hasUsage)) {
           skipped++;
-          continue;
+          return;
         }
-        await setAccessKeyDataLimit(keyId, gbToBytes(limitGb));
-        const current = db.public.Subscription.where({ id: subscription.id,
-          vpnKeyId: keyId, status: "ACTIVE", dataLimitGb: subscription.dataLimitGb });
-        if (reached) {
-          // Latch the quota state before the second Outline call. Only record
-          // a completed sync after its zero-limit read-back also succeeds.
-          const latched = await current.updateAll({ dataUsedGb, dataUsedBytes: BigInt(bytes), status: "DATA_LIMIT_REACHED" });
-          if (latched.length) {
+
+        // Outline treats a missing key in a successful rolling metrics map as
+        // zero usage. A failed metrics request never reaches this branch.
+        const bytes = hasUsage
+          ? usageByKeyId[String(keyId)] : 0;
+        if (!Number.isSafeInteger(bytes) || bytes < 0) {
+          skipped++;
+          return;
+        }
+
+        try {
+          // Match the same 1024^3 GB unit used for Outline data limits.
+          const dataUsedGb = bytes / GB_IN_BYTES;
+          if (subscription.status === "DATA_LIMIT_REACHED") {
+            // Outline's rolling counter can later decrease. Keep the reached
+            // purchase blocked until an approved renewal restores the allowance.
             await setAccessKeyDataLimit(keyId, 0);
             const changed = await db.public.Subscription
               .where({ id: subscription.id, vpnKeyId: keyId, status: "DATA_LIMIT_REACHED" })
-              .updateAll({ dataUsedGb, dataUsedBytes: BigInt(bytes), lastUsageSyncedAt: Temporal.Now.instant() });
+              .updateAll({ dataUsedGb: Math.max(Number(subscription.dataUsedGb) || 0, dataUsedGb),
+                dataUsedBytes: BigInt(Math.max(Number(subscription.dataUsedBytes) || 0, bytes)),
+                lastUsageSyncedAt: Temporal.Now.instant() });
+            updated += changed.length;
+            return;
+          }
+          const limitGb = Number(subscription.dataLimitGb);
+          const reached = Number.isFinite(limitGb) && limitGb > 0 &&
+            dataUsedGb >= limitGb;
+          if (!Number.isFinite(limitGb) || limitGb <= 0) {
+            skipped++;
+            return;
+          }
+          // Only approval restores positive allowance; usage scans cannot resurrect access.
+          const current = db.public.Subscription.where({ id: subscription.id,
+            vpnKeyId: keyId, status: "ACTIVE", dataLimitGb: subscription.dataLimitGb });
+          if (reached) {
+            // Latch the quota state before the second Outline call. Only record
+            // a completed sync after its zero-limit read-back also succeeds.
+            const latched = await current.updateAll({ dataUsedGb, dataUsedBytes: BigInt(bytes), status: "DATA_LIMIT_REACHED" });
+            if (latched.length) {
+              await setAccessKeyDataLimit(keyId, 0);
+              const changed = await db.public.Subscription
+                .where({ id: subscription.id, vpnKeyId: keyId, status: "DATA_LIMIT_REACHED" })
+                .updateAll({ dataUsedGb, dataUsedBytes: BigInt(bytes), lastUsageSyncedAt: Temporal.Now.instant() });
+              updated += changed.length;
+            }
+          } else {
+            const changed = await current.updateAll({ dataUsedGb, dataUsedBytes: BigInt(bytes),
+              lastUsageSyncedAt: Temporal.Now.instant() });
             updated += changed.length;
           }
-        } else {
-          const changed = await current.updateAll({ dataUsedGb, dataUsedBytes: BigInt(bytes),
-            lastUsageSyncedAt: Temporal.Now.instant() });
-          updated += changed.length;
+        } catch {
+          skipped++;
         }
-      } catch {
-        skipped++;
-      }
+      });
     }
 
     console.log(`Outline usage sync completed: ${updated} updated, ${skipped} skipped.`);
@@ -1251,7 +1293,15 @@ async function miniAppCreateOrder(telegramUser, _account, packageId, confirmedVe
 }
 
 const supportEvents = createSupportEvents(process.env.BOT_TOKEN);
-const miniAppRouter = createMiniAppRouter({
+function trackedCallbacks(callbacks) {
+  for (const [name, callback] of Object.entries(callbacks)) {
+    if (typeof callback === "function" && name !== "getSupportService") {
+      callbacks[name] = (...args) => lifecycle.track(() => callback(...args));
+    }
+  }
+  return callbacks;
+}
+const miniAppRouter = createMiniAppRouter(trackedCallbacks({
   botToken: process.env.BOT_TOKEN,
   supportEvents,
   getSupportService: () => miniAppSupportService,
@@ -1336,6 +1386,7 @@ const miniAppRouter = createMiniAppRouter({
     return true;
   },
   async uploadProof(telegramId, orderNumber, image, mimeType) {
+    if (lifecycle.stopping || !allowProofUpload(telegramId)) return { busy: true };
     const order = await miniAppOwnedOrder(telegramId, orderNumber);
     if (!order) return null;
     if (order.paymentProof) return { already: true, order };
@@ -1414,7 +1465,7 @@ const miniAppRouter = createMiniAppRouter({
       selected ? buildPackageDetailKeyboard(selected, isRenewal) :
         buildPackageKeyboard(packages, isRenewal));
   },
-});
+}));
 app.get("/app", (req, res, next) => {
   if (req.path === "/app") return res.redirect(302, "app/");
   next();
@@ -1426,12 +1477,14 @@ async function startBot() {
   console.log("Starting VPN Bot...");
 
   startupStage = "production config validation";
+  validateProductionEnvironment();
   console.log("DATABASE_URL configured:", process.env.DATABASE_URL ? "yes" : "no");
   validateOutlineConfig();
   const connectConfig = getConnectConfig();
 
   startupStage = "admin configuration";
   const adminConfig = validateAdminConfig();
+  envValidated = true;
   app.use("/admin", createAdminRouter({
     ...adminConfig,
     expectedOrigin: new URL(connectConfig.baseUrl).origin,
@@ -1451,6 +1504,39 @@ async function startBot() {
   startupStage = "PostgreSQL connection";
   const database = await createDatabase();
   db = database.client;
+  const shutdown = (signal, exitCode = 0) => lifecycle.stop([
+    () => { botHealthy = false; try { bot?.stop(signal); } catch {} },
+    () => { clearInterval(recoveryTimer); clearInterval(usageSyncTimer); expiryWorker?.stopScheduling?.(); subscriptionNotifications?.stopScheduling?.(); },
+    () => supportEvents.closeAll(),
+    { run: () => lifecycle.drain(), timeoutMs: 10000 },
+    { run: () => Promise.allSettled([usageSyncCompletion, recoveryRun, expiryWorker?.stop(), subscriptionNotifications?.drain?.()]), timeoutMs: 10000 },
+    () => coordination?.release(),
+    () => new Promise(resolve => { if (!server) return resolve(); server.close(resolve); server.closeIdleConnections?.(); }),
+    () => notificationStore?.close(),
+    () => database.runtime.close(),
+    () => coordination?.close(),
+  ], exitCode);
+  shutdownProcess = shutdown;
+
+  process.once(
+    "SIGINT",
+    () => { void shutdown("SIGINT"); }
+  );
+
+  process.once(
+    "SIGTERM",
+    () => { void shutdown("SIGTERM"); }
+  );
+
+
+  coordination = database.coordination || createCoordination({ onLost: () => {
+    botHealthy = false;
+    void shutdownProcess?.("Singleton ownership lost", 1);
+  } });
+  if (!await coordination.acquire()) {
+    throw new Error("Polling and worker ownership is held by another process.");
+  }
+  if (lifecycle.stopping || !coordination.owned) return;
   console.log("PostgreSQL connected.");
 
   dynamicKeys = createDynamicKeys({ client: db, baseUrl: connectConfig.baseUrl,
@@ -1476,6 +1562,7 @@ async function startBot() {
   });
 
   expiryWorker = createExpiryWorker({ client: db, deleteAccessKey,
+    withCustomerLock: (id, work) => coordination.customer(id, work),
     blockAccessKey: (keyId) => setAccessKeyDataLimit(keyId, 0),
     restoreAccessKey: (keyId, limitGb) => setAccessKeyDataLimit(keyId, gbToBytes(limitGb)),
     isAccessKeyNotFoundError, schedule: setInterval, cancel: clearInterval,
@@ -1483,6 +1570,7 @@ async function startBot() {
 
   startupStage = "PROCESSING recovery";
   await recoverStuckProcessingOrders();
+  if (lifecycle.stopping || !coordination.owned) return;
   startProcessingRecovery();
 
   startupStage = "Telegram launch";
@@ -1492,6 +1580,11 @@ async function startBot() {
   const screenActions = [];
   const originalAction = bot.action.bind(bot);
   const originalStart = bot.start.bind(bot);
+  const originalOn = bot.on.bind(bot);
+  bot.on = (event, handler) => originalOn(event, ctx => {
+    if (lifecycle.stopping) return;
+    return lifecycle.track(() => handler(ctx));
+  });
   const textScreens = new Map([
     ["🛡️ Buy VPN", "buy_vpn"], ["🌐 My VPN", "my_vpn"],
     ["📊 Usage", "my_vpn"], ["♻️ Renew", "renew_vpn"],
@@ -1551,13 +1644,15 @@ async function startBot() {
   bot.action = (trigger, handler) => {
     screenActions.push({ trigger, handler });
     return originalAction(trigger, (ctx) => {
+      if (lifecycle.stopping) return ctx.answerCbQuery("Service restarting");
       const action = typeof trigger === "string" ? trigger : ctx.match?.[0];
-      return withNavigationReply(ctx, screenForAction(action || ""), () => handler(ctx));
+      return lifecycle.track(() => withNavigationReply(ctx, screenForAction(action || ""), () => handler(ctx)));
     });
   };
   bot.start = (handler) => originalStart((ctx) => {
+    if (lifecycle.stopping) return;
     navigation.reset(ctx);
-    return handler(ctx);
+    return lifecycle.track(() => handler(ctx));
   });
   const supportService = createSupportService({
     db, bot, adminTelegramId: ADMIN_TELEGRAM_ID, isAdmin,
@@ -2263,13 +2358,11 @@ async function startBot() {
       const paymentProof =
         selectedPhoto.file_id;
 
-      await db.public.Order
-        .where({
-          id: orderId,
-        })
-        .update({
-          paymentProof,
-        });
+      if (!allowProofUpload(userId)) return ctx.reply("ခဏနေရင် ပြန်ကြိုးစားပေးပါ။");
+      const saved = await db.public.Order.where({ id: orderId, customerId: proofOwner.id,
+        status: "PENDING_PAYMENT", paymentProof: null, paymentReference: null })
+        .updateAll({ paymentProof });
+      if (!saved.length) return ctx.reply("Slip ရှိပြီးသား သို့မဟုတ် မှာယူမှု ပြောင်းလဲပြီးပါပြီ။ My Orders မှာ ပြန်ကြည့်ပေးပါ။");
 
       pendingProofs.delete(
         userId
@@ -2365,258 +2458,328 @@ async function startBot() {
           );
         }
 
-        // ---------------------------------
-        // 2. Double approval protection
-        // ---------------------------------
+        await coordination.customer(existingOrder.customerId, async (assertOwned) => {
+          if (lifecycle.stopping) return;
+          assertOwned();
+          const unfinished = await db.public.Order.where({ customerId: existingOrder.customerId,
+            status: "PROCESSING" }).all();
+          if (unfinished.some(row => row.id !== orderId)) return ctx.reply("Customer provisioning is still processing. Please retry later.");
+          const pending = await db.public.Order.where({ customerId: existingOrder.customerId,
+            status: "PENDING_PAYMENT" }).all();
+          if (pending.some(row => row.id !== orderId && row.expiresAt))
+            return ctx.reply("Please recover the earlier provisioning order first.");
+          // ---------------------------------
+          // 2. Double approval protection
+          // ---------------------------------
 
-        const processingAt =
-          Temporal.Now.instant();
+          const processingAt =
+            Temporal.Now.instant();
 
-        const claimedOrders =
-          await db.public.Order
-            .where({
-              id: orderId,
-              status: "PENDING_PAYMENT",
-            })
-            .updateAll({
-              status: "PROCESSING",
-              processingAt,
-            });
-
-        if (
-          claimedOrders.length === 0
-        ) {
-          return await ctx.reply(
-            `⚠️ Order already processed or is currently being processed.\n\nStatus: ${existingOrder.status}`
-          );
-        }
-
-        const order =
-          claimedOrders[0];
-
-        console.log(
-          `Order ${order.orderNumber} claimed for approval.`
-        );
-
-        // ---------------------------------
-        // 3. Load customer
-        // ---------------------------------
-
-        const customer =
-          await db.public.Customer
-            .where({
-              id: order.customerId,
-            })
-            .first();
-
-        if (!customer) {
-          throw new Error(
-            "Customer not found."
-          );
-        }
-
-        // ---------------------------------
-        // 4. Load package
-        // ---------------------------------
-
-        const pkg = order.packageId
-          ? await db.public.Package
+          const claimedOrders =
+            await db.public.Order
               .where({
-                id: order.packageId,
+                id: orderId,
+                status: "PENDING_PAYMENT",
               })
-              .first()
-          : null;
+              .updateAll({
+                status: "PROCESSING",
+                processingAt,
+              });
 
-        if (!pkg) {
-          throw new Error(
-            "Package not found for order."
+          if (
+            claimedOrders.length === 0
+          ) {
+            return await ctx.reply(
+              `⚠️ Order already processed or is currently being processed.\n\nStatus: ${(await db.public.Order.where({ id: orderId }).first())?.status}`
+            );
+          }
+
+          const order = claimedOrders[0];
+          async function completeApproval(values) {
+            assertOwned();
+            const changed = await db.public.Order.where({ id: order.id,
+              status: "PROCESSING", processingAt }).updateAll(values);
+            if (!changed.length) {
+              await db.public.Order.where({ id: order.id }).first();
+              throw new Error("Approval claim changed before completion.");
+            }
+          }
+
+          console.log(
+            `Order ${order.orderNumber} claimed for approval.`
           );
-        }
 
-        // ---------------------------------
-        // 5. Calculate package values
-        // ---------------------------------
+          // ---------------------------------
+          // 3. Load customer
+          // ---------------------------------
 
-        const durationMonths =
-          Number(
-            order.durationMonths
-          ) || 1;
+          const customer =
+            await db.public.Customer
+              .where({
+                id: order.customerId,
+              })
+              .first();
 
-        // New orders carry the entitlement shown at confirmation. Older
-        // orders retain the existing package-based fallback.
-        const totalDataGb = order.totalDataGb == null
-          ? Number(pkg.dataLimitGb) * durationMonths
-          : Number(order.totalDataGb);
-
-        const durationDays = order.totalDurationDays == null
-          ? Number(pkg.durationDays) * durationMonths
-          : Number(order.totalDurationDays);
-
-        const dataLimitBytes =
-          gbToBytes(totalDataGb);
-
-        const now =
-          Temporal.Now.instant();
-
-        console.log(
-          `Approval package: ${pkg.name}`
-        );
-
-        console.log(
-          `Total data: ${totalDataGb} GB`
-        );
-
-        console.log(
-          `Outline limit: ${dataLimitBytes} bytes`
-        );
-
-        // ---------------------------------
-        // 6. Load existing subscription
-        // ---------------------------------
-
-        let subscription =
-          await db.public.Subscription
-            .where({
-              customerId: customer.id,
-            })
-            .first();
-
-        // =================================
-        // NEW SUBSCRIPTION
-        // =================================
-
-        if (!subscription) {
-          let accessKey = null;
-          // Freeze the entitlement clock before calling Outline so recovery
-          // cannot extend the purchase after a partial failure.
-          const startedAt = order.startedAt
-            ? Temporal.Instant.from(order.startedAt) : now;
-          const expiresAt = order.expiresAt
-            ? Temporal.Instant.from(order.expiresAt)
-            : startedAt.add({ hours: durationDays * 24 });
-          if (!order.startedAt || !order.expiresAt) {
-            await db.public.Order.where({ id: order.id, status: "PROCESSING" })
-              .update({ startedAt, expiresAt });
-            order.startedAt = startedAt;
-            order.expiresAt = expiresAt;
+          if (!customer) {
+            throw new Error(
+              "Customer not found."
+            );
           }
 
           // ---------------------------------
-          // 7. Reuse existing key if one
-          //    was already created
+          // 4. Load package
           // ---------------------------------
 
-          if (
-            isReusableAccessKey(
-              order.vpnKeyId,
-              order.vpnKey
-            )
-          ) {
-            accessKey = {
-              id: order.vpnKeyId,
-              accessUrl: order.vpnKey,
-            };
+          const pkg = order.packageId
+            ? await db.public.Package
+                .where({
+                  id: order.packageId,
+                })
+                .first()
+            : null;
 
-            console.log(
-              `Reusing existing Outline key ${accessKey.id} for order ${order.orderNumber}.`
+          if (!pkg) {
+            throw new Error(
+              "Package not found for order."
             );
-          } else {
-            // ---------------------------------
-            // 8. Create Outline key
-            // ---------------------------------
+          }
 
-            assertIdempotentProvisioningOrder(order);
-            accessKey =
-              await createOrderAccessKey(
-                order
-              );
+          // ---------------------------------
+          // 5. Calculate package values
+          // ---------------------------------
+
+          const durationMonths =
+            Number(
+              order.durationMonths
+            ) || 1;
+
+          // New orders carry the entitlement shown at confirmation. Older
+          // orders retain the existing package-based fallback.
+          const totalDataGb = order.totalDataGb == null
+            ? Number(pkg.dataLimitGb) * durationMonths
+            : Number(order.totalDataGb);
+
+          const durationDays = order.totalDurationDays == null
+            ? Number(pkg.durationDays) * durationMonths
+            : Number(order.totalDurationDays);
+
+          const dataLimitBytes =
+            gbToBytes(totalDataGb);
+
+          const now =
+            Temporal.Now.instant();
+
+          console.log(
+            `Approval package: ${pkg.name}`
+          );
+
+          console.log(
+            `Total data: ${totalDataGb} GB`
+          );
+
+          console.log(
+            `Outline limit: ${dataLimitBytes} bytes`
+          );
+
+          // ---------------------------------
+          // 6. Load existing subscription
+          // ---------------------------------
+
+          let subscription =
+            await db.public.Subscription
+              .where({
+                customerId: customer.id,
+              })
+              .first();
+
+          if (subscription?.vpnKeyId && !subscription.vpnKeyId.startsWith("mock-")) {
+            const owners = await db.public.Subscription.where({ vpnKeyId: subscription.vpnKeyId }).all();
+            if (owners.length !== 1 || owners[0].id !== subscription.id) throw new Error("Ambiguous Outline ownership.");
+          }
+          assertOwned();
+          // =================================
+          // NEW SUBSCRIPTION
+          // =================================
+
+          if (!subscription) {
+            let accessKey = null;
+            // Freeze the entitlement clock before calling Outline so recovery
+            // cannot extend the purchase after a partial failure.
+            const startedAt = order.startedAt
+              ? Temporal.Instant.from(order.startedAt) : now;
+            const expiresAt = order.expiresAt
+              ? Temporal.Instant.from(order.expiresAt)
+              : startedAt.add({ hours: durationDays * 24 });
+            if (!order.startedAt || !order.expiresAt) {
+              await db.public.Order.where({ id: order.id, status: "PROCESSING", processingAt })
+                .update({ startedAt, expiresAt });
+              order.startedAt = startedAt;
+              order.expiresAt = expiresAt;
+            }
+
+            // ---------------------------------
+            // 7. Reuse existing key if one
+            //    was already created
+            // ---------------------------------
 
             if (
-              !accessKey ||
-              !accessKey.id ||
-              !accessKey.accessUrl ||
-              !isReusableAccessKey(
-                accessKey.id,
-                accessKey.accessUrl
+              isReusableAccessKey(
+                order.vpnKeyId,
+                order.vpnKey
               )
             ) {
-              throw new Error(
-                "Outline API returned an invalid access key."
+              accessKey = {
+                id: order.vpnKeyId,
+                accessUrl: order.vpnKey,
+              };
+
+              console.log(
+                `Reusing existing Outline key ${accessKey.id} for order ${order.orderNumber}.`
+              );
+            } else {
+              // ---------------------------------
+              // 8. Create Outline key
+              // ---------------------------------
+
+              assertIdempotentProvisioningOrder(order);
+              // An earlier cancelled/rejected recovery can still have an
+              // uncertain remote creation. Reconcile its stable identity before
+              // granting this purchase rather than orphaning a second key.
+              const checkpoints = await db.public.Order.where({ customerId: customer.id }).all();
+              const sourceOrder = checkpoints.filter(row => row.startedAt && row.expiresAt)
+                .sort((a, b) => a.id - b.id)[0] || order;
+              accessKey = isReusableAccessKey(sourceOrder.vpnKeyId, sourceOrder.vpnKey)
+                ? { id: sourceOrder.vpnKeyId, accessUrl: sourceOrder.vpnKey }
+                : await createOrderAccessKey(sourceOrder);
+
+              if (
+                !accessKey ||
+                !accessKey.id ||
+                !accessKey.accessUrl ||
+                !isReusableAccessKey(
+                  accessKey.id,
+                  accessKey.accessUrl
+                )
+              ) {
+                throw new Error(
+                  "Outline API returned an invalid access key."
+                );
+              }
+
+              console.log(
+                `Outline key created: ${accessKey.id}`
+              );
+
+              // ---------------------------------
+              // 9. SAVE KEY IMMEDIATELY
+              //
+              // This is critical for idempotency.
+              // If later API/DB operation fails,
+              // retry will reuse this key.
+              // ---------------------------------
+
+              await db.public.Order
+                .where({
+                  id: order.id,
+                  status: "PROCESSING", processingAt,
+                })
+                .update({
+                  vpnKey:
+                    accessKey.accessUrl,
+
+                  vpnKeyId:
+                    accessKey.id,
+
+                  vpnKeyCreatedAt:
+                    now,
+                });
+
+              console.log(
+                `Outline key ${accessKey.id} saved to order ${order.orderNumber}.`
               );
             }
 
+            // ---------------------------------
+            // 10. Set Outline data limit
+            // ---------------------------------
+
             console.log(
-              `Outline key created: ${accessKey.id}`
+              `Setting Outline data limit: ${totalDataGb} GB`
+            );
+
+            const keyOwners = await db.public.Subscription.where({ vpnKeyId: accessKey.id }).all();
+            if (keyOwners.length) throw new Error("Outline key already has an owner.");
+            assertOwned();
+            await setAccessKeyDataLimit(accessKey.id, 0);
+            assertOwned();
+
+            console.log(
+              "Outline key blocked until entitlement persistence."
             );
 
             // ---------------------------------
-            // 9. SAVE KEY IMMEDIATELY
-            //
-            // This is critical for idempotency.
-            // If later API/DB operation fails,
-            // retry will reuse this key.
+            // 11. Calculate subscription expiry
             // ---------------------------------
 
-            await db.public.Order
-              .where({
-                id: order.id,
-                status: "PROCESSING",
-              })
-              .update({
-                vpnKey:
-                  accessKey.accessUrl,
+            // ---------------------------------
+            // 12. Create subscription
+            // ---------------------------------
 
-                vpnKeyId:
-                  accessKey.id,
+            subscription =
+              await db.public.Subscription.create(
+                {
+                  customerId:
+                    customer.id,
 
-                vpnKeyCreatedAt:
+                  packageId:
+                    pkg.id,
+
+                  plan: order.plan,
+
+                  status: "ACTIVE",
+
+                  durationMonths,
+
+                  vpnKey:
+                    accessKey.accessUrl,
+
+                  vpnKeyId:
+                    accessKey.id,
+
+                  vpnKeyCreatedAt:
+                    order.vpnKeyCreatedAt || now,
+
+                  startedAt:
+                    startedAt,
+
+                  expiresAt,
+
+                  dataLimitGb:
+                    totalDataGb,
+
+                  dataUsedGb: 0,
+                  dataUsedBytes: 0n,
+                  dynamicDeliveryMode: "NEW",
+                }
+              );
+
+            await writeEntitlementAllowance({
+              load: () => db.public.Subscription.where({ id: subscription.id }).first(),
+              write: setAccessKeyDataLimit, assertOwned,
+            });
+
+            // ---------------------------------
+            // 13. Mark order PAID
+            // ---------------------------------
+
+            await completeApproval({
+                status: "PAID",
+
+                processingAt:
+                  null,
+
+                paidAt:
                   now,
-              });
-
-            console.log(
-              `Outline key ${accessKey.id} saved to order ${order.orderNumber}.`
-            );
-          }
-
-          // ---------------------------------
-          // 10. Set Outline data limit
-          // ---------------------------------
-
-          console.log(
-            `Setting Outline data limit: ${totalDataGb} GB`
-          );
-
-          await setAccessKeyDataLimit(
-            accessKey.id,
-            dataLimitBytes
-          );
-
-          console.log(
-            `Outline data limit successfully set: ${totalDataGb} GB`
-          );
-
-          // ---------------------------------
-          // 11. Calculate subscription expiry
-          // ---------------------------------
-
-          // ---------------------------------
-          // 12. Create subscription
-          // ---------------------------------
-
-          subscription =
-            await db.public.Subscription.create(
-              {
-                customerId:
-                  customer.id,
-
-                packageId:
-                  pkg.id,
-
-                plan: order.plan,
-
-                status: "ACTIVE",
-
-                durationMonths,
 
                 vpnKey:
                   accessKey.accessUrl,
@@ -2632,319 +2795,285 @@ async function startBot() {
 
                 expiresAt,
 
-                dataLimitGb:
-                  totalDataGb,
+                revokedAt:
+                  null,
+              });
 
-                dataUsedGb: 0,
-                dataUsedBytes: 0n,
-                dynamicDeliveryMode: "NEW",
-              }
-            );
+            // ---------------------------------
+            // 14. Notify customer
+            // ---------------------------------
 
-          // ---------------------------------
-          // 13. Mark order PAID
-          // ---------------------------------
+            subscription = await prepareDynamicSubscription(subscription);
+            await subscriptionNotifications.deliver(subscription.id, "migrationNotice");
 
-          await db.public.Order
-            .where({
-              id: order.id,
-            })
-            .update({
-              status: "PAID",
-
-              processingAt:
-                null,
-
-              paidAt:
-                now,
-
-              vpnKey:
-                accessKey.accessUrl,
-
-              vpnKeyId:
-                accessKey.id,
-
-              vpnKeyCreatedAt:
-                order.vpnKeyCreatedAt || now,
-
-              startedAt:
-                startedAt,
-
-              expiresAt,
-
-              revokedAt:
-                null,
-            });
-
-          // ---------------------------------
-          // 14. Notify customer
-          // ---------------------------------
-
-          subscription = await prepareDynamicSubscription(subscription);
-          await subscriptionNotifications.deliver(subscription.id, "migrationNotice");
-
-          console.log(
-            `New subscription created for customer ${customer.id}. Order ${order.orderNumber} approved.`
-          );
-        }
-
-        // =================================
-        // EXISTING SUBSCRIPTION / RENEWAL
-        // =================================
-
-        else {
-          // ---------------------------------
-          // 15. Existing subscription must
-          //     have a VPN key
-          // ---------------------------------
-
-          const subscriptionHasLegacyKey =
-            String(subscription.vpnKeyId || "").startsWith("mock-");
-          const orderHasPersistedRealKey =
-            isReusableAccessKey(order.vpnKeyId, order.vpnKey);
-
-          if (
-            !isReusableAccessKey(subscription.vpnKeyId, subscription.vpnKey) &&
-            !subscriptionHasLegacyKey &&
-            !orderHasPersistedRealKey
-          ) {
-            throw new Error(
-              "Existing subscription does not have a valid VPN key."
+            console.log(
+              `New subscription created for customer ${customer.id}. Order ${order.orderNumber} approved.`
             );
           }
 
-          let renewalAccessKey = null;
+          // =================================
+          // EXISTING SUBSCRIPTION / RENEWAL
+          // =================================
 
-          if (orderHasPersistedRealKey) {
-            // A previous attempt may have saved a replacement to the order
-            // before the subscription write or data-limit update failed.
-            renewalAccessKey = {
-              id: order.vpnKeyId,
-              accessUrl: order.vpnKey,
-              createdAt: order.vpnKeyCreatedAt || now,
-            };
-          } else if (isReusableAccessKey(subscription.vpnKeyId, subscription.vpnKey)) {
-            renewalAccessKey = {
-              id: subscription.vpnKeyId,
-              accessUrl: subscription.vpnKey,
-              createdAt: subscription.vpnKeyCreatedAt,
-            };
-          } else if (subscriptionHasLegacyKey) {
-            assertIdempotentProvisioningOrder(order);
-            renewalAccessKey = await createOrderAccessKey(order);
+          else {
+            // ---------------------------------
+            // 15. Existing subscription must
+            //     have a VPN key
+            // ---------------------------------
+
+            const subscriptionHasLegacyKey =
+              String(subscription.vpnKeyId || "").startsWith("mock-");
+            const orderHasPersistedRealKey =
+              isReusableAccessKey(order.vpnKeyId, order.vpnKey);
 
             if (
-              !renewalAccessKey ||
-              !renewalAccessKey.id ||
-              !renewalAccessKey.accessUrl ||
-              !isReusableAccessKey(renewalAccessKey.id, renewalAccessKey.accessUrl)
+              !isReusableAccessKey(subscription.vpnKeyId, subscription.vpnKey) &&
+              !subscriptionHasLegacyKey &&
+              !orderHasPersistedRealKey
             ) {
               throw new Error(
-                "Outline API did not return a valid real access key."
+                "Existing subscription does not have a valid VPN key."
               );
             }
 
-            renewalAccessKey.createdAt = now;
-            await persistReplacementAccessKey(order, subscription, renewalAccessKey, now);
-          }
+            let renewalAccessKey = null;
 
-          if (!renewalAccessKey) {
-            throw new Error(
-              "Existing subscription does not have a valid VPN key."
+            if (orderHasPersistedRealKey) {
+              // A previous attempt may have saved a replacement to the order
+              // before the subscription write or data-limit update failed.
+              renewalAccessKey = {
+                id: order.vpnKeyId,
+                accessUrl: order.vpnKey,
+                createdAt: order.vpnKeyCreatedAt || now,
+              };
+            } else if (isReusableAccessKey(subscription.vpnKeyId, subscription.vpnKey)) {
+              renewalAccessKey = {
+                id: subscription.vpnKeyId,
+                accessUrl: subscription.vpnKey,
+                createdAt: subscription.vpnKeyCreatedAt,
+              };
+            } else if (subscriptionHasLegacyKey) {
+              assertIdempotentProvisioningOrder(order);
+              renewalAccessKey = await createOrderAccessKey(order);
+
+              if (
+                !renewalAccessKey ||
+                !renewalAccessKey.id ||
+                !renewalAccessKey.accessUrl ||
+                !isReusableAccessKey(renewalAccessKey.id, renewalAccessKey.accessUrl)
+              ) {
+                throw new Error(
+                  "Outline API did not return a valid real access key."
+                );
+              }
+
+              renewalAccessKey.createdAt = now;
+              await persistReplacementAccessKey(order, subscription, renewalAccessKey, now);
+            }
+
+            if (!renewalAccessKey) {
+              throw new Error(
+                "Existing subscription does not have a valid VPN key."
+              );
+            }
+
+            if (orderHasPersistedRealKey &&
+                (subscription.vpnKeyId !== renewalAccessKey.id ||
+                 subscription.vpnKey !== renewalAccessKey.accessUrl)) {
+              await persistReplacementAccessKey(
+                order, subscription, renewalAccessKey, renewalAccessKey.createdAt
+              );
+            }
+
+            const isFuture = subscription.expiresAt &&
+              Temporal.Instant.compare(subscription.expiresAt, now) > 0;
+            const newExpiresAt = order.expiresAt
+              ? Temporal.Instant.from(order.expiresAt)
+              : (isFuture ? subscription.expiresAt : now).add({ hours: durationDays * 24 });
+            if (order.expiresAt && subscription.expiresAt &&
+                Temporal.Instant.compare(subscription.expiresAt, newExpiresAt) > 0) {
+              throw new Error("Subscription changed during renewal retry.");
+            }
+            if (!order.expiresAt) {
+              // Save the exact renewal target before changing Outline or the
+              // subscription. A retry after a partial DB write must not add the
+              // purchased duration a second time.
+              await db.public.Order.where({ id: order.id, status: "PROCESSING", processingAt })
+                .update({ expiresAt: newExpiresAt });
+              order.expiresAt = newExpiresAt;
+            }
+
+            const currentDataLimitGb =
+              Number(
+                subscription.dataLimitGb || 0
+              );
+
+            const alreadyApplied = subscription.expiresAt &&
+              Temporal.Instant.compare(subscription.expiresAt, newExpiresAt) === 0;
+            const newTotalDataGb = alreadyApplied
+              ? currentDataLimitGb : currentDataLimitGb + totalDataGb;
+
+            const newDataLimitBytes =
+              gbToBytes(
+                newTotalDataGb
+              );
+
+            // ---------------------------------
+            // 16. Update Outline key limit
+            //
+            // IMPORTANT:
+            // Renewal uses the SAME key.
+            // We increase its total limit.
+            // ---------------------------------
+
+            console.log(
+              "Updating existing Outline key for renewal."
+            );
+
+            console.log(
+              `New total data limit: ${newTotalDataGb} GB`
+            );
+
+            try {
+              assertOwned();
+              await writeEntitlementAllowance({
+                load: () => db.public.Subscription.where({ id: subscription.id }).first(),
+                write: setAccessKeyDataLimit, assertOwned,
+              });
+            } catch (error) {
+              if (orderHasPersistedRealKey || subscriptionHasLegacyKey ||
+                  !isAccessKeyNotFoundError(error)) {
+                throw error;
+              }
+
+              // Only a confirmed missing access key can be replaced. Save the
+              // replacement before retrying the data limit, so a later approval
+              // attempt cannot create another key.
+              console.warn(`Outline access key missing for order ${order.orderNumber}. Creating one replacement.`);
+              assertIdempotentProvisioningOrder(order);
+              const replacement = await createOrderAccessKey(order);
+              if (!replacement ||
+                  !isReusableAccessKey(replacement.id, replacement.accessUrl)) {
+                throw new Error("Outline API returned an invalid replacement key.");
+              }
+
+              replacement.createdAt = now;
+              await persistReplacementAccessKey(order, subscription, replacement, now);
+              renewalAccessKey = replacement;
+              assertOwned();
+              await setAccessKeyDataLimit(renewalAccessKey.id, 0);
+              assertOwned();
+            }
+
+            console.log(
+              "Existing Outline key verified before entitlement update."
+            );
+
+            // ---------------------------------
+            // 17. Update subscription
+            // ---------------------------------
+
+            await db.public.Subscription
+              .where({
+                id: subscription.id,
+              })
+              .update({
+                ...renewalNotificationReset(alreadyApplied),
+                packageId:
+                  pkg.id,
+
+                plan: order.plan,
+
+                status:
+                  "ACTIVE",
+
+                durationMonths,
+
+                expiresAt:
+                  newExpiresAt,
+
+                dataLimitGb:
+                  newTotalDataGb,
+
+                revokedAt:
+                  null,
+              });
+
+            // Expiry recovery may have blocked this key while the order was
+            // PROCESSING. Confirm the approved allowance after the DB extension.
+            await writeEntitlementAllowance({
+              load: () => db.public.Subscription.where({ id: subscription.id }).first(),
+              write: setAccessKeyDataLimit, assertOwned,
+            });
+
+            // ---------------------------------
+            // 18. Mark renewal order PAID
+            // ---------------------------------
+
+            await completeApproval({
+                status: "PAID",
+
+                processingAt:
+                  null,
+
+                paidAt:
+                  now,
+
+                vpnKey:
+                  renewalAccessKey.accessUrl,
+
+                vpnKeyId:
+                  renewalAccessKey.id,
+
+                vpnKeyCreatedAt:
+                  renewalAccessKey.createdAt,
+
+                startedAt:
+                  subscription.startedAt,
+
+                expiresAt:
+                  newExpiresAt,
+
+                revokedAt:
+                  null,
+              });
+
+            // ---------------------------------
+            // 19. Notify customer
+            // ---------------------------------
+
+            const renewedSubscription = await db.public.Subscription.where({ id: subscription.id }).first();
+            const preparedRenewal = await prepareDynamicSubscription(renewedSubscription);
+            await bot.telegram.sendMessage(
+              customer.telegramId,
+              formatActivation({ name: customerPlan(order.plan, order.totalDurationDays) }, newTotalDataGb, newExpiresAt, true),
+              buildMyVpnKeyboard(preparedRenewal, true)
+            );
+
+            console.log(
+              `Subscription ${subscription.id} extended. Order ${order.orderNumber} approved.`
             );
           }
-
-          if (orderHasPersistedRealKey &&
-              (subscription.vpnKeyId !== renewalAccessKey.id ||
-               subscription.vpnKey !== renewalAccessKey.accessUrl)) {
-            await persistReplacementAccessKey(
-              order, subscription, renewalAccessKey, renewalAccessKey.createdAt
-            );
-          }
-
-          const isFuture = subscription.expiresAt &&
-            Temporal.Instant.compare(subscription.expiresAt, now) > 0;
-          const newExpiresAt = order.expiresAt
-            ? Temporal.Instant.from(order.expiresAt)
-            : (isFuture ? subscription.expiresAt : now).add({ hours: durationDays * 24 });
-          if (order.expiresAt && subscription.expiresAt &&
-              Temporal.Instant.compare(subscription.expiresAt, newExpiresAt) > 0) {
-            throw new Error("Subscription changed during renewal retry.");
-          }
-          if (!order.expiresAt) {
-            // Save the exact renewal target before changing Outline or the
-            // subscription. A retry after a partial DB write must not add the
-            // purchased duration a second time.
-            await db.public.Order.where({ id: order.id, status: "PROCESSING" })
-              .update({ expiresAt: newExpiresAt });
-            order.expiresAt = newExpiresAt;
-          }
-
-          const currentDataLimitGb =
-            Number(
-              subscription.dataLimitGb || 0
-            );
-
-          const alreadyApplied = subscription.expiresAt &&
-            Temporal.Instant.compare(subscription.expiresAt, newExpiresAt) === 0;
-          const newTotalDataGb = alreadyApplied
-            ? currentDataLimitGb : currentDataLimitGb + totalDataGb;
-
-          const newDataLimitBytes =
-            gbToBytes(
-              newTotalDataGb
-            );
 
           // ---------------------------------
-          // 16. Update Outline key limit
-          //
-          // IMPORTANT:
-          // Renewal uses the SAME key.
-          // We increase its total limit.
+          // 20. Update admin payment message
           // ---------------------------------
-
-          console.log(
-            "Updating existing Outline key for renewal."
-          );
-
-          console.log(
-            `New total data limit: ${newTotalDataGb} GB`
-          );
 
           try {
-            await setAccessKeyDataLimit(renewalAccessKey.id, newDataLimitBytes);
-          } catch (error) {
-            if (orderHasPersistedRealKey || subscriptionHasLegacyKey ||
-                !isAccessKeyNotFoundError(error)) {
-              throw error;
-            }
+            const caption =
+              ctx.callbackQuery
+                ?.message?.caption ||
+              "";
 
-            // Only a confirmed missing access key can be replaced. Save the
-            // replacement before retrying the data limit, so a later approval
-            // attempt cannot create another key.
-            console.warn(`Outline access key missing for order ${order.orderNumber}. Creating one replacement.`);
-            assertIdempotentProvisioningOrder(order);
-            const replacement = await createOrderAccessKey(order);
-            if (!replacement ||
-                !isReusableAccessKey(replacement.id, replacement.accessUrl)) {
-              throw new Error("Outline API returned an invalid replacement key.");
-            }
-
-            replacement.createdAt = now;
-            await persistReplacementAccessKey(order, subscription, replacement, now);
-            renewalAccessKey = replacement;
-            await setAccessKeyDataLimit(renewalAccessKey.id, newDataLimitBytes);
+            await ctx.editMessageCaption(
+              `${caption}\n\n\n` +
+                `✅ PAYMENT APPROVED\n` +
+                `🔐 Subscription activated`
+            );
+          } catch (editError) {
+            console.error("Failed to edit admin payment message.");
           }
-
-          console.log(
-            `Existing Outline key data limit updated to ${newTotalDataGb} GB`
-          );
-
-          // ---------------------------------
-          // 17. Update subscription
-          // ---------------------------------
-
-          await db.public.Subscription
-            .where({
-              id: subscription.id,
-            })
-            .update({
-              ...renewalNotificationReset(alreadyApplied),
-              packageId:
-                pkg.id,
-
-              plan: order.plan,
-
-              status:
-                "ACTIVE",
-
-              durationMonths,
-
-              expiresAt:
-                newExpiresAt,
-
-              dataLimitGb:
-                newTotalDataGb,
-
-              revokedAt:
-                null,
-            });
-
-          // Expiry recovery may have blocked this key while the order was
-          // PROCESSING. Confirm the approved allowance after the DB extension.
-          await setAccessKeyDataLimit(renewalAccessKey.id, newDataLimitBytes);
-
-          // ---------------------------------
-          // 18. Mark renewal order PAID
-          // ---------------------------------
-
-          await db.public.Order
-            .where({
-              id: order.id,
-            })
-            .update({
-              status: "PAID",
-
-              processingAt:
-                null,
-
-              paidAt:
-                now,
-
-              vpnKey:
-                renewalAccessKey.accessUrl,
-
-              vpnKeyId:
-                renewalAccessKey.id,
-
-              vpnKeyCreatedAt:
-                renewalAccessKey.createdAt,
-
-              startedAt:
-                subscription.startedAt,
-
-              expiresAt:
-                newExpiresAt,
-
-              revokedAt:
-                null,
-            });
-
-          // ---------------------------------
-          // 19. Notify customer
-          // ---------------------------------
-
-          const renewedSubscription = await db.public.Subscription.where({ id: subscription.id }).first();
-          const preparedRenewal = await prepareDynamicSubscription(renewedSubscription);
-          await bot.telegram.sendMessage(
-            customer.telegramId,
-            formatActivation({ name: customerPlan(order.plan, order.totalDurationDays) }, newTotalDataGb, newExpiresAt, true),
-            buildMyVpnKeyboard(preparedRenewal, true)
-          );
-
-          console.log(
-            `Subscription ${subscription.id} extended. Order ${order.orderNumber} approved.`
-          );
-        }
-
-        // ---------------------------------
-        // 20. Update admin payment message
-        // ---------------------------------
-
-        try {
-          const caption =
-            ctx.callbackQuery
-              ?.message?.caption ||
-            "";
-
-          await ctx.editMessageCaption(
-            `${caption}\n\n\n` +
-              `✅ PAYMENT APPROVED\n` +
-              `🔐 Subscription activated`
-          );
-        } catch (editError) {
-          console.error("Failed to edit admin payment message.");
-        }
+        });
       } catch (error) {
         // Do not log provider errors: HTTP client errors can include
         // management URLs, request headers, or other sensitive details.
@@ -3004,11 +3133,11 @@ async function startBot() {
           );
         }
 
-        await db.public.Order
+        const transitioned = await db.public.Order
           .where({
-            id: order.id,
+            id: order.id, status: "PENDING_PAYMENT",
           })
-          .update({
+          .updateAll({
             status:
               "PAYMENT_REJECTED",
 
@@ -3016,6 +3145,10 @@ async function startBot() {
               null,
           });
 
+        if (!transitioned.length) {
+          const latest = await db.public.Order.where({ id: order.id }).first();
+          return ctx.reply(`Order already processed. Status: ${latest?.status}`);
+        }
         const customer =
           await db.public.Customer
             .where({
@@ -3111,14 +3244,18 @@ async function startBot() {
           );
         }
 
-        await db.public.Order
+        const transitioned = await db.public.Order
           .where({
-            id: orderId,
+            id: orderId, customerId: customer.id, status: "PENDING_PAYMENT",
           })
-          .update({
+          .updateAll({
             status: "CANCELLED",
           });
 
+        if (!transitioned.length) {
+          await db.public.Order.where({ id: orderId }).first();
+          return ctx.reply("ဒီမှာယူမှုကို ပယ်ဖျက်လို့မရတော့ပါဘူး။ My Orders မှာ ပြန်ကြည့်ပေးပါ။");
+        }
         pendingProofs.delete(
           String(ctx.from.id)
         );
@@ -3234,6 +3371,7 @@ async function startBot() {
     "Starting Telegram bot..."
   );
 
+  if (lifecycle.stopping || !coordination.owned) return;
   startupStage = "Express health server";
   await new Promise((resolve, reject) => {
     server = app.listen(PORT);
@@ -3259,56 +3397,14 @@ async function startBot() {
       message: sanitizeDiagnosticMessage(error?.message),
     });
   }
+  if (lifecycle.stopping || !coordination.owned) return;
   startUsageSync();
 
   console.log("Bot handlers registered. Starting Telegram polling...");
 
-  // =========================
-  // SHUTDOWN
-  // =========================
-
-  let shuttingDown = false;
-  const shutdown = async (signal, exitCode = 0) => {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    console.log(
-      `${signal} received. Shutting down...`
-    );
-
-    clearInterval(usageSyncTimer);
-    if (usageSyncCompletion) await usageSyncCompletion;
-    await expiryWorker?.stop();
-    await notificationStore?.close();
-    try {
-      bot.stop(signal);
-    } catch (error) {
-      if (error?.message !== "Bot is not running!") {
-        logHandlerFailure("shutdown.telegram", error);
-      }
-    }
-    await new Promise((resolve) => server.close(resolve));
-    console.log("HTTP server closed.");
-    try {
-      await database.runtime.close();
-    } catch (error) {
-      logHandlerFailure("shutdown.database", error);
-    }
-    process.exit(exitCode);
-  };
-
-  process.once(
-    "SIGINT",
-    () => { void shutdown("SIGINT"); }
-  );
-
-  process.once(
-    "SIGTERM",
-    () => { void shutdown("SIGTERM"); }
-  );
-
   startupStage = "Telegram polling";
-  void bot.launch().catch((error) => {
-    if (shuttingDown) return;
+  void bot.launch({}, () => { botHealthy = !lifecycle.stopping && coordination.owned; }).catch((error) => {
+    if (lifecycle.stopping) return;
     logStartupFailure(error);
     void shutdown("Telegram polling failure", 1);
   });
@@ -3316,5 +3412,6 @@ async function startBot() {
 
 startBot().catch((error) => {
   logStartupFailure(error);
-  process.exit(1);
+  if (shutdownProcess) void shutdownProcess("Startup failure", 1);
+  else process.exit(1);
 });

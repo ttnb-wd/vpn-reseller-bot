@@ -5,6 +5,18 @@ const { test } = require("node:test");
 const { Client } = require("pg");
 const { prepareDatabaseUrl, describeDatabaseRuntime } = require("./db");
 
+test('external weak compatibility and private-host overrides fail; verify-full is verified', () => {
+  const base = 'postgres://synthetic:fake@db.example/test';
+  for (const mode of ['prefer', 'verify-ca', 'disable', 'no-verify', 'unknown']) {
+    assert.throws(() => prepareDatabaseUrl(base + '?sslmode=' + mode, 'production'));
+  }
+  assert.throws(() => prepareDatabaseUrl(base + '?sslmode=require&uselibpqcompat=true', 'production'));
+  assert.throws(() => prepareDatabaseUrl('postgres://synthetic:fake@dpg-test-a/test?host=db.example', 'production'));
+  const url = prepareDatabaseUrl(base + '?sslmode=verify-full&uselibpqcompat=true', 'production');
+  assert.equal(url.searchParams.get('sslmode'), 'verify-full');
+  assert.notEqual(new Client({ connectionString: url.toString() }).connectionParameters.ssl.rejectUnauthorized, false);
+});
+
 test("Render internal PostgreSQL requires TLS and accepts only its self-signed certificate", () => {
   const original = "postgres://private:password@dpg-daqknpugekts7391clg0-a:5432/vpn_799m?sslmode=require";
   const url = prepareDatabaseUrl(original, "production");
@@ -24,9 +36,9 @@ test("external PostgreSQL retains certificate verification and diagnostics omit 
     "production"
   );
   const client = new Client({ connectionString: url.toString() });
-  assert.equal(url.searchParams.get("sslmode"), "require");
+  assert.equal(url.searchParams.get("sslmode"), "verify-full");
   assert.notEqual(client.connectionParameters.ssl.rejectUnauthorized, false);
-  assert.throws(() => prepareDatabaseUrl(url.toString().replace("require", "no-verify"), "production"),
+  assert.throws(() => prepareDatabaseUrl(url.toString().replace("verify-full", "no-verify"), "production"),
     /reserved for Render internal/);
   const diagnostic = describeDatabaseRuntime(url, "prisma/contract.json",
     { storage: { storageHash: "expected-hash" } }, "8.0.0-rc.11");

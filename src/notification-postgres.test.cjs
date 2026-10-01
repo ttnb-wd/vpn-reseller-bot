@@ -13,6 +13,7 @@ const { createExpiryWorker } = require("./expiry-worker");
 const testUrl = process.env.NOTIFICATION_TEST_DATABASE_URL;
 test("disposable PostgreSQL notification and dynamic-key integration", { skip: !testUrl }, async (t) => {
   const parsed = new URL(testUrl);
+  assert.ok(!parsed.searchParams.has("host") && !parsed.searchParams.has("hostaddr") && !parsed.searchParams.has("port"), "Test URL must not override loopback routing");
   assert.ok(["127.0.0.1", "localhost", "[::1]"].includes(parsed.hostname), "Test DB must be local");
   assert.ok(/^\d+$/.test(parsed.port) && parsed.port !== "5432", "Use an explicit dedicated disposable test port");
   const pool = new Pool({ connectionString: testUrl, max: 4 });

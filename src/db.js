@@ -22,6 +22,9 @@ function prepareDatabaseUrl(databaseUrl, nodeEnv = process.env.NODE_ENV) {
     throw new Error("DATABASE_URL must be a valid PostgreSQL URL.");
   }
   if (nodeEnv === "production") {
+    if (connectionUrl.searchParams.has("host") || connectionUrl.searchParams.has("hostaddr")) {
+      throw new Error("Production database host overrides are not supported.");
+    }
     const sslMode = connectionUrl.searchParams.get("sslmode");
     if (sslMode === "disable") throw new Error("Production database TLS is required.");
     const renderInternalHost = /^dpg-[a-z0-9]+-a(?:\.render\.internal)?$/.test(
@@ -34,10 +37,15 @@ function prepareDatabaseUrl(databaseUrl, nodeEnv = process.env.NODE_ENV) {
       // Prisma's serverless adapter accepts only a URL. node-postgres parses
       // no-verify into ssl: { rejectUnauthorized: false } for this connection.
       connectionUrl.searchParams.set("sslmode", "no-verify");
-    } else if (!sslMode) {
-      connectionUrl.searchParams.set("sslmode", "require");
-    } else if (sslMode === "no-verify") {
-      throw new Error("Unverified TLS is reserved for Render internal PostgreSQL.");
+      connectionUrl.searchParams.delete("uselibpqcompat");
+    } else {
+      if (sslMode === "no-verify") throw new Error("Unverified TLS is reserved for Render internal PostgreSQL.");
+      if ((sslMode && !["require", "verify-full"].includes(sslMode)) ||
+          (sslMode !== "verify-full" && connectionUrl.searchParams.get("uselibpqcompat") === "true")) {
+        throw new Error("External production database requires verified TLS.");
+      }
+      connectionUrl.searchParams.set("sslmode", "verify-full");
+      connectionUrl.searchParams.delete("uselibpqcompat");
     }
   }
   return connectionUrl;

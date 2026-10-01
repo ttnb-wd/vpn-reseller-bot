@@ -154,3 +154,14 @@ test("the existing expiry timer evaluates notifications even when enforcement ha
     async evaluateNotifications() { scans++; }, log: { error() {} } });
   await worker.run(); await worker.run(); assert.equal(scans, 2);
 });
+
+test('expiry reconciliation cannot restore a quota-exhausted renewal', async () => {
+  const rows = [{ id: 1, customerId: 11, vpnKeyId: 'renewing', dynamicTokenHash: 'synthetic',
+    status: 'ACTIVE', dataLimitGb: 10, expiresAt: expired, revokedAt: null }];
+  const calls = [];
+  const { worker } = fixture(rows, async () => { throw new Error('must not delete'); },
+    [{ customerId: 11, status: 'PROCESSING' }],
+    async () => { calls.push('block'); rows[0].expiresAt = future; rows[0].dataUsedGb = 10; },
+    async () => { calls.push('restore'); });
+  await worker.run(); assert.deepEqual(calls, ['block', 'block']);
+});

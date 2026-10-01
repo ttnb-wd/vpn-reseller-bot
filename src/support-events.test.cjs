@@ -5,6 +5,34 @@ const express = require("express");
 const { createSupportEvents } = require("./support-events");
 const { createMiniAppRouter } = require("./mini-app");
 const { createSupportService } = require("./support");
+const { EventEmitter } = require("node:events");
+
+function response(blocked = false) {
+  const res = new EventEmitter();
+  res.ended = false;
+  res.write = () => !blocked;
+  res.end = () => { res.ended = true; res.emit('close'); };
+  res.destroy = res.end;
+  return res;
+}
+test('SSE caps, backpressure, lifetime, dead clients and shutdown release every subscriber', async () => {
+  const events = createSupportEvents('synthetic', { perCustomerMax: 1, globalMax: 2,
+    lifetimeMs: 30, heartbeatMs: 1000 });
+  const a = response(), b = response(), extra = response(), globalExtra = response();
+  events.subscribe(1, a); events.subscribe(1, extra);
+  assert.equal(extra.ended, true); assert.equal(events.subscriberCount(1), 1);
+  events.subscribe(2, b); events.subscribe(3, globalExtra);
+  assert.equal(globalExtra.ended, true);
+  a.emit('close'); assert.equal(events.subscriberCount(1), 0);
+  const slow = response(true); events.subscribe(1, slow); events.publish(1, { text: 'synthetic' });
+  assert.equal(slow.ended, true); assert.equal(events.subscriberCount(1), 0);
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(b.ended, true); assert.equal(events.subscriberCount(2), 0);
+  const live = response(); events.subscribe(1, live); events.closeAll(); events.closeAll();
+  assert.equal(live.ended, true); assert.equal(events.subscriberCount(1), 0);
+  assert.equal(live.listenerCount('close'), 0); assert.equal(live.listenerCount('error'), 0);
+  const late = response(); events.subscribe(1, late); assert.equal(late.ended, true);
+});
 
 const botToken = "123456:synthetic-telegram-token";
 function signedData(id) {

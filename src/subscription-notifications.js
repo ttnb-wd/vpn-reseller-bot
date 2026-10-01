@@ -90,9 +90,11 @@ function createSubscriptionNotifications({ store, sendMessage, prepareMigration,
     try {
       let after = 0;
       for (;;) {
+        if (stopped) break;
         const rows = await store.list(after);
         if (!rows.length) break;
         for (const subscription of rows) {
+          if (stopped) break;
           after = subscription.id;
           try {
             for (const kind of eligibleKinds(subscription)) await deliver(subscription.id, kind);
@@ -114,10 +116,12 @@ function createSubscriptionNotifications({ store, sendMessage, prepareMigration,
     }
   }
   function run() {
+    if (stopped) return running || Promise.resolve();
     if (!running) running = scan().finally(() => { running = undefined; });
     return running;
   }
-  return { run, deliver };
+  let stopped = false;
+  return { run, deliver, stopScheduling() { stopped = true; }, drain: () => running };
 }
 module.exports = { GB, MESSAGES, FIELDS, remainingBytes, eligibleKinds, renewalNotificationReset,
   definitelyRejected, createSubscriptionNotifications };

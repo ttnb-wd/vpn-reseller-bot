@@ -153,6 +153,7 @@ function createAdminRouter(config) {
   const router = express.Router();
   const sessions = new Map();
   const loginAttempts = new Map();
+  let bcryptActive = 0;
   const cookieOptions = {
     httpOnly: true, secure: config.production, sameSite: "lax", path: "/admin",
   };
@@ -268,34 +269,38 @@ function createAdminRouter(config) {
     if (!validFormRequest(req)) return res.sendStatus(403);
     if (readSessionId(req)) return res.redirect(303, "/admin");
 
-    const now = Date.now();
+    const now = (config.now || Date.now)();
     for (const [ip, record] of loginAttempts) {
       if (record.resetAt <= now) loginAttempts.delete(ip);
     }
     const ip = req.ip || "unknown";
-    const record = loginAttempts.get(ip) || { count: 0, resetAt: now + LOGIN_WINDOW_MS };
-    if (record.count >= MAX_FAILED_LOGINS) {
-      res.set("Retry-After", String(Math.ceil((record.resetAt - now) / 1000)));
+    const email = typeof req.body?.email === "string" ? req.body.email.trim().toLowerCase() : "";
+    const accountKey = "account:" + crypto.createHash("sha256").update(email).digest("hex");
+    const keys = ["ip:" + ip, accountKey];
+    const records = keys.map(key => loginAttempts.get(key) || { count: 0, resetAt: now + LOGIN_WINDOW_MS });
+    if (records.some(record => record.count >= MAX_FAILED_LOGINS) || bcryptActive >= 5 ||
+        (loginAttempts.size >= MAX_TRACKED_IPS && keys.some(key => !loginAttempts.has(key)))) {
+      res.set("Retry-After", String(Math.max(1, Math.ceil((Math.max(...records.map(r => r.resetAt)) - now) / 1000))));
       return renderLogin(res.status(429), "Too many attempts. Please try again later.", issueFormToken(res));
     }
-
-    const email = typeof req.body?.email === "string" ? req.body.email.trim().toLowerCase() : "";
+    // Reserve synchronously before bcrypt yields; unknown and known emails
+    // consume identical account and IP budgets.
+    records.forEach((record, index) => { record.count++; loginAttempts.set(keys[index], record); });
     const password = typeof req.body?.password === "string" && req.body.password.length <= 1024
       ? req.body.password : "";
     const submittedEmail = crypto.createHash("sha256").update(email).digest();
     const expectedEmail = crypto.createHash("sha256").update(config.email.toLowerCase()).digest();
     const emailMatches = crypto.timingSafeEqual(submittedEmail, expectedEmail);
-    const passwordMatches = await bcrypt.compare(password, config.passwordHash);
+    let passwordMatches;
+    bcryptActive++;
+    try { passwordMatches = await bcrypt.compare(password, config.passwordHash); }
+    finally { bcryptActive--; }
 
     if (!emailMatches || !passwordMatches || !password) {
-      record.count++;
-      loginAttempts.delete(ip);
-      loginAttempts.set(ip, record);
-      if (loginAttempts.size > MAX_TRACKED_IPS) loginAttempts.delete(loginAttempts.keys().next().value);
       return renderLogin(res.status(401), "Invalid email or password.", issueFormToken(res));
     }
 
-    loginAttempts.delete(ip);
+    keys.forEach(key => loginAttempts.delete(key));
     prune(sessions, now);
     if (sessions.size >= MAX_SESSIONS) sessions.delete(sessions.keys().next().value);
     const sessionId = crypto.randomBytes(32).toString("base64url");
