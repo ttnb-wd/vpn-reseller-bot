@@ -133,6 +133,70 @@ test("Support client appends, deduplicates, recovers, polls only when unhealthy,
 
 async function flush() { await new Promise((resolve) => setImmediate(resolve)); }
 
+test("dashboard actions retain live usage, Connect, renewal and Support flows", async () => {
+  const html = readFileSync(path.join(__dirname, "mini-app", "index.html"), "utf8");
+  const nodes = new Map([...html.matchAll(/id="([^"]+)"/g)].map((m) => [m[1], createNode()]));
+  for (const [id, node] of nodes) {
+    if (id.endsWith("-progress")) {
+      const span = createNode("span");
+      node.append(span); node.querySelector = () => span;
+    }
+  }
+  // Only real HTML IDs exist: a listener for the removed control fails startup.
+  const get = (id) => nodes.get(id) || null;
+  const document = { hidden: false, getElementById: get, createElement: createNode,
+    querySelectorAll() { return []; }, addEventListener() {} };
+  const requests = [], links = [], streams = [];
+  const account = { hasSubscription: true, status: "ACTIVE", plan: "Basic",
+    dataLimitGb: 100, dataUsedGb: 25, expiresAt: "2099-01-01T00:00:00Z", canConnect: true };
+  const fetch = async (url) => {
+    requests.push(url);
+    const responses = {
+      "api/overview": { account, packages: [] },
+      "api/connect": { url: "https://vpn.example.test/connect/existing" },
+      "api/packages": { packages: [] },
+      "api/support/open": { messages: [] },
+      "api/support/session": { session: "existing-session" },
+    };
+    assert.ok(Object.hasOwn(responses, url), `unexpected request ${url}`);
+    return { ok: true, async json() { return responses[url]; } };
+  };
+  class EventSource {
+    constructor(url) { streams.push(url); }
+    addEventListener() {}
+    close() {}
+  }
+  const window = { Telegram: { WebApp: { initData: "signed", ready() {}, expand() {},
+    openLink(url, options) { links.push([url, options.try_instant_view]); } } }, scrollTo() {} };
+  vm.runInNewContext(readFileSync(path.join(__dirname, "mini-app", "app.js"), "utf8"),
+    { document, window, fetch, EventSource, URL, Intl, Date, console,
+      setInterval() { return 1; }, clearInterval() {}, setTimeout() { return 1; }, clearTimeout() {} });
+  await flush();
+  assert.equal(get("content").classList.contains("hidden"), false);
+  assert.equal(get("home-subscription").classList.contains("hidden"), false);
+  assert.equal(get("home-actions").classList.contains("hidden"), false);
+  assert.equal(get("home-usage").textContent, "25% used · total 100 GB");
+  assert.equal(get("home-used").textContent, "25 GB");
+  assert.equal(get("home-remaining").textContent, "75 GB");
+  assert.equal(get("home-progress").querySelector("span").style.width, "25%");
+  assert.equal(get("connect-button").disabled, false);
+  await get("connect-button").fire("click");
+  assert.deepEqual(links, [["https://vpn.example.test/connect/existing", false]]);
+  get("renew-button").fire("click"); await flush();
+  assert.equal(get("packages-panel").classList.contains("hidden"), false);
+  assert.ok(requests.includes("api/packages"));
+  get("support-button").fire("click"); await flush();
+  assert.equal(get("support-panel").classList.contains("hidden"), false);
+  assert.equal(get("packages-panel").classList.contains("hidden"), true);
+  assert.ok(requests.includes("api/support/open"));
+  assert.ok(requests.includes("api/support/session"));
+  assert.deepEqual(streams, ["api/support/events?session=existing-session"]);
+  // Connect remains gated by the same account state after the layout change.
+  account.canConnect = false;
+  get("retry-button").fire("click"); await flush();
+  assert.equal(get("connect-button").disabled, true);
+});
+
 test("visible account views refresh every 60 seconds and pause while hidden", async () => {
   const nodes = new Map();
   const get = (id) => {

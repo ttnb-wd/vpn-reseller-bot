@@ -36,6 +36,33 @@ test("Mini App keeps customer statuses, exact days and buttons friendly", () => 
   assert.match(js, /Your VPN is ready\. Outline is required to connect\. If you already have Outline, tap Connect\. Otherwise, install Outline first\./);
 });
 
+test("Mini App dashboard has one Connect action above equal Renew and Support actions", () => {
+  const html = readFileSync(path.join(__dirname, "mini-app", "index.html"), "utf8");
+  const js = readFileSync(path.join(__dirname, "mini-app", "app.js"), "utf8");
+  const css = readFileSync(path.join(__dirname, "mini-app", "app.css"), "utf8");
+  const home = html.match(/<section id="home-panel"[\s\S]*?<\/section>/)[0];
+  const actions = home.slice(home.indexOf('<div id="home-actions"'));
+  assert.match(actions, /^<div id="home-actions" class="actions hidden"><button id="connect-button" class="primary-button" type="button">Connect<\/button><div class="action-pair">/);
+  assert.deepEqual([...actions.matchAll(/<button\b[^>]*>(.*?)<\/button>/g)].map(m => m[1]),
+    ["Connect", "Renew", "Support"]);
+  assert.match(actions, /id="renew-button" class="secondary-button"/);
+  assert.match(actions, /id="support-button" class="secondary-button"/);
+  assert.equal([...home.matchAll(/<button\b[^>]*>Support<\/button>/g)].length, 1);
+  assert.equal([...html.matchAll(/id="support-button"/g)].length, 1);
+  assert.doesNotMatch(html + js, /view-usage-button/);
+  for (const id of ["home-subscription", "home-usage", "home-progress", "home-used", "home-remaining", "home-sync"])
+    assert.ok(home.indexOf(`id="${id}"`) < home.indexOf('id="home-actions"'));
+  // The existing flex row can shrink at 320px: 284px content, 9px gap,
+  // and two 137.5px buttons, with no minimum width forcing overflow.
+  assert.match(css, /\*\{box-sizing:border-box\}/);
+  assert.match(css, /\.app-shell\{[^}]*max-width:520px;[^}]*padding:0 18px /);
+  assert.match(css, /\.primary-button,\.secondary-button\{width:100%;/);
+  assert.match(css, /\.action-pair\{display:flex;gap:9px\}/);
+  assert.match(css, /\.action-pair>\*\{flex:1;min-width:0\}/);
+  assert.match(css, /\.action-pair \.secondary-button\{margin-top:0\}/);
+  assert.match(css, /html\{min-width:0\}/);
+});
+
 test("Mini App Connect is English while shared bot setup keeps Myanmar", () => {
   const { connectCopy } = require("./mini-app-connect-copy");
   const source = readFileSync(path.join(__dirname, "bot.js"), "utf8");

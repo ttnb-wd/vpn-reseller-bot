@@ -718,8 +718,7 @@ if (typeof document !== "undefined") (() => {
     if (document.hidden) stopSupportConnection();
     else void connectSupport();
   });
-  for (const id of ["view-usage-button", "vpn-usage-button"])
-    $(id).addEventListener("click", () => navigate("usage"));
+  $("vpn-usage-button").addEventListener("click", () => navigate("usage"));
   $("view-packages-button").addEventListener("click", () => navigate("packages"));
   $("usage-back-button").addEventListener("click", () => navigate("vpn"));
   $("history-button").addEventListener("click", () => navigate("history"));
