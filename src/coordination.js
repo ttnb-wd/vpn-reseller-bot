@@ -17,10 +17,11 @@ function createCoordination({ pool = new Pool({ connectionString:
   if (!Number.isSafeInteger(leaseMs) || leaseMs <= heartbeatMs || heartbeatMs <= 0) {
     throw new Error('Invalid singleton heartbeat deadline.');
   }
-  let lease, timer, owned = false, checking = false;
+  let lease, timer, owned = false, checking = false, acquisition, generation = 0, closed = false;
   pool.on('error', () => {});
   async function customer(id, work) {
     if (!Number.isSafeInteger(id) || id <= 0) throw new Error('Invalid customer lock.');
+    if (closed || (leaseRequired && !owned)) throw new Error('Singleton ownership unavailable.');
     const connection = await pool.connect();
     let lost = false;
     const fail = () => { lost = true; onLost(); };
@@ -58,36 +59,57 @@ function createCoordination({ pool = new Pool({ connectionString:
     } catch { lose(); }
     finally { checking = false; }
   }
-  async function acquire() {
-    if (owned) return true;
-    lease = await pool.connect();
-    lease.on('error', lose);
-    lease.on('end', lose);
+  async function acquireOnce(epoch) {
+    const connection = await pool.connect();
+    let ended = false;
+    const failed = () => { ended = true; if (lease === connection) lose(); };
+    const discard = () => {
+      connection.removeListener('error', failed);
+      connection.removeListener('end', failed);
+      connection.release(true);
+    };
+    connection.on('error', failed);
+    connection.on('end', failed);
+    if (closed || epoch !== generation) { discard(); return false; }
     try {
-      await lease.query(`SET idle_session_timeout = '${Math.floor(leaseMs)}ms'`);
-      const result = await lease.query('SELECT pg_try_advisory_lock(1297302355, 0) AS owned');
-      owned = result.rows[0].owned;
-      if (!owned) { lease.release(true); lease = undefined; return false; }
+      await connection.query(`SET idle_session_timeout = '${Math.floor(leaseMs)}ms'`);
+      const result = await connection.query('SELECT pg_try_advisory_lock(1297302355, 0) AS owned');
+      if (!result.rows[0].owned || ended || closed || epoch !== generation) {
+        discard(); return false;
+      }
+      lease = connection;
+      // Store cleanup with the session, including listeners from this attempt.
+      leaseCleanup = discard;
+      owned = true;
       leaseRequired = true;
       timer = schedule(() => { void heartbeat(); }, heartbeatMs);
       log.info?.('Singleton ownership acquired.', { owner });
       return true;
-    } catch (error) { lease.release(true); lease = undefined; throw error; }
+    } catch (error) { discard(); throw error; }
+  }
+  let leaseCleanup;
+  function acquire() {
+    if (closed) return Promise.reject(new Error('Coordination is closed.'));
+    if (owned) return Promise.resolve(true);
+    if (!acquisition) acquisition = acquireOnce(generation).finally(() => { acquisition = undefined; });
+    return acquisition;
   }
   async function release() {
+    generation++;
     cancel(timer);
     owned = false;
     if (!lease) return;
-    const connection = lease;
     lease = undefined;
     // Destroy the session: PostgreSQL releases every owned advisory lock.
-    connection.removeListener('error', lose);
-    connection.removeListener('end', lose);
-    connection.release(true);
+    leaseCleanup();
+    leaseCleanup = undefined;
     log.info?.('Singleton ownership released.', { owner });
   }
   return { owner, customer, acquire, heartbeat, release,
-    assertCurrent() { customerContext.getStore()?.(); },
-    get owned() { return owned; }, async close() { await release(); await pool.end(); } };
+    assertCurrent() {
+      if (leaseRequired && !owned) throw new Error('Singleton ownership unavailable.');
+      customerContext.getStore()?.();
+    },
+    get owned() { return owned; }, async close() { closed = true; await release(); await pool.end(); } };
 }
 module.exports = { createCoordination };

@@ -24,6 +24,41 @@ test('disposable PostgreSQL customer locks and singleton session leases', { skip
       await first.heartbeat();
       assert.equal(await second.acquire(), false);
     });
+    await t.test('standby retries real PostgreSQL ownership and activates once after incumbent drains and releases', async () => {
+      const { createSingletonStartup } = require('./singleton-startup');
+      let pollingStarts = 0, workerStarts = 0, activeWork = 1, maxActiveWork = 1, activate;
+      const activated = new Promise(resolve => { activate = resolve; });
+      let deadline;
+      const timeout = new Promise((_, reject) => {
+        deadline = setTimeout(() => reject(new Error('Disposable takeover timed out.')), 7000);
+      });
+      const startup = createSingletonStartup({ coordination: second, log: { log() {} },
+        onError(error) { activate(Promise.reject(error)); },
+        async activate() {
+          assert.equal(second.owned, true); assert.equal(first.owned, false);
+          maxActiveWork = Math.max(maxActiveWork, ++activeWork);
+          pollingStarts++; workerStarts++;
+          const locks = await pool1.query('SELECT count(*)::int AS count FROM pg_locks WHERE locktype=\'advisory\' AND classid=1297302355 AND objid=0 AND granted');
+          assert.equal(locks.rows[0].count, 1);
+          startup.ready(); activate();
+        },
+      });
+      try {
+        await startup.start();
+        assert.equal(startup.state, 'STANDBY');
+        assert.equal(pollingStarts, 0); assert.equal(workerStarts, 0);
+        // Incumbent finishes its owned work before releasing its DB session.
+        activeWork--; await first.release();
+        await Promise.race([activated, timeout]);
+        assert.equal(startup.state, 'READY'); assert.equal(maxActiveWork, 1);
+        await startup.start();
+        assert.equal(pollingStarts, 1); assert.equal(workerStarts, 1);
+      } finally {
+        clearTimeout(deadline); startup.cancel(); await startup.drain();
+        activeWork = 0; await second.release();
+        assert.equal(await first.acquire(), true);
+      }
+    });
     await t.test('a session without heartbeat expires, signals loss and allows takeover', async () => {
       await first.release();
       const idle = createCoordination({ pool: pool1, leaseMs: 1000, heartbeatMs: 100,

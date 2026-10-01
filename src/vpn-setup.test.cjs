@@ -41,7 +41,7 @@ function loadBot() {
   vm.runInContext(source.slice(0, startupOffset) + `
     module.exports = { app, createVpnConnectUrl, readConnectToken,
       renderVpnConnectPage, sendVpnSetup, getConnectConfig, formatPurchaseConfirmation, formatActivation,
-      setDatabase(value) { db = value; } };
+      setDatabase(value) { db = value; envValidated = true; botHealthy = true; coordination = { owned: true }; } };
   `, context, { filename: file });
   return {
     ...context.module.exports, env, logs,

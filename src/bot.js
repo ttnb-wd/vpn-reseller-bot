@@ -11,8 +11,9 @@ const { createCoordination } = require("./coordination");
 const { writeEntitlementAllowance } = require("./entitlement-write");
 const { validateProductionEnvironment, createReadiness } = require("./startup-health");
 const { createLifecycle } = require("./lifecycle");
+const { createSingletonStartup, createSingletonHttpGate } = require("./singleton-startup");
 const lifecycle = createLifecycle({ exit: code => process.exit(code) });
-let coordination, recoveryTimer, recoveryRun, shutdownProcess;
+let coordination, recoveryTimer, recoveryRun, shutdownProcess, singletonStartup;
 let botHealthy = false, envValidated = false;
 const { createDatabase } = require("./db");
 const { createNavigation } = require("./navigation");
@@ -101,6 +102,8 @@ app.get("/ready", async (_req, res) => {
   res.status(ready ? 200 : 503).json({ ready });
 });
 app.use((_req, res, next) => lifecycle.stopping ? res.sendStatus(503) : next());
+app.use(createSingletonHttpGate(() => envValidated &&
+  (botHealthy && Boolean(coordination?.owned) && !lifecycle.stopping)));
 let server;
 
 let bot;
@@ -895,7 +898,7 @@ async function persistReplacementAccessKey(order, subscription, accessKey, creat
  * another one.
  */
 async function recoverStuckProcessingOrders() {
-  if (!db || lifecycle.stopping) return;
+  if (!db || lifecycle.stopping || !coordination?.owned) return;
 
   try {
     const now = Temporal.Now.instant();
@@ -979,7 +982,7 @@ function startProcessingRecovery() {
 }
 
 async function syncAccessKeyUsage() {
-  if (!db || usageSyncRunning || lifecycle.stopping) return;
+  if (!db || usageSyncRunning || lifecycle.stopping || !coordination?.owned) return;
   usageSyncRunning = true;
   let finishSync;
   usageSyncCompletion = new Promise((resolve) => { finishSync = resolve; });
@@ -1334,7 +1337,10 @@ const supportEvents = createSupportEvents(process.env.BOT_TOKEN);
 function trackedCallbacks(callbacks) {
   for (const [name, callback] of Object.entries(callbacks)) {
     if (typeof callback === "function" && name !== "getSupportService") {
-      callbacks[name] = (...args) => lifecycle.track(() => callback(...args));
+      callbacks[name] = (...args) => lifecycle.track(() => {
+        if (!botHealthy || !coordination?.owned) throw new Error("Service restarting.");
+        return callback(...args);
+      });
     }
   }
   return callbacks;
@@ -1543,10 +1549,10 @@ async function startBot() {
   const database = await createDatabase();
   db = database.client;
   const shutdown = (signal, exitCode = 0) => lifecycle.stop([
-    () => { botHealthy = false; try { bot?.stop(signal); } catch {} },
+    () => { singletonStartup?.cancel(); botHealthy = false; try { bot?.stop(signal); } catch {} },
     () => { clearInterval(recoveryTimer); clearInterval(usageSyncTimer); expiryWorker?.stopScheduling?.(); subscriptionNotifications?.stopScheduling?.(); },
     () => supportEvents.closeAll(),
-    { run: () => lifecycle.drain(), timeoutMs: 10000 },
+    { run: () => Promise.allSettled([lifecycle.drain(), singletonStartup?.drain()]), timeoutMs: 10000 },
     { run: () => Promise.allSettled([usageSyncCompletion, recoveryRun, expiryWorker?.stop(), subscriptionNotifications?.drain?.()]), timeoutMs: 10000 },
     () => coordination?.release(),
     () => new Promise(resolve => { if (!server) return resolve(); server.close(resolve); server.closeIdleConnections?.(); }),
@@ -1569,20 +1575,38 @@ async function startBot() {
 
   coordination = database.coordination || createCoordination({ onLost: () => {
     botHealthy = false;
+    console.log("Singleton ownership lost; leaving active state.", { owner: coordination?.owner });
     void shutdownProcess?.("Singleton ownership lost", 1);
   } });
-  if (!await coordination.acquire()) {
-    throw new Error("Polling and worker ownership is held by another process.");
-  }
-  if (lifecycle.stopping || !coordination.owned) return;
   console.log("PostgreSQL connected.");
 
+  // Construction is read-only. Setup/config HTTP requests can serve the same
+  // stored dynamic URL in standby; ensure() remains behind the active API gate.
   dynamicKeys = createDynamicKeys({ client: db, baseUrl: connectConfig.baseUrl,
     secret: process.env.CONNECT_TOKEN_SECRET });
+  singletonStartup = createSingletonStartup({ coordination, activate: activateSingletonServices,
+    log: console,
+    onError(error) { logStartupFailure(error); void shutdown("Singleton activation failure", 1); } });
+  startupStage = "Express health server";
+  await new Promise((resolve, reject) => {
+    server = app.listen(PORT);
+    server.once("listening", resolve);
+    server.once("error", reject);
+  });
+  console.log("HTTP liveness available; awaiting singleton ownership.");
+  if (lifecycle.stopping) return;
+  await singletonStartup.start();
+}
+
+async function activateSingletonServices() {
+  if (lifecycle.stopping || !coordination.owned) return;
   notificationStore = createNotificationStore();
   subscriptionNotifications = createSubscriptionNotifications({ store: notificationStore,
-    sendMessage: (chatId, text, extra) => bot.telegram.callApi("sendMessage",
-      { chat_id: chatId, text, ...extra }, { signal: AbortSignal.timeout(15000) }),
+    sendMessage: (chatId, text, extra) => {
+      if (!coordination.owned) throw new Error("Singleton ownership unavailable.");
+      return bot.telegram.callApi("sendMessage",
+        { chat_id: chatId, text, ...extra }, { signal: AbortSignal.timeout(15000) });
+    },
     async prepareMigration(subscription) {
       const prepared = await dynamicKeys.ensure(subscription);
       const accessUrl = dynamicKeys.accessUrl(prepared);
@@ -1620,7 +1644,7 @@ async function startBot() {
   const originalStart = bot.start.bind(bot);
   const originalOn = bot.on.bind(bot);
   bot.on = (event, handler) => originalOn(event, ctx => {
-    if (lifecycle.stopping) return;
+    if (lifecycle.stopping || !coordination.owned) return;
     return lifecycle.track(() => handler(ctx));
   });
   const textScreens = new Map([
@@ -1682,13 +1706,13 @@ async function startBot() {
   bot.action = (trigger, handler) => {
     screenActions.push({ trigger, handler });
     return originalAction(trigger, (ctx) => {
-      if (lifecycle.stopping) return ctx.answerCbQuery("Service restarting");
+      if (lifecycle.stopping || !coordination.owned) return ctx.answerCbQuery("Service restarting");
       const action = typeof trigger === "string" ? trigger : ctx.match?.[0];
       return lifecycle.track(() => withNavigationReply(ctx, screenForAction(action || ""), () => handler(ctx)));
     });
   };
   bot.start = (handler) => originalStart((ctx) => {
-    if (lifecycle.stopping) return;
+    if (lifecycle.stopping || !coordination.owned) return;
     navigation.reset(ctx);
     return lifecycle.track(() => handler(ctx));
   });
@@ -3410,14 +3434,6 @@ async function startBot() {
   );
 
   if (lifecycle.stopping || !coordination.owned) return;
-  startupStage = "Express health server";
-  await new Promise((resolve, reject) => {
-    server = app.listen(PORT);
-    server.once("listening", resolve);
-    server.once("error", reject);
-  });
-  console.log("Server listening on port " + PORT);
-
   startupStage = "Telegram menu button";
   const metroMenuButton = buildMetroMenuButton();
   try {
@@ -3441,10 +3457,14 @@ async function startBot() {
   console.log("Bot handlers registered. Starting Telegram polling...");
 
   startupStage = "Telegram polling";
-  void bot.launch({}, () => { botHealthy = !lifecycle.stopping && coordination.owned; }).catch((error) => {
+  void bot.launch({}, () => {
+    botHealthy = !lifecycle.stopping && coordination.owned;
+    if (botHealthy) singletonStartup.ready();
+    else { try { bot.stop("Service restarting"); } catch {} }
+  }).catch((error) => {
     if (lifecycle.stopping) return;
     logStartupFailure(error);
-    void shutdown("Telegram polling failure", 1);
+    void shutdownProcess("Telegram polling failure", 1);
   });
 }
 

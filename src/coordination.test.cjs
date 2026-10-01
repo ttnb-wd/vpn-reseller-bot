@@ -68,3 +68,41 @@ test('lost customer connection fences further writes and signals shutdown', asyn
   });
   assert.equal(lost, 1);
 });
+
+test('concurrent acquisition shares one session and shutdown fences a late successful lock', async () => {
+  const { pool, connections } = fixture();
+  const connect = pool.connect;
+  let finish, connects = 0;
+  pool.connect = async () => {
+    connects++;
+    const connection = await connect();
+    const query = connection.query;
+    connection.query = async (sql, values) => {
+      if (sql.includes('pg_try_advisory_lock')) await new Promise(resolve => { finish = resolve; });
+      return query(sql, values);
+    };
+    return connection;
+  };
+  let scheduled = 0;
+  const coordinator = createCoordination({ pool, schedule() { scheduled++; return 1; }, cancel() {}, log: {} });
+  const first = coordinator.acquire(), second = coordinator.acquire();
+  assert.equal(first, second);
+  await new Promise(setImmediate); assert.equal(connects, 1);
+  await coordinator.release(); finish();
+  assert.deepEqual(await Promise.all([first, second]), [false, false]);
+  assert.equal(coordinator.owned, false); assert.equal(scheduled, 0);
+  assert.equal(connections[0].listenerCount('error'), 0);
+  assert.equal(connections[0].listenerCount('end'), 0);
+  await coordinator.close(); await assert.rejects(coordinator.acquire(), /closed/);
+});
+
+test('active lease loss fences new customer locks and unfenced remote mutations', async () => {
+  const { pool, connections } = fixture();
+  const coordinator = createCoordination({ pool, log: {} });
+  await coordinator.acquire();
+  connections[0].emit('error', new Error('synthetic'));
+  assert.equal(coordinator.owned, false);
+  assert.throws(() => coordinator.assertCurrent(), /ownership unavailable/);
+  await assert.rejects(coordinator.customer(1, () => assert.fail()), /ownership unavailable/);
+  await coordinator.close();
+});

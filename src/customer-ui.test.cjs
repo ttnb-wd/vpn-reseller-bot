@@ -33,7 +33,7 @@ async function loadBot(existingTables = null, outlineKeys = new Map(), options =
     }) }))
     : (row) => matches(row, filter);
   const lockTails = new Map();
-  const coordination = { owned: true, async acquire() { return true; },
+  const coordination = options.coordination || { owned: true, async acquire() { return true; },
     async release() { this.owned = false; }, async close() {},
     async customer(id, work) {
       const previous = lockTails.get(id) || Promise.resolve();
@@ -93,6 +93,7 @@ async function loadBot(existingTables = null, outlineKeys = new Map(), options =
   const exits = [];
   const runtimeCloses = [];
   const serverCloses = [];
+  const expiryStarts = [], expiryStops = [];
   const errors = [];
   const keyCalls = [];
   const limitCalls = [];
@@ -108,7 +109,7 @@ async function loadBot(existingTables = null, outlineKeys = new Map(), options =
   let metricsUnavailable = false;
   let rejectMiniPhotoOnce = Boolean(options.rejectMiniPhotoOnce);
   let ambiguousMiniPhotoOnce = Boolean(options.ambiguousMiniPhotoOnce);
-  const fakeApp = {
+  const fakeApp = options.realHttp ? localRequire("express")() : {
     set() {}, get() {}, use() {}, disable() {},
     listen() {
       const server = new EventEmitter();
@@ -170,17 +171,30 @@ async function loadBot(existingTables = null, outlineKeys = new Map(), options =
     __dirname: __dirname,
     require(name) {
       if (name === "dotenv") return { config() {} };
+      if (name === "./singleton-startup" && options.ownershipTimers) return {
+        ...localRequire(name),
+        createSingletonStartup(args) { return localRequire(name).createSingletonStartup({
+          ...args, ...options.ownershipTimers }); },
+      };
+      if (name === "./coordination" && options.captureLoss) return {
+        createCoordination(args) { options.captureLoss(args.onLost); return coordination; },
+      };
       if (name === "./notification-store") return { createNotificationStore() {
         return localRequire("./notification-test-fixture.cjs").createMemoryStore(tables.Subscription, tables.notificationAttempts, tables.Order);
       } };
-      if (name === "./mini-app") return { createMiniAppRouter(args) { miniAppCallbacks = args; return () => {}; } };
+      if (name === "./mini-app") return { createMiniAppRouter(args) {
+        miniAppCallbacks = args;
+        return options.realHttp ? localRequire(name).createMiniAppRouter(args) : () => {};
+      } };
       if (name === "./expiry-worker") return { createExpiryWorker() {
-        return { start() {}, stop() {} };
+        return { start() { expiryStarts.push(true); }, stop() { expiryStops.push(true); },
+          stopScheduling() {} };
       } };
       if (name === "express") return () => fakeApp;
       if (name === "telegraf") return { ...localRequire(name), Telegraf: FakeTelegraf };
       if (name === "./db") return { async createDatabase() {
-        return { client, coordination, runtime: { async close() { runtimeCloses.push(true); } } };
+        return { client, coordination: options.captureLoss ? undefined : coordination,
+          runtime: { async close() { runtimeCloses.push(true); } } };
       } };
       if (name === "./admin-auth") return {
         validateAdminConfig() { return { email: "admin@example.test" }; },
@@ -227,7 +241,7 @@ async function loadBot(existingTables = null, outlineKeys = new Map(), options =
       return localRequire(name);
     },
     process: {
-      env: { ADMIN_TELEGRAM_ID: "999", PUBLIC_BASE_URL: "https://vpn.example.test", CONNECT_TOKEN_SECRET: "test-secret-".repeat(4) },
+      env: { PORT: "0", ADMIN_TELEGRAM_ID: "999", PUBLIC_BASE_URL: "https://vpn.example.test", CONNECT_TOKEN_SECRET: "test-secret-".repeat(4) },
       once(signal, handler) { signals[signal] = handler; },
       exit(code) { exits.push(code); },
     },
@@ -238,7 +252,8 @@ async function loadBot(existingTables = null, outlineKeys = new Map(), options =
   });
   vm.runInContext(source.slice(0, source.lastIndexOf("\nstartBot().catch(")) + `
     module.exports = { startBot, recoverStuckProcessingOrders, syncAccessKeyUsage,
-      miniAppCreateOrder, packageVersion };
+      miniAppCreateOrder, packageVersion, app, getServer: () => server,
+      getState: () => singletonStartup.state };
   `, context, { filename: file });
   await context.module.exports.startBot();
   await new Promise(setImmediate);
@@ -262,6 +277,8 @@ async function loadBot(existingTables = null, outlineKeys = new Map(), options =
     return call;
   }
   return { tables, client, events, handlers, sent, menuButtonCalls, menuButtonReads,
+    expiryStarts, expiryStops, app: fakeApp, getServer: context.module.exports.getServer,
+    getState: context.module.exports.getState,
     miniAppCallbacks,
     launchCalls, stopCalls, signals, exits, runtimeCloses, serverCloses, errors,
     keyCalls, limitCalls, missingKeys, ctx, action,
@@ -278,6 +295,99 @@ async function loadBot(existingTables = null, outlineKeys = new Map(), options =
 }
 
 function buttons(reply) { return reply[1].reply_markup.inline_keyboard; }
+
+test("real bot HTTP standby remains live, fences APIs, and takes over only after incumbent shutdown", async t => {
+  let holder;
+  const coordinators = ['old', 'replacement'].map(owner => ({ owner,
+    get owned() { return holder === owner; },
+    async acquire() { if (holder && holder !== owner) return false; holder = owner; return true; },
+    async release() { if (holder === owner) holder = undefined; }, async close() {},
+    async customer(_id, work) { assert.equal(holder, owner); return work(() => assert.equal(holder, owner)); },
+  }));
+  const retries = new Map(); let nextRetry = 0;
+  const ownershipTimers = {
+    schedule(fn, ms) { assert.ok(ms >= 3000 && ms < 3500); retries.set(++nextRetry, fn); return nextRetry; },
+    cancel(id) { retries.delete(id); },
+  };
+  async function waitFor(predicate) {
+    for (let i = 0; i < 200 && !predicate(); i++) await new Promise(setImmediate);
+    assert.ok(predicate());
+  }
+  const old = await loadBot(null, new Map(), { coordination: coordinators[0], realHttp: true, pollingStaysActive: true });
+  const replacement = await loadBot(null, new Map(), { coordination: coordinators[1], realHttp: true,
+    pollingStaysActive: true, ownershipTimers });
+  t.after(async () => {
+    old.signals.SIGTERM(); replacement.signals.SIGTERM();
+    await waitFor(() => old.exits.length && replacement.exits.length);
+  });
+  const origin = instance => `http://127.0.0.1:${instance.getServer().address().port}`;
+  const replacementOrigin = origin(replacement);
+  assert.equal(old.getState(), 'READY');
+  assert.equal(replacement.getState(), 'STANDBY');
+  assert.equal(replacement.exits.length, 0);
+  assert.equal(replacement.launchCalls.length, 0);
+  assert.equal(replacement.expiryStarts.length, 0);
+  assert.equal(replacement.scheduledIntervals.length, 0);
+  assert.equal(replacement.metricsCalls, 0);
+  assert.equal((await fetch(origin(old) + '/ready')).status, 200);
+  assert.equal((await fetch(replacementOrigin + '/live')).status, 200);
+  const standbyReady = await fetch(replacementOrigin + '/ready');
+  assert.equal(standbyReady.status, 503); assert.deepEqual(await standbyReady.json(), { ready: false });
+  for (const path of ['/app/', '/app/app.js', '/app/app.css', '/mini-app/'])
+    assert.equal((await fetch(replacementOrigin + path)).status, 200, path);
+  for (const [path, method] of [
+    ['/app/api/overview', 'POST'], ['/app/api/order/create', 'POST'],
+    ['/app/api/connect', 'POST'], ['/mini-app/api/order/payment-proof-upload', 'POST'],
+    ['/app/api/support/events?session=synthetic', 'GET'],
+    ['/app/api/support/send', 'POST'], ['/admin/login', 'GET'], ['/admin/login', 'POST'],
+  ]) {
+    const response = await fetch(replacementOrigin + path, { method });
+    assert.equal(response.status, 503, path);
+    assert.deepEqual(await response.json(), { error: 'Service restarting. Try again in a moment.' });
+  }
+  await replacement.recover(); await replacement.syncUsage();
+  assert.equal(replacement.metricsCalls, 0);
+  old.signals.SIGTERM(); await waitFor(() => old.exits.length === 1);
+  assert.equal(old.stopCalls.length, 1); assert.equal(old.expiryStops.length, 1);
+  assert.equal(holder, undefined);
+  assert.equal(retries.size, 1);
+  const [id, retry] = retries.entries().next().value; retries.delete(id); retry();
+  await waitFor(() => replacement.getState() === 'READY');
+  assert.equal(holder, 'replacement');
+  assert.equal(replacement.launchCalls.length, 1); assert.equal(replacement.expiryStarts.length, 1);
+  assert.equal(replacement.scheduledIntervals.length, 2);
+  assert.equal(replacement.metricsCalls, 1); assert.equal(retries.size, 0);
+  assert.equal((await fetch(replacementOrigin + '/ready')).status, 200);
+  // A cancelled/stale callback cannot start services again.
+  retry(); await new Promise(setImmediate);
+  assert.equal(replacement.launchCalls.length, 1); assert.equal(replacement.expiryStarts.length, 1);
+});
+
+test('real bot standby SIGTERM cancels retry and lease loss immediately fences active work', async () => {
+  let owned = false, retry, cancelled = 0, acquireCalls = 0, lost;
+  const coordination = { owner: 'synthetic-owner', get owned() { return owned; },
+    async acquire() { acquireCalls++; return owned; }, async release() { owned = false; }, async close() {},
+    async customer(_id, work) { assert.ok(owned); return work(() => assert.ok(owned)); },
+  };
+  const standby = await loadBot(null, new Map(), { coordination,
+    ownershipTimers: { schedule(fn) { retry = fn; return 1; }, cancel() { cancelled++; } } });
+  standby.signals.SIGTERM();
+  for (let i = 0; i < 100 && !standby.exits.length; i++) await new Promise(setImmediate);
+  assert.deepEqual(standby.exits, [0]); assert.ok(cancelled);
+  owned = true; retry(); await new Promise(setImmediate);
+  assert.equal(acquireCalls, 1); assert.equal(standby.launchCalls.length, 0);
+  const active = await loadBot(null, new Map(), { coordination, pollingStaysActive: true,
+    captureLoss(fn) { lost = fn; } });
+  assert.equal(active.launchCalls.length, 1);
+  owned = false; lost();
+  await active.syncUsage(); await active.recover();
+  assert.equal(active.metricsCalls, 1);
+  await assert.rejects(active.miniAppCallbacks.createOrder({ id: 123 }, {}, 7, 'synthetic'));
+  for (let i = 0; i < 100 && !active.exits.length; i++) await new Promise(setImmediate);
+  assert.deepEqual(active.exits, [1]); assert.equal(active.stopCalls.length, 1);
+  assert.equal(active.expiryStops.length, 1); assert.equal(active.runtimeCloses.length, 1);
+});
+
 function plain(value) { return JSON.parse(JSON.stringify(value)); }
 function backCode(reply) {
   const matches = buttons(reply).flat().filter((button) => button.text === "⬅️ Back");
