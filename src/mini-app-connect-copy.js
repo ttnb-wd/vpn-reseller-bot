@@ -1,5 +1,10 @@
 // Only Mini App links opt into English. Bot setup links keep their original copy.
 const ENGLISH_COPY = Object.freeze({
+  "Outline လိုပါသလား။": "Need Outline?",
+  "Outline ကို အရင်သွင်းပြီး ဒီစာမျက်နှာကို ပြန်လာကာ Connect ကို ထပ်နှိပ်ပေးပါ။": "Install Outline first, then come back and tap Connect again.",
+  "App Store ကို ဖွင့်ရန်": "Open App Store",
+  "Google Play ကို ဖွင့်ရန်": "Open Google Play",
+  "နောက်သို့": "Back",
   "Outline ကို ဖွင့်ပေးနေပါတယ်…": "Opening Outline…",
   "Outline မပွင့်ရင် အောက်ကခလုတ်ကို နှိပ်ပေးပါ။": "If Outline doesn’t open, tap below.",
   "Outline ဖွင့်ဖို့ ခွင့်ပြုပြီး Add → Connect ကိုနှိပ်ပေးပါ။": "Allow Outline to open, then tap Add and Connect.",

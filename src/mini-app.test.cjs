@@ -32,6 +32,8 @@ test("Mini App keeps customer statuses, exact days and buttons friendly", () => 
   assert.match(js, /api\/order\/payment-proof-upload/);
   assert.doesNotMatch(html + js, /Contact us in the bot|Send this through Telegram|Send Payment Proof in Bot/);
   assert.match(js, /upload your slip here/);
+  assert.match(js, /Outline is required to use your VPN\. If you don’t have it yet, you can install it after your VPN is activated\./);
+  assert.match(js, /Your VPN is ready\. Outline is required to connect\. If you already have Outline, tap Connect\. Otherwise, install Outline first\./);
 });
 
 test("Mini App Connect is English while shared bot setup keeps Myanmar", () => {
@@ -39,13 +41,18 @@ test("Mini App Connect is English while shared bot setup keeps Myanmar", () => {
   const source = readFileSync(path.join(__dirname, "bot.js"), "utf8");
   const renderer = source.slice(source.indexOf("function renderVpnConnectPage("),
     source.indexOf('app.get("/connect/:token"'));
-  const render = new Function("connectCopy", "scriptJson",
-    `${renderer}\nreturn renderVpnConnectPage;`)(connectCopy, JSON.stringify);
+  const { OUTLINE_DOWNLOADS, outlinePlatform } = require("./outline-setup");
+  const render = new Function("connectCopy", "scriptJson", "OUTLINE_DOWNLOADS", "outlinePlatform",
+    `${renderer}\nreturn renderVpnConnectPage;`)(connectCopy, JSON.stringify, OUTLINE_DOWNLOADS, outlinePlatform);
   const english = render("ss://synthetic", "test-nonce", 60000, "en");
   const myanmar = render("ss://synthetic", "test-nonce", 60000);
   assert.match(english, /<html lang="en">/);
   assert.match(english, /Opening Outline/);
   assert.match(english, /VPN key copied/);
+  assert.match(english, /Need Outline\?/);
+  assert.match(english, /Install Outline first, then come back and tap Connect again\./);
+  for (const label of [...english.matchAll(/<button\b[^>]*>([^<]*)<\/button>/g)].map(m => m[1]))
+    assert.doesNotMatch(label, /\p{Extended_Pictographic}|[<>]/u);
   assert.doesNotMatch(english, /[\u1000-\u109f]|\p{Extended_Pictographic}/u);
   assert.match(myanmar, /<html lang="my">/);
   assert.match(myanmar, /Outline ကို ဖွင့်ပေးနေပါတယ်/);

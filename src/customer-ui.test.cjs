@@ -463,6 +463,7 @@ test("welcome, packages, confirmation and help only read customer data", async (
   assert.equal(buttons(detail.replies[0])[0][0].callback_data, "duration_19_1");
   assert.equal(buttons(detail.replies[0])[1].length, 2);
   const confirm = await bot.action("duration_19_3");
+  assert.match(confirm.replies[0][0], /VPN အသုံးပြုဖို့ Outline app လိုပါတယ်။/);
   assert.match(confirm.replies[0][0], /ဒီ package ကို ရွေးထားပါတယ်။[\s\S]*639 GB[\s\S]*93 ရက်[\s\S]*22,950 ကျပ်\n/);
   assert.match(buttons(confirm.replies[0])[0][0].callback_data, /^confirm_package_19_3_[a-f0-9]{16}$/);
   assert.match((await bot.action("package_99")).replies[0][0], /Package အသစ်ရွေးပေးပါ/);
@@ -1328,7 +1329,7 @@ test("repeated confirmations reuse one order and preserve its price and terminal
   assert.equal(bot.keyCalls.length, 0);
 });
 
-test("payment proof, approval, My VPN, setup and renewal retain a single real key", async () => {
+test("purchase without Outline, approval, setup and renewal retain a single real key and dynamic token", async () => {
   const bot = await loadBot();
   await bot.action(await confirmationButton(bot, 19));
   await bot.action("payment_wallet_1");
@@ -1345,9 +1346,13 @@ test("payment proof, approval, My VPN, setup and renewal retain a single real ke
   const subscription = bot.tables.Subscription[0];
   const key = subscription.vpnKey;
   const activated = bot.sent.find((sent) => sent.type === "message").args;
-  assert.match(activated[1], /VPN ကို စတင်အသုံးပြုလို့ရပါပြီ/);
+  assert.match(activated[1], /VPN ဖွင့်ပေးပြီးပါပြီ။/);
+  assert.match(activated[1], /VPN ချိတ်ဆက်ဖို့ Outline app လိုပါတယ်။/);
+  assert.match(activated[1], /Outline မရှိသေးရင် အရင်ဆုံး download လုပ်ပေးပါ။/);
   assert.equal(activated[1].includes(key), false);
   const dynamicKey = activated[2].reply_markup.inline_keyboard[1][0].copy_text.text;
+  const dynamicState = Object.fromEntries(Object.entries(subscription).filter(([field]) => field.startsWith("dynamicToken")));
+  assert.ok(Object.keys(dynamicState).length > 0);
   assert.match(dynamicKey, /^ssconf:\/\//);
   assert.match(activated[1], /ssconf:\/\//);
   assert.equal(activated[1].includes(key), false);
@@ -1360,6 +1365,7 @@ test("payment proof, approval, My VPN, setup and renewal retain a single real ke
     const setup = await bot.action(callback);
     assert.equal(buttons(setup.replies[0])[0][0].copy_text.text, dynamicKey);
     assert.match(buttons(setup.replies[0])[0][1].url, /^https:\/\/vpn.example.test\/connect\/v1\./);
+    assert.deepEqual(Object.fromEntries(Object.entries(subscription).filter(([field]) => field.startsWith("dynamicToken"))), dynamicState);
   }
   await bot.action("copy_vpn_key");
   await bot.action("my_orders");

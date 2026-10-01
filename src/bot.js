@@ -26,6 +26,7 @@ const { buildCustomerMenu, buildPersistentCustomerKeyboard,
 const { createWindowLimiter } = require("./abuse-limits");
 const { createMiniAppRouter } = require("./mini-app");
 const { connectCopy } = require("./mini-app-connect-copy");
+const { OUTLINE_DOWNLOADS, outlinePlatform } = require("./outline-setup");
 const { effectiveSubscriptionState } = require("./subscription-state");
 const { createExpiryWorker } = require("./expiry-worker");
 const { createDynamicKeys, createDynamicConfigRouter } = require("./dynamic-config");
@@ -258,6 +259,13 @@ function renderVpnConnectPage(vpnKey, nonce, remainingMs, language = "my") {
     <p>${t("Outline မပွင့်ရင် အောက်ကခလုတ်ကို နှိပ်ပေးပါ။")}</p>
     <button id="open-outline" type="button">Open Outline</button>
     <button id="copy-key" class="secondary" type="button">${t("Copy VPN Key")}</button>
+    <button id="need-outline" class="secondary" type="button">${t("Outline လိုပါသလား။")}</button>
+    <section id="outline-install" hidden aria-label="${t("Outline လိုပါသလား။")}">
+      <h2>${t("Outline လိုပါသလား။")}</h2>
+      <p>${t("Outline ကို အရင်သွင်းပြီး ဒီစာမျက်နှာကို ပြန်လာကာ Connect ကို ထပ်နှိပ်ပေးပါ။")}</p>
+      <button id="download-outline" type="button">${t("Download Outline")}</button>
+      <button id="install-back" class="secondary" type="button">${t("နောက်သို့")}</button>
+    </section>
     <p id="platform-help" class="hint">${t("Outline ဖွင့်ဖို့ ခွင့်ပြုပြီး Add → Connect ကိုနှိပ်ပေးပါ။")}</p>
     <p class="hint">${t("မပွင့်ရင် ဒီစာမျက်နှာကို Safari / Chrome နဲ့ ဖွင့်ကြည့်ပေးပါ။")}
       ${t("VPN key ကို ကူးပြီး Outline ထဲ ထည့်လို့လည်း ရပါတယ်။ Link က 10 မိနစ်အတွင်း သက်တမ်းကုန်ပါတယ်။ မမျှဝေပေးပါနဲ့။")}</p>
@@ -272,6 +280,30 @@ function renderVpnConnectPage(vpnKey, nonce, remainingMs, language = "my") {
       const copyButton = document.getElementById("copy-key");
       let useLegacyCopy = false;
       let hintTimer;
+      const downloads = ${scriptJson(OUTLINE_DOWNLOADS)};
+      const platform = (${outlinePlatform.toString()})(navigator);
+      const destination = downloads[platform] || downloads.desktop;
+      const install = document.getElementById("outline-install");
+      const downloadButton = document.getElementById("download-outline");
+      downloadButton.textContent = platform === "ios" ? ${scriptJson(t("App Store ကို ဖွင့်ရန်"))} :
+        platform === "android" ? ${scriptJson(t("Google Play ကို ဖွင့်ရန်"))} : ${scriptJson(t("Download Outline"))};
+      function showInstall() { install.hidden = false; }
+      document.getElementById("need-outline").addEventListener("click", showInstall);
+      document.getElementById("install-back").addEventListener("click", () => {
+        clearTimeout(hintTimer);
+        install.hidden = true;
+        openButton.focus();
+      });
+      downloadButton.addEventListener("click", () => {
+        clearTimeout(hintTimer);
+        // Only this explicit click leaves for a constant official destination.
+        // No access key, token, referrer, analytics or automatic store redirect.
+        window.location.href = destination;
+      });
+      document.addEventListener("visibilitychange", () => {
+        if (document.hidden) clearTimeout(hintTimer);
+      });
+      window.addEventListener("pagehide", () => clearTimeout(hintTimer));
       function isUsable() {
         if (vpnKey && performance.now() < deadline) return true;
         vpnKey = "";
@@ -283,15 +315,19 @@ function renderVpnConnectPage(vpnKey, nonce, remainingMs, language = "my") {
       function openOutline() {
         if (!isUsable()) return;
         clearTimeout(hintTimer);
+        install.hidden = true;
         status.textContent = ${scriptJson(t("Outline ကို ဖွင့်ပေးနေပါတယ်…"))};
         // Keep this synchronous inside the real click. No fetch, await, timer,
-        // iframe, invented scheme, or Android intent/store fallback.
+        // iframe, invented scheme, or automatic store redirect.
         try { window.location.href = vpnKey; } catch {
           status.textContent = ${scriptJson(t("Outline မပွင့်သေးပါဘူး။ VPN key ကို ကူးပြီး Outline ထဲ ထည့်ပေးပါ။"))};
         }
         // Browsers cannot reliably report whether a custom-scheme app opened.
         hintTimer = setTimeout(() => {
-          if (isUsable()) status.textContent = ${scriptJson(t("Outline မပွင့်ရင် Open Outline ကိုနှိပ်ပေးပါ။ VPN key ကို ကူးထည့်လို့လည်း ရပါတယ်။"))};
+          if (!document.hidden && isUsable()) {
+            status.textContent = ${scriptJson(t("Outline မပွင့်ရင် Open Outline ကိုနှိပ်ပေးပါ။ VPN key ကို ကူးထည့်လို့လည်း ရပါတယ်။"))};
+            showInstall();
+          }
         }, 1800);
       }
       function legacyCopy() {
@@ -533,14 +569,14 @@ async function sendVpnSetup(ctx) {
 
   await ctx.reply(
     "🛰️ Setup VPN\n\n" +
-      "Copy VPN Key ကိုနှိပ်ပြီး key ကူးပေးပါ။\n" +
-      "Open Outline ကိုနှိပ်ပြီး key ထည့်ပေးပါ။\n" +
-      "Add → Connect ကိုနှိပ်ရင် စသုံးလို့ရပါပြီ။\n\n" +
-      "မပွင့်ရင် Safari / Chrome နဲ့ ဖွင့်ကြည့်ပေးပါ။\n" +
+      "VPN ချိတ်ဆက်ဖို့ Outline app လိုပါတယ်။\n\n" +
+      "Outline ရှိပြီးသားဆို Connect ကိုနှိပ်ပါ။\n" +
+      "မရှိသေးရင် Download Outline ကိုနှိပ်ပြီး အရင်သွင်းပေးပါ။\n\n" +
       "Link က 10 မိနစ်အတွင်း သက်တမ်းကုန်ပါတယ်။ လိုရင် Setup VPN ကို ပြန်နှိပ်ပေးပါ။ VPN key ကို မမျှဝေပေးပါနဲ့။",
     Markup.inlineKeyboard([
-      [copyVpnKeyButton(customerAccessUrl(subscription)), Markup.button.url("🧭 Open Outline", createVpnConnectUrl(subscription))],
+      [copyVpnKeyButton(customerAccessUrl(subscription)), Markup.button.url("Connect", createVpnConnectUrl(subscription))],
       [Markup.button.callback("⬅️ Back", "my_vpn")],
+      [Markup.button.url("Download Outline", OUTLINE_DOWNLOADS.desktop)],
     ])
   );
 }
@@ -689,6 +725,7 @@ function formatPurchaseConfirmation(pkg, durationMonths, isRenewal = false) {
   const { totalDataGb, totalPriceMmk, durationDays } = calculatePackage(pkg, durationMonths);
   return `ဒီ package ကို ရွေးထားပါတယ်။\n\n${pkg.name}\n${formatNumber(totalDataGb)} GB\n${durationDays} ရက်\n${formatMmk(totalPriceMmk)} ကျပ်\n\n` +
     (isRenewal ? "ရှိပြီးသား VPN ကိုပဲ ဆက်သုံးလို့ရပါတယ်။\n" : "") +
+    "VPN အသုံးပြုဖို့ Outline app လိုပါတယ်။\nမရှိသေးရင် VPN ဖွင့်ပေးပြီးတဲ့အချိန်မှာ အလွယ်တကူ download လုပ်လို့ရပါတယ်။\n\n" +
     "ဆက်မယ်ဆို Payment ကိုနှိပ်ပေးပါ။";
 }
 
@@ -714,7 +751,8 @@ function buildMyVpnKeyboard(subscription, activated = false) {
 
 function formatActivation(pkg, dataLimitGb, expiresAt, isRenewal = false) {
   return (isRenewal ? "သက်တမ်းတိုးပေးပြီးပါပြီ။\nရှိပြီးသား VPN ကိုပဲ ဆက်သုံးလို့ရပါတယ်။" :
-    "ငွေပေးချေမှု အတည်ပြုပြီးပါပြီ။\nVPN ကို စတင်အသုံးပြုလို့ရပါပြီ။") +
+    "VPN ဖွင့်ပေးပြီးပါပြီ။") +
+    "\n\nVPN ချိတ်ဆက်ဖို့ Outline app လိုပါတယ်။\nOutline မရှိသေးရင် အရင်ဆုံး download လုပ်ပေးပါ။\n\nရှိပြီးသားဆို Connect ကိုနှိပ်ပြီး တန်းသုံးလို့ရပါတယ်။" +
     `\n\nPackage: ${customerPlanLabel(pkg.name)}\nData: ${formatNumber(dataLimitGb)} GB\nသက်တမ်းကုန်ရက်: ${formatInstant(expiresAt)}\n\n` +
     "ချိတ်ဆက်ဖို့ Setup VPN ကိုနှိပ်ပေးပါ။";
 }

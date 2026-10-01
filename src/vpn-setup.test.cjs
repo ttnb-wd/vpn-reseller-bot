@@ -40,7 +40,7 @@ function loadBot() {
   });
   vm.runInContext(source.slice(0, startupOffset) + `
     module.exports = { app, createVpnConnectUrl, readConnectToken,
-      renderVpnConnectPage, sendVpnSetup, getConnectConfig,
+      renderVpnConnectPage, sendVpnSetup, getConnectConfig, formatPurchaseConfirmation, formatActivation,
       setDatabase(value) { db = value; } };
   `, context, { filename: file });
   return {
@@ -79,7 +79,8 @@ function runPage(html, options = {}) {
   const document = {
     getElementById(id) { return nodes[id] ||= node(); },
     createElement() { return node(); },
-    body: { appendChild() {} }, addEventListener() {},
+    hidden: false, listeners: {},
+    body: { appendChild() {} }, addEventListener(event, listener) { this.listeners[event] = listener; },
     execCommand(command) {
       assert.equal(command, "copy");
       copies.push(selected.value);
@@ -97,7 +98,8 @@ function runPage(html, options = {}) {
       copies.push(value);
     },
   };
-  const window = { isSecureContext: true, addEventListener() {}, location: {} };
+  const window = { isSecureContext: true, listeners: {},
+    addEventListener(event, listener) { this.listeners[event] = listener; }, location: {} };
   Object.defineProperty(window.location, "href", {
     set(value) {
       navigations.push(value);
@@ -112,10 +114,65 @@ function runPage(html, options = {}) {
   });
   return {
     nodes, navigations, copies,
+    fallback() {
+      for (const [id, timer] of [...timers]) if (timer.delay === 1800) {
+        timers.delete(id); timer.fn();
+      }
+    },
+    hide() { document.hidden = true; document.listeners.visibilitychange(); },
     click(id) { return nodes[id].listeners.click(); },
     expire() { clock = 601000; },
   };
 }
+
+test("Outline fallback uses official device destinations and never loops or requests access URLs", () => {
+  const bot = loadBot();
+  const { OUTLINE_DOWNLOADS, outlinePlatform } = require("./outline-setup");
+  const key = "ssconf://vpn.example.test/vpn/config/synthetic-private-token#Metro";
+  const html = bot.renderVpnConnectPage(key, "test-nonce", 60000, "en");
+  const fixtures = [
+    [{ ua: "iPhone", platform: "iPhone" }, "ios", "Open App Store"],
+    [{ ua: "iPad", platform: "iPad" }, "ios", "Open App Store"],
+    [{ ua: "Macintosh", platform: "MacIntel", maxTouchPoints: 5 }, "ios", "Open App Store"],
+    [{ ua: "Android Chrome", platform: "Linux armv8l" }, "android", "Open Google Play"],
+    [{ ua: "Windows NT", platform: "Win32" }, "windows", "Download Outline"],
+    [{ ua: "Macintosh", platform: "MacIntel" }, "macos", "Download Outline"],
+    [{ ua: "Linux", platform: "Linux x86_64" }, "desktop", "Download Outline"],
+    [{ ua: "unknown", platform: "unknown" }, "desktop", "Download Outline"],
+  ];
+  assert.equal(OUTLINE_DOWNLOADS.ios, "https://apps.apple.com/us/app/outline-app/id1356177741");
+  assert.equal(OUTLINE_DOWNLOADS.android, "https://play.google.com/store/apps/details?id=org.outline.android.client");
+  assert.equal(OUTLINE_DOWNLOADS.desktop, "https://getoutline.org/get-started/#step-3");
+  for (const [environment, expected, label] of fixtures) {
+    assert.equal(outlinePlatform({ userAgent: environment.ua, ...environment }), expected);
+    const page = runPage(html, environment);
+    assert.deepEqual(page.navigations, [key]);
+    assert.equal(page.nodes["download-outline"].textContent, label);
+    assert.equal(page.nodes["outline-install"].hidden, true);
+    page.fallback();
+    assert.equal(page.nodes["outline-install"].hidden, false);
+    assert.deepEqual(page.navigations, [key]);
+    page.click("install-back");
+    page.fallback();
+    assert.equal(page.nodes["outline-install"].hidden, true);
+    assert.deepEqual(page.navigations, [key]);
+    page.click("need-outline");
+    assert.equal(page.nodes["outline-install"].hidden, false);
+    page.click("download-outline");
+    assert.deepEqual(page.navigations, [key, OUTLINE_DOWNLOADS[expected] || OUTLINE_DOWNLOADS.desktop]);
+    page.fallback();
+    assert.equal(page.navigations.length, 2);
+  }
+  const hidden = runPage(html);
+  hidden.hide(); hidden.fallback();
+  assert.equal(hidden.nodes["outline-install"].hidden, true);
+  const blocked = runPage(html, { blockNavigation: true });
+  blocked.fallback();
+  assert.equal(blocked.nodes["outline-install"].hidden, false);
+  assert.doesNotMatch(html, /fetch\(|sendBeacon|console\.|analytics[.(]|Outline is not installed/);
+  assert.equal(bot.createKeyCalls, 0);
+  assert.equal(JSON.stringify(bot.logs).includes(key), false);
+});
 
 test("existing-key HTTPS setup", async (t) => {
   const bot = loadBot();
@@ -168,7 +225,8 @@ test("existing-key HTTPS setup", async (t) => {
     assert.match(response.headers.get("content-security-policy"), /frame-ancestors 'none'/);
     html = await response.text();
     assert.match(html, /<h1>VPN Setup<\/h1>/);
-    assert.doesNotMatch(html, /getoutline\.org|play\.google|itunes\.apple|intent:\/\/|outline:\/\//);
+    assert.doesNotMatch(html, /intent:\/\/|outline:\/\//);
+    assert.match(html, /getoutline\.org/);
     const visibleBody = html.replace(/<script[\s\S]*?<\/script>/g, "");
     assert.equal(visibleBody.includes(subscription.vpnKey), false);
     assert.equal(visibleBody.includes("ss://"), false);
@@ -376,9 +434,12 @@ test("existing-key HTTPS setup", async (t) => {
     const replies = [];
     await bot.sendVpnSetup({ from: { id: 999888777 }, reply: async (...args) => replies.push(args) });
     const keyboard = replies[0][1].reply_markup.inline_keyboard;
+    assert.match(replies[0][0], /VPN ချိတ်ဆက်ဖို့ Outline app လိုပါတယ်။/);
+    assert.match(replies[0][0], /မရှိသေးရင် Download Outline ကိုနှိပ်ပြီး အရင်သွင်းပေးပါ။/);
     assert.equal(keyboard[0][0].copy_text.text, subscription.vpnKey);
     assert.match(keyboard[0][1].url, /^https:\/\/vpn\.example\.test\/connect\/v1\./);
     assert.equal(keyboard[1][0].callback_data, "my_vpn");
+    assert.equal(keyboard[2][0].url, require("./outline-setup").OUTLINE_DOWNLOADS.desktop);
     assert.equal(bot.createKeyCalls, 0);
   });
 

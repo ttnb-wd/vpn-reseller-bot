@@ -246,6 +246,7 @@ if (typeof document !== "undefined") (() => {
         line("Duration", `${pkg.durationDays} days`), line("Price", money(pkg.priceMmk)),
         line("Purchase type", flow.renew ? "Renew" : "Buy"),
         line("Current VPN", vpnStatusLabel(dashboardView(state.account).status)),
+        paragraph("Outline is required to use your VPN. If you don’t have it yet, you can install it after your VPN is activated."),
         ...(pkg.changed ? [paragraph("This package has changed. Review the details before continuing.", "usage-warning")] : [])));
       actions.append(action("Continue", confirmPackage, true), action("Packages", () => navigate("packages")));
     } else if (step === "methods" && order) {
@@ -319,7 +320,7 @@ if (typeof document !== "undefined") (() => {
           (order.paymentMethod ? "Selected" : "Not selected")),
         line("Status", orderStatusLabel(order.status)),
         paragraph(order.status === "PAYMENT_SUBMITTED" ? "Your payment is being reviewed. We’ll notify you after review." :
-          order.status === "PAID" ? "Payment received. Your VPN is ready to use. Tap Connect in My VPN." :
+          order.status === "PAID" ? "Your VPN is ready. Outline is required to connect. If you already have Outline, tap Connect. Otherwise, install Outline first." :
           order.status === "PAYMENT_REJECTED" ? "We couldn’t approve this slip. Ask Support about it before paying again." :
           order.status === "EXPIRED" ? "This order has expired. Choose a package to try again." :
           order.status === "CANCELLED" ? "This order was cancelled. Choose a package to start again." :
