@@ -130,7 +130,15 @@ function customerAccessUrl(subscription) {
 }
 
 async function prepareDynamicSubscription(subscription) {
-  return dynamicKeys ? dynamicKeys.ensure(subscription) : subscription;
+  const prepared = dynamicKeys ? await dynamicKeys.ensure(subscription) : subscription;
+  return withOutlineProfileCustomer(prepared);
+}
+
+async function withOutlineProfileCustomer(subscription) {
+  const customer = await db.public.Customer.where({ id: subscription.customerId }).first();
+  return { ...subscription, outlineProfileCustomer: {
+    username: customer?.username, firstName: customer?.firstName,
+  } };
 }
 
 const pendingProofs = new Map();
@@ -424,7 +432,8 @@ app.get("/connect/:token", async (req, res) => {
     const remainingMs = Math.min(payload.expiresAt,
       Number(Temporal.Instant.from(subscription.expiresAt).epochMilliseconds)) - Date.now();
     if (remainingMs <= 0) return invalidLink();
-    return res.type("html").send(renderVpnConnectPage(customerAccessUrl(subscription), nonce, remainingMs, language));
+    const namedSubscription = await withOutlineProfileCustomer(subscription);
+    return res.type("html").send(renderVpnConnectPage(customerAccessUrl(namedSubscription), nonce, remainingMs, language));
   } catch {
     console.error("VPN setup page could not be loaded.");
     return res.status(503).type("text").send(t("Connect ကို အခုဖွင့်လို့မရသေးပါဘူး။ ခဏနေရင် My VPN မှာ ပြန်စမ်းကြည့်ပေးပါ။"));
@@ -1608,7 +1617,7 @@ async function activateSingletonServices() {
         { chat_id: chatId, text, ...extra }, { signal: AbortSignal.timeout(15000) });
     },
     async prepareMigration(subscription) {
-      const prepared = await dynamicKeys.ensure(subscription);
+      const prepared = await prepareDynamicSubscription(subscription);
       const accessUrl = dynamicKeys.accessUrl(prepared);
       return { accessUrl,
         text: prepared.dynamicDeliveryMode === "NEW"

@@ -2,6 +2,7 @@ const crypto = require("node:crypto");
 const express = require("express");
 const { effectiveSubscriptionState } = require("./subscription-state");
 const { createWindowLimiter } = require("./abuse-limits");
+const { outlineProfileName } = require("./outline-profile-name");
 
 const ERRORS = {
   EXPIRED: { message: "VPN သက်တမ်းကုန်သွားပါပြီ", details: "ဆက်လက်အသုံးပြုချင်ရင် Metro Secure မှ package ကို သက်တမ်းတိုးပေးပါ။" },
@@ -37,7 +38,7 @@ function createDynamicKeys({ client, baseUrl, secret }) {
     const ciphertext = Buffer.concat([cipher.update(token, "utf8"), cipher.final()]);
     return Buffer.concat([iv, cipher.getAuthTag(), ciphertext]).toString("base64url");
   }
-  function accessUrl(subscription) {
+  function accessUrl(subscription, customer = subscription.outlineProfileCustomer) {
     try {
       const bytes = Buffer.from(subscription.dynamicTokenEncrypted, "base64url");
       const decipher = crypto.createDecipheriv("aes-256-gcm", key, bytes.subarray(0, 12));
@@ -45,7 +46,10 @@ function createDynamicKeys({ client, baseUrl, secret }) {
       decipher.setAuthTag(bytes.subarray(12, 28));
       const token = Buffer.concat([decipher.update(bytes.subarray(28)), decipher.final()]).toString("utf8");
       if (!/^[A-Za-z0-9_-]{43}$/.test(token) || tokenHash(token) !== subscription.dynamicTokenHash) throw new Error();
-      return `${origin.href.replace(/\/+$/, "").replace(/^https:/, "ssconf:")}/vpn/config/${token}#Metro%20Secure`;
+      // Outline names profiles from the access-key fragment at import time.
+      // This metadata is never part of the fetched configuration URL.
+      const name = encodeURIComponent(outlineProfileName(customer));
+      return `${origin.href.replace(/\/+$/, "").replace(/^https:/, "ssconf:")}/vpn/config/${token}#${name}`;
     } catch { throw new Error("Dynamic credential could not be read."); }
   }
   async function ensure(subscription) {

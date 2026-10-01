@@ -82,6 +82,40 @@ test("concurrent token initialization reuses the winner rather than issuing two 
   const [a, b] = await Promise.all([keys.ensure({ ...row }), keys.ensure({ ...row })]);
   assert.equal(keys.accessUrl(a), keys.accessUrl(b));
 });
+
+test("profile metadata changes only the encoded fragment, never the key, token or fetched configuration", async () => {
+  const row = active(); const client = clientFor(row); const keys = service(client);
+  await keys.ensure(row);
+  const existingUrl = keys.accessUrl(row).split("#")[0] + "#Metro%20Secure";
+  const original = { ...row }; const writes = client.writes;
+  const oldConfig = tunnelConfig(row);
+  for (const [customer, expected] of [
+    [{ username: "ShinHtetMaung" }, "Metro Secure | ShinHtetMaung"],
+    [{ username: "@ShinHtetMaung" }, "Metro Secure | ShinHtetMaung"],
+    [{ firstName: "Shin Htet" }, "Metro Secure | Shin Htet"],
+    [{}, "Metro Secure | Customer"],
+    [{ username: "x&dns=evil#\"\nname: injected" }, 'Metro Secure | x&dns=evil#"name: injected'],
+  ]) {
+    const url = keys.accessUrl(await keys.ensure(row), customer);
+    assert.equal(url.split("#")[0], existingUrl.split("#")[0]);
+    // Mirrors Outline's official fragment parser: encoded separators cannot
+    // introduce another option or alter the endpoint/token.
+    const hash = new URL(url).hash.slice(1);
+    assert.equal(hash.split("&").length, 1); assert.equal(hash.includes("="), false);
+    assert.equal(decodeURIComponent(hash), expected);
+    assert.equal(row.vpnKeyId, original.vpnKeyId); assert.equal(row.vpnKey, original.vpnKey);
+    assert.equal(row.dynamicTokenHash, original.dynamicTokenHash);
+    assert.equal(row.dynamicTokenEncrypted, original.dynamicTokenEncrypted);
+    assert.equal(tunnelConfig(row), oldConfig);
+  }
+  row.expiresAt = new Date(Date.now() + 72 * 3600000);
+  const renewed = await service(client).ensure(row);
+  assert.equal(service(client).accessUrl(renewed, { username: "@ShinHtetMaung" }).split("#")[0], existingUrl.split("#")[0]);
+  assert.equal(row.vpnKeyId, original.vpnKeyId); assert.equal(row.vpnKey, original.vpnKey);
+  assert.equal(row.dynamicTokenHash, original.dynamicTokenHash);
+  assert.equal(row.dynamicTokenEncrypted, original.dynamicTokenEncrypted);
+  assert.equal(client.writes, writes);
+});
 test("different customers get independent tokens; encryption tampering fails safely", async () => {
   const a = active(), b = active({ id: 2 });
   const ka = service(clientFor(a)), kb = service(clientFor(b));

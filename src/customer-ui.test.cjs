@@ -296,6 +296,52 @@ async function loadBot(existingTables = null, outlineKeys = new Map(), options =
 
 function buttons(reply) { return reply[1].reply_markup.inline_keyboard; }
 
+test("existing customer Connect and Copy Key refresh only profile metadata using the same key and dynamic URL", async t => {
+  const bot = await loadBot(null, new Map(), { realHttp: true });
+  t.after(async () => {
+    bot.signals.SIGTERM();
+    for (let i = 0; i < 200 && !bot.exits.length; i++) await new Promise(setImmediate);
+    assert.equal(bot.exits.length, 1);
+  });
+  const customer = { id: 1, telegramId: "123", username: " @ShinHtetMaung ", firstName: "Shin Htet" };
+  bot.tables.Customer.push(customer);
+  const subscription = { id: 1, customerId: 1, status: "ACTIVE",
+    vpnKeyId: "existing-profile-key", dynamicTokenHash: null,
+    vpnKey: `ss://${Buffer.from("aes-256-gcm:synthetic-secret").toString("base64url")}@192.0.2.1:1234#Old`,
+    expiresAt: Temporal.Now.instant().add({ hours: 24 }), dataUsedGb: 0, dataLimitGb: 100 };
+  bot.tables.Subscription.push(subscription);
+  const keys = require("./dynamic-config").createDynamicKeys({ client: bot.client,
+    baseUrl: "https://vpn.example.test", secret: "test-secret-".repeat(4) });
+  await keys.ensure(subscription); // Fixture already has a persisted dynamic token.
+  const before = plain(subscription);
+  const oldLink = keys.accessUrl(subscription).split("#")[0] + "#Metro%20Secure";
+  const helper = await bot.miniAppCallbacks.getConnectUrl(123);
+  const origin = `http://127.0.0.1:${bot.getServer().address().port}`;
+  async function handedOffName(expected) {
+    const response = await fetch(origin + new URL(helper).pathname + "?lang=en", {
+      headers: { "X-Forwarded-Proto": "https" } });
+    assert.equal(response.status, 200);
+    const html = await response.text();
+    const link = JSON.parse(html.match(/let vpnKey = (".*");/)[1]);
+    assert.equal(decodeURIComponent(new URL(link).hash.slice(1)), expected);
+    assert.equal(link.split("#")[0], oldLink.split("#")[0]);
+    return link;
+  }
+  const namedLink = await handedOffName("Metro Secure | ShinHtetMaung");
+  const setup = await bot.action("setup_vpn");
+  assert.equal(buttons(setup.replies[0])[0][0].copy_text.text, namedLink);
+  const copied = await bot.action("copy_vpn_key");
+  assert.ok(copied.replies[0][0].includes(namedLink));
+  customer.username = null;
+  await handedOffName("Metro Secure | Shin Htet");
+  customer.firstName = null;
+  await handedOffName("Metro Secure | Customer");
+  assert.deepEqual(plain(subscription), before);
+  assert.equal(bot.keyCalls.length, 0);
+  assert.equal(bot.limitCalls.length, 0);
+  assert.equal(bot.tables.Subscription.length, 1);
+});
+
 test("real bot HTTP standby remains live, fences APIs, and takes over only after incumbent shutdown", async t => {
   let holder;
   const coordinators = ['old', 'replacement'].map(owner => ({ owner,
@@ -1461,6 +1507,8 @@ test("purchase without Outline, approval, setup and renewal retain a single real
   assert.match(activated[1], /Outline မရှိသေးရင် အရင်ဆုံး download လုပ်ပေးပါ။/);
   assert.equal(activated[1].includes(key), false);
   const dynamicKey = activated[2].reply_markup.inline_keyboard[1][0].copy_text.text;
+  assert.equal(decodeURIComponent(new URL(dynamicKey).hash.slice(1)), "Metro Secure | Test");
+  const keyId = subscription.vpnKeyId;
   const dynamicState = Object.fromEntries(Object.entries(subscription).filter(([field]) => field.startsWith("dynamicToken")));
   assert.ok(Object.keys(dynamicState).length > 0);
   assert.match(dynamicKey, /^ssconf:\/\//);
@@ -1491,6 +1539,8 @@ test("purchase without Outline, approval, setup and renewal retain a single real
   assert.equal(bot.tables.Subscription.length, 1);
   assert.equal(subscription.vpnKey, key);
   const renewed = await bot.action("setup_vpn");
+  assert.equal(subscription.vpnKeyId, keyId);
+  assert.deepEqual(Object.fromEntries(Object.entries(subscription).filter(([field]) => field.startsWith("dynamicToken"))), dynamicState);
   assert.equal(buttons(renewed.replies[0])[0][0].copy_text.text, dynamicKey);
   assert.equal(subscription.dataLimitGb, 852);
   assert.equal(subscription.expiresAt.toString(), originalExpiry.add({ hours: 93 * 24 }).toString());
