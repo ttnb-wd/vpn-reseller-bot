@@ -20,11 +20,14 @@ function clientFor(row) {
   };
 }
 function service(client) { return createDynamicKeys({ client, baseUrl: "https://vpn.example.test", secret: "synthetic encryption secret ".repeat(3) }); }
-async function serverFor(client, work, production = false) {
+async function serverFor(client, work, production = false, options = {}) {
   const app = express(); app.set("trust proxy", "loopback");
   const logs = [];
+  if (options.stopping) app.use((_req, res) => res.sendStatus(503));
   app.use("/vpn/config", createDynamicConfigRouter({ getClient: () => client, production,
-    log: { error(...args) { logs.push(args); } } }));
+    getLifecycleState: options.getLifecycleState, lookupTimeoutMs: options.lookupTimeoutMs,
+    log: { error(...args) { logs.push(["error", ...args]); },
+      info(...args) { logs.push(["info", ...args]); } } }));
   const server = app.listen(0, "127.0.0.1"); await new Promise((resolve) => server.once("listening", resolve));
   try { await work(`http://127.0.0.1:${server.address().port}`, logs); }
   finally { server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); }
@@ -147,6 +150,91 @@ test("active GET is read-only and state changes immediately become Myanmar error
   });
   assert.equal(client.writes, writes); assert.equal(row.vpnKey, key);
 });
+
+test("fast lookup logs safe timing in ACTIVE and STANDBY without changing credentials", async () => {
+  const row = active(); const client = clientFor(row); const keys = service(client);
+  await keys.ensure(row);
+  const token = new URL(keys.accessUrl(row).replace(/^ssconf:/, "https:")).pathname.split("/").pop();
+  const before = { ...row }; const writes = client.writes;
+  let state = "ACTIVE";
+  await serverFor(client, async (base, logs) => {
+    for (const expectedState of ["ACTIVE", "STANDBY"]) {
+      state = expectedState;
+      const response = await fetch(`${base}/vpn/config/${token}`);
+      assert.equal(response.status, 200);
+      assert.ok(YAML.parse(await response.text()).transport);
+    }
+    const timings = logs.filter(([level]) => level === "info").map(([, , fields]) => fields);
+    assert.equal(timings.length, 2);
+    for (const [index, fields] of timings.entries()) {
+      assert.deepEqual(Object.keys(fields).sort(), ["receivedAt", "stateAtReceive", "processUptimeMs",
+        "idleSincePreviousConfigRequestMs", "dbLookupStartedAt", "dbLookupEndedAt",
+        "dbLookupMs", "dbWaitMs", "outcome", "stateAtFinish", "status", "totalMs"].sort());
+      assert.equal(fields.stateAtReceive, ["ACTIVE", "STANDBY"][index]);
+      assert.equal(fields.stateAtFinish, fields.stateAtReceive);
+      assert.equal(fields.outcome, "success"); assert.equal(fields.status, 200);
+      assert.ok(Date.parse(fields.receivedAt) <= Date.parse(fields.dbLookupStartedAt));
+      assert.ok(Date.parse(fields.dbLookupStartedAt) <= Date.parse(fields.dbLookupEndedAt));
+      assert.ok(fields.dbLookupMs >= 0 && fields.totalMs >= fields.dbLookupMs);
+    }
+    assert.equal(timings[0].idleSincePreviousConfigRequestMs, null);
+    assert.ok(timings[1].idleSincePreviousConfigRequestMs >= 0);
+    const serialized = JSON.stringify(logs);
+    for (const secret of [token, tokenHash(token), key, "synthetic-secret", row.vpnKey])
+      assert.equal(serialized.includes(secret), false);
+  }, false, { getLifecycleState: () => state });
+  assert.equal(client.writes, writes);
+  assert.deepEqual(row, before);
+});
+
+test("slow lookup returns 503 within the internal deadline and never sends late YAML", async () => {
+  const token = "b".repeat(43);
+  let finishLookup;
+  const client = { public: { Subscription: { where() { return { first() {
+    return new Promise(resolve => { finishLookup = resolve; });
+  } }; } } } };
+  await serverFor(client, async (base, logs) => {
+    const started = performance.now();
+    const response = await fetch(`${base}/vpn/config/${token}`);
+    const elapsed = performance.now() - started;
+    assert.equal(response.status, 503);
+    assert.equal(response.headers.get("retry-after"), "3");
+    assert.equal(await response.text(), "");
+    assert.ok(elapsed < 1000, `response took ${elapsed}ms`);
+    const timing = logs.find(([level]) => level === "info")[2];
+    assert.equal(timing.outcome, "timeout");
+    assert.equal(timing.dbLookupEndedAt, null);
+    assert.equal(timing.dbLookupMs, null);
+    assert.ok(timing.dbWaitMs >= 30 && timing.totalMs < 1000);
+    assert.equal(JSON.stringify(logs).includes(token), false);
+    finishLookup(active());
+    await new Promise(setImmediate);
+    assert.equal(logs.filter(([level]) => level === "info").length, 1);
+  }, false, { lookupTimeoutMs: 40, getLifecycleState: () => "STANDBY" });
+});
+
+test("lookup errors return 503 promptly and stopping rejects before database access", async () => {
+  const token = "c".repeat(43);
+  let reads = 0;
+  const client = { public: { Subscription: { where() { reads++; throw new Error(`${token} ${key}`); } } } };
+  await serverFor(client, async (base, logs) => {
+    const started = performance.now();
+    const response = await fetch(`${base}/vpn/config/${token}`);
+    assert.equal(response.status, 503);
+    assert.equal(response.headers.get("retry-after"), null);
+    assert.equal(await response.text(), "");
+    assert.ok(performance.now() - started < 1000);
+    assert.equal(logs.find(([level]) => level === "info")[2].outcome, "error");
+    assert.equal(JSON.stringify(logs).includes(token), false);
+    assert.equal(JSON.stringify(logs).includes(key), false);
+  });
+  assert.equal(reads, 1);
+  await serverFor(client, async (base, logs) => {
+    assert.equal((await fetch(`${base}/vpn/config/${token}`)).status, 503);
+    assert.deepEqual(logs, []);
+  }, false, { stopping: true, getLifecycleState: () => "STOPPING" });
+  assert.equal(reads, 1);
+});
 test("invalid opaque tokens return empty safe 404 and never query malformed tokens", async () => {
   const client = clientFor(null);
   await serverFor(client, async (base) => {
@@ -174,7 +262,11 @@ test("dynamic endpoint errors never log token, static credential, Telegram ID or
   const client = { public: { Subscription: { where() { throw new Error(`${secret} ${key} 67890 https://management/secret`); } } } };
   await serverFor(client, async (base, logs) => {
     const response = await fetch(`${base}/vpn/config/${secret}`); assert.equal(response.status, 503);
-    assert.deepEqual(logs, [["Dynamic config unavailable."]]);
+    assert.equal(logs.find(([level]) => level === "error")[1], "Dynamic config unavailable.");
+    const serialized = JSON.stringify(logs);
+    for (const sensitive of [secret, tokenHash(secret), key, "synthetic-secret",
+      "https://management/secret", "67890"])
+      assert.equal(serialized.includes(sensitive), false);
   });
   const sanitized = sanitizeDiagnosticMessage(`ssconf://example.test/vpn/config/${secret} /vpn/config/${secret}`);
   assert.equal(sanitized.includes(secret), false);

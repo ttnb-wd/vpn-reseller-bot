@@ -122,7 +122,9 @@ let dynamicKeys;
 let subscriptionNotifications;
 let notificationStore;
 
-app.use("/vpn/config", createDynamicConfigRouter({ getClient: () => db }));
+app.use("/vpn/config", createDynamicConfigRouter({ getClient: () => db,
+  getLifecycleState: () => lifecycle.stopping ? "STOPPING" :
+    singletonStartup?.state === "READY" ? "ACTIVE" : "STANDBY" }));
 
 function customerAccessUrl(subscription) {
   return dynamicKeys && subscription.dynamicTokenHash

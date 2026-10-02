@@ -1,4 +1,5 @@
 const crypto = require("node:crypto");
+const { performance } = require("node:perf_hooks");
 const express = require("express");
 const { effectiveSubscriptionState } = require("./subscription-state");
 const { createWindowLimiter } = require("./abuse-limits");
@@ -101,11 +102,36 @@ function tunnelConfig(subscription, now = Date.now()) {
   return `transport:\n  $type: tcpudp\n${channel("tcp")}${channel("udp")}`;
 }
 
-function createDynamicConfigRouter({ getClient, production = process.env.NODE_ENV === "production", log = console }) {
+function createDynamicConfigRouter({ getClient, production = process.env.NODE_ENV === "production",
+  getLifecycleState = () => "UNKNOWN", lookupTimeoutMs = 2500, log = console }) {
   const router = express.Router();
   const allow = createWindowLimiter({ windowMs: 60000, max: 60 });
   const globalAllow = createWindowLimiter({ windowMs: 60000, max: 3000, maxEntries: 1 });
+  let previousRequestAt;
   router.get("/:token", async (req, res) => {
+    const receivedAt = new Date().toISOString();
+    const receivedTime = performance.now();
+    const idleMs = previousRequestAt == null ? null : Math.round(receivedTime - previousRequestAt);
+    previousRequestAt = receivedTime;
+    const safeState = () => {
+      const value = getLifecycleState();
+      return ["ACTIVE", "STANDBY", "STOPPING"].includes(value) ? value : "UNKNOWN";
+    };
+    const timing = { receivedAt, stateAtReceive: safeState(),
+      processUptimeMs: typeof process.uptime === "function" ? Math.round(process.uptime() * 1000) : null,
+      idleSincePreviousConfigRequestMs: idleMs, dbLookupStartedAt: null,
+      dbLookupEndedAt: null, dbLookupMs: null, dbWaitMs: null, outcome: "rejected" };
+    let logged = false;
+    const record = (closed = false) => {
+      if (logged) return;
+      logged = true;
+      log.info?.("Dynamic config request timing.", { ...timing,
+        stateAtFinish: safeState(), status: closed ? null : res.statusCode,
+        totalMs: Math.round(performance.now() - receivedTime),
+        outcome: closed ? "client_closed" : timing.outcome });
+    };
+    res.once("finish", () => record());
+    res.once("close", () => record(true));
     res.set({ "Cache-Control": "private, no-store, max-age=0", "Referrer-Policy": "no-referrer",
       "X-Content-Type-Options": "nosniff", "X-Robots-Tag": "noindex, nofollow, noarchive" });
     if (!globalAllow("all") || !allow(req.ip || req.socket.remoteAddress)) {
@@ -114,13 +140,34 @@ function createDynamicConfigRouter({ getClient, production = process.env.NODE_EN
     }
     if (production && !req.secure) return res.status(400).end();
     if (!/^[A-Za-z0-9_-]{43}$/.test(req.params.token)) return res.status(404).end();
+    const lookupStarted = performance.now();
+    timing.dbLookupStartedAt = new Date().toISOString();
+    let timer;
+    const timeoutError = new Error("lookup timeout");
     try {
-      const subscription = await getClient().public.Subscription.where({ dynamicTokenHash: tokenHash(req.params.token) }).first();
+      const subscription = await Promise.race([
+        Promise.resolve().then(() => getClient().public.Subscription
+          .where({ dynamicTokenHash: tokenHash(req.params.token) }).first()),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(timeoutError), lookupTimeoutMs); }),
+      ]);
+      timing.dbLookupEndedAt = new Date().toISOString();
+      timing.dbLookupMs = timing.dbWaitMs = Math.round(performance.now() - lookupStarted);
+      timing.outcome = subscription ? "success" : "not_found";
       if (!subscription) return res.status(404).end();
       return res.type("application/yaml").send(tunnelConfig(subscription));
-    } catch {
-      log.error("Dynamic config unavailable.");
+    } catch (error) {
+      timing.dbWaitMs = Math.round(performance.now() - lookupStarted);
+      if (error !== timeoutError) {
+        timing.dbLookupEndedAt = new Date().toISOString();
+        timing.dbLookupMs = timing.dbWaitMs;
+      }
+      timing.outcome = error === timeoutError ? "timeout" : "error";
+      log.error("Dynamic config unavailable.", { outcome: timing.outcome,
+        dbWaitMs: timing.dbWaitMs, state: safeState() });
+      if (error === timeoutError) res.set("Retry-After", "3");
       return res.status(503).end();
+    } finally {
+      clearTimeout(timer);
     }
   });
   return router;
