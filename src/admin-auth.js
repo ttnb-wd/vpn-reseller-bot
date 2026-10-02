@@ -17,6 +17,8 @@ const {
   renderUsage, renderSettings,
 } = require("./admin-ui");
 const { loadTelegramPaymentProof, PROOF_ERROR_CODES } = require("./admin-proof");
+const { getSalesSummary, currentMonth, permittedMonth } = require("./admin-sales");
+const { createAdminSalesEvents } = require("./admin-sales-events");
 
 const COOKIE_NAME = "metro_admin_session";
 const SESSION_MAX_AGE_MS = 30 * 60 * 1000;
@@ -151,6 +153,7 @@ function renderLogin(res, message, formToken) {
 
 function createAdminRouter(config) {
   const router = express.Router();
+  const salesEvents = config.salesEvents || createAdminSalesEvents();
   const sessions = new Map();
   const loginAttempts = new Map();
   let bcryptActive = 0;
@@ -220,6 +223,7 @@ function createAdminRouter(config) {
   function requireAdmin(req, res, next) {
     const sessionId = readSessionId(req);
     if (!sessionId) {
+      if (req.path.startsWith("/api/") || req.path === "/events/sales") return res.sendStatus(401);
       if (/^\/payment-proof\/[1-9]\d{0,9}$/.test(req.path)) {
         (config.proofLogger || console.info)("Admin payment proof", {
           orderId: Number(req.path.split("/").at(-1)), code: "AUTH_REQUIRED", status: 303,
@@ -228,6 +232,7 @@ function createAdminRouter(config) {
       return res.redirect(303, "/admin/login");
     }
     req.adminSessionId = sessionId;
+    req.adminSessionExpiresAt = sessions.get(sessionId);
     next();
   }
 
@@ -330,11 +335,38 @@ function createAdminRouter(config) {
   router.get("/", async (req, res) => {
     try {
       const data = await dataApi.getDashboardData(getClient());
-      return renderDashboard(res, config.email, issueFormToken(res), data);
+      return renderDashboard(res, config.email, issueFormToken(res), data, currentMonth());
     } catch {
       console.error("Admin dashboard query failed.");
       return res.status(503).type("text").send("Admin data is temporarily unavailable.");
     }
+  });
+
+  router.get("/api/sales-summary", async (req, res) => {
+    const month = req.query.month === undefined ? currentMonth() : req.query.month;
+    if (!(config.salesMonthAllowed || permittedMonth)(month)) return res.status(400).json({ error: "Invalid sales month." });
+    try {
+      const summary = await (config.getSalesSummary || getSalesSummary)(month);
+      return res.set("X-Content-Type-Options", "nosniff").json(summary);
+    } catch {
+      console.error("Admin sales summary query failed.");
+      return res.status(503).json({ error: "Sales data is temporarily unavailable." });
+    }
+  });
+
+  router.get("/events/sales", (req, res) => {
+    const origin = req.get("Origin");
+    const expected = config.production
+      ? [normalizeOrigin(config.expectedOrigin), normalizeOrigin(config.renderOrigin)]
+      : [normalizeOrigin(`${req.protocol}://${req.get("Host")}`)];
+    if ((origin && (!normalizeOrigin(origin) || !expected.includes(normalizeOrigin(origin)))) ||
+        req.get("Sec-Fetch-Site") === "cross-site") return res.sendStatus(403);
+    if (salesEvents.subscriberCount() >= 50) return res.sendStatus(429);
+    res.set({ "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "private, no-store, no-transform", Connection: "keep-alive",
+      "X-Accel-Buffering": "no", "X-Content-Type-Options": "nosniff" });
+    res.flushHeaders();
+    salesEvents.subscribe(req.adminSessionId, res, req.adminSessionExpiresAt - Date.now());
   });
 
   router.get("/users", async (req, res) => {
@@ -506,6 +538,7 @@ function createAdminRouter(config) {
   router.post("/logout", express.urlencoded({ extended: false, limit: "4kb" }), (req, res) => {
     if (!validFormRequest(req)) return res.sendStatus(403);
     sessions.delete(req.adminSessionId);
+    salesEvents.closeSession(req.adminSessionId);
     res.clearCookie(COOKIE_NAME, cookieOptions);
     res.clearCookie(formCookieName, formCookieBaseOptions);
     return res.redirect(303, "/admin/login");

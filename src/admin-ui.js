@@ -98,7 +98,7 @@ function pager(path, data, status) {
   return `<div class="pager">${previous}<span>Page ${formatNumber(data.page)} of ${formatNumber(data.totalPages)}</span>${next}</div>`;
 }
 
-function renderLayout(res, title, email, section, formToken, content) {
+function renderLayout(res, title, email, section, formToken, content, script = "") {
   const nonce = crypto.randomBytes(16).toString("base64");
   res.set({
     "Cache-Control": "private, no-store, max-age=0",
@@ -107,7 +107,7 @@ function renderLayout(res, title, email, section, formToken, content) {
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
     "X-Robots-Tag": "noindex, nofollow, noarchive",
-    "Content-Security-Policy": `default-src 'none'; img-src 'self'; style-src 'nonce-${nonce}'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`,
+    "Content-Security-Policy": `default-src 'none'; img-src 'self'; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`,
   });
   return res.type("html").send(`<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -176,6 +176,15 @@ function renderLayout(res, title, email, section, formToken, content) {
   .errors { border: 1px solid #98505a; border-radius: 9px; padding: .8rem 1.4rem; color: #f6bec4; }
   .usage-progress { width: 100%; height: .7rem; accent-color: #35b9e8; }
   .checklist { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: .45rem 1.2rem; padding-left: 1.4rem; }
+  .sales-head { display: flex; justify-content: space-between; gap: 1rem; align-items: end; flex-wrap: wrap; }
+  .sales-head select { max-width: 100%; padding: .6rem; border: 1px solid #51829c; border-radius: 9px; background: #081d2e; color: #fff; font: inherit; }
+  .sales-stats { margin-bottom: 1.2rem; }
+  .sales-list { list-style: none; padding: 0; margin: 0; }
+  .sales-list li { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: .6rem 1rem; padding: .8rem 0; border-bottom: 1px solid #29475b; align-items: center; }
+  .sales-list li:last-child { border-bottom: 0; }
+  .sales-list strong { overflow-wrap: anywhere; }
+  .sales-list span { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  @media (max-width: 480px) { .sales-list li { grid-template-columns: minmax(0, 1fr) auto; } .sales-list li span:last-child { grid-column: 1 / -1; } }
   @media (max-width: 600px) { .shell { width: min(100% - 1.2rem, 1200px); } .panel { padding: .9rem; } .account { width: 100%; justify-content: space-between; } }
 </style></head><body><div class="shell">
   <header class="top"><div><div class="brand">Metro Secure</div><h1>Metro Secure Admin</h1></div>
@@ -191,10 +200,10 @@ function renderLayout(res, title, email, section, formToken, content) {
     <a href="/admin/settings"${section === "settings" ? ' class="current" aria-current="page"' : ""}>Settings</a>
   </nav>
   <main>${content}</main>
-</div></body></html>`);
+</div>${script ? `<script nonce="${nonce}">${script}</script>` : ""}</body></html>`);
 }
 
-function renderDashboard(res, email, formToken, data) {
+function renderDashboard(res, email, formToken, data, month = Temporal.Now.instant().toZonedDateTimeISO("Asia/Yangon").toPlainDate().toString().slice(0, 7)) {
   const cards = [
     ["Total Customers", formatNumber(data.totalCustomers)],
     ["Active Subscriptions", formatNumber(data.activeSubscriptions)],
@@ -212,12 +221,77 @@ function renderDashboard(res, email, formToken, data) {
       <td>${text(order.package?.name || order.plan)}</td><td>${formatNumber(order.price)} MMK</td>
       <td>${badge(order.status)}</td><td>${formatDate(order.createdAt)}</td></tr>`;
   }).join("");
+  const monthStart = Temporal.PlainDate.from(`${month}-01`);
+  const monthOptions = Array.from({ length: 24 }, (_, index) => {
+    const value = monthStart.subtract({ months: index }).toString().slice(0, 7);
+    const label = new Intl.DateTimeFormat("en-US", { month: "long", year: "numeric", timeZone: "UTC" })
+      .format(new Date(`${value}-01T00:00:00Z`));
+    return `<option value="${value}">${label}</option>`;
+  }).join("");
   return renderLayout(res, "Dashboard", email, "dashboard", formToken, `
     <h2>Dashboard</h2><p class="intro">Current customers, subscriptions, and orders.</p>
     <div class="stats">${cards.map(([label, value]) => `<div class="stat"><span>${label}</span><strong>${value}</strong></div>`).join("")}</div>
+    <section class="panel" aria-labelledby="sales-title">
+      <div class="sales-head"><div><h2 id="sales-title">Sales Overview</h2><p class="intro" id="sales-period">${escapeHtml(monthOptions.match(/>([^<]+)</)?.[1] || month)}</p></div>
+        <div><label for="sales-month">Month</label><select id="sales-month">${monthOptions}</select></div></div>
+      <p class="muted-text" id="sales-state" role="status">Loading sales…</p>
+      <div class="stats sales-stats"><div class="stat"><span>Total Revenue</span><strong id="sales-revenue">—</strong></div>
+        <div class="stat"><span>Paid Orders</span><strong id="sales-orders">—</strong></div></div>
+      <h3>Package Sales</h3><ul class="sales-list" id="sales-packages"></ul>
+    </section>
     <section class="panel"><h3>Recent orders</h3>${rows ? `<div class="table-wrap"><table>
       <thead><tr><th>Order</th><th>Customer</th><th>Package</th><th>Price</th><th>Status</th><th>Created</th></tr></thead>
-      <tbody>${rows}</tbody></table></div>` : '<p class="empty">No orders yet.</p>'}</section>`);
+      <tbody>${rows}</tbody></table></div>` : '<p class="empty">No orders yet.</p>'}</section>`, `
+    (() => {
+      const month = document.getElementById("sales-month");
+      const period = document.getElementById("sales-period");
+      const state = document.getElementById("sales-state");
+      const revenue = document.getElementById("sales-revenue");
+      const orders = document.getElementById("sales-orders");
+      const packages = document.getElementById("sales-packages");
+      let generation = 0;
+      function money(value) {
+        if (!/^-?\\d+(?:\\.\\d+)?$/.test(String(value))) return "—";
+        const [whole, fraction] = String(value).split(".");
+        const decimals = fraction && /[1-9]/.test(fraction) ? "." + fraction.replace(/0+$/, "") : "";
+        return BigInt(whole).toLocaleString("en-US") + decimals + " MMK";
+      }
+      async function refresh() {
+        const request = ++generation;
+        const selected = month.value;
+        if (!orders.textContent || orders.textContent === "—") state.textContent = "Loading sales…";
+        try {
+          const response = await fetch("/admin/api/sales-summary?month=" + encodeURIComponent(selected),
+            { credentials: "same-origin", cache: "no-store" });
+          if (!response.ok) throw new Error("Sales request failed");
+          const data = await response.json();
+          if (request !== generation || selected !== month.value) return;
+          period.textContent = month.selectedOptions[0].textContent;
+          revenue.textContent = money(data.totalRevenue);
+          orders.textContent = Number(data.paidOrders).toLocaleString("en-US");
+          packages.replaceChildren();
+          for (const item of data.packages) {
+            const row = document.createElement("li");
+            const name = document.createElement("strong"); name.textContent = item.package;
+            const count = document.createElement("span"); count.textContent = Number(item.quantity).toLocaleString("en-US") + " sold";
+            const amount = document.createElement("span"); amount.textContent = money(item.revenue);
+            row.append(name, count, amount); packages.append(row);
+          }
+          state.textContent = data.paidOrders ? "" : "No sales this month";
+        } catch {
+          if (request === generation) state.textContent = orders.textContent === "—"
+            ? "Sales data is temporarily unavailable. Please try again shortly."
+            : "Sales data is temporarily unavailable. Last loaded values are shown.";
+        }
+      }
+      month.addEventListener("change", () => { revenue.textContent = "—"; orders.textContent = "—";
+        packages.replaceChildren(); refresh(); });
+      refresh();
+      const events = new EventSource("/admin/events/sales");
+      events.addEventListener("sales-change", refresh);
+      window.setInterval(refresh, 60000);
+      window.addEventListener("pagehide", () => events.close(), { once: true });
+    })();`);
 }
 
 function usersUrl(q, status, page) {

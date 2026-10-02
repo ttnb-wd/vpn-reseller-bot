@@ -21,6 +21,8 @@ const { PAYMENT_METHODS } = require("./payment-config");
 const { validateAdminConfig, createAdminRouter } = require("./admin-auth");
 const { createSupportService } = require("./support");
 const { createSupportEvents } = require("./support-events");
+const { createAdminSalesEvents, publishSaleAfterPaidUpdate } = require("./admin-sales-events");
+const { closeSalesPool } = require("./admin-sales");
 const { createTelegramAdmin } = require("./telegram-admin");
 const { buildCustomerMenu, buildPersistentCustomerKeyboard,
   buildPersistentAdminKeyboard } = require("./customer-menu");
@@ -1345,6 +1347,7 @@ async function miniAppCreateOrder(telegramUser, _account, packageId, confirmedVe
 }
 
 const supportEvents = createSupportEvents(process.env.BOT_TOKEN);
+const adminSalesEvents = createAdminSalesEvents();
 function trackedCallbacks(callbacks) {
   for (const [name, callback] of Object.entries(callbacks)) {
     if (typeof callback === "function" && name !== "getSupportService") {
@@ -1542,6 +1545,7 @@ async function startBot() {
   envValidated = true;
   app.use("/admin", createAdminRouter({
     ...adminConfig,
+    salesEvents: adminSalesEvents,
     expectedOrigin: new URL(connectConfig.baseUrl).origin,
     getOperationalStatus: () => ({
       databaseConnected: Boolean(db),
@@ -1562,7 +1566,7 @@ async function startBot() {
   const shutdown = (signal, exitCode = 0) => lifecycle.stop([
     () => { singletonStartup?.cancel(); botHealthy = false; try { bot?.stop(signal); } catch {} },
     () => { clearInterval(recoveryTimer); clearInterval(usageSyncTimer); expiryWorker?.stopScheduling?.(); subscriptionNotifications?.stopScheduling?.(); },
-    () => supportEvents.closeAll(),
+    () => { supportEvents.closeAll(); adminSalesEvents.closeAll(); return closeSalesPool(); },
     { run: () => Promise.allSettled([lifecycle.drain(), singletonStartup?.drain()]), timeoutMs: 10000 },
     { run: () => Promise.allSettled([usageSyncCompletion, recoveryRun, expiryWorker?.stop(), subscriptionNotifications?.drain?.()]), timeoutMs: 10000 },
     () => coordination?.release(),
@@ -2576,6 +2580,7 @@ async function activateSingletonServices() {
               await db.public.Order.where({ id: order.id }).first();
               throw new Error("Approval claim changed before completion.");
             }
+            publishSaleAfterPaidUpdate(changed, values, adminSalesEvents);
           }
 
           console.log(
