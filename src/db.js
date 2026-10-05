@@ -46,19 +46,22 @@ async function inspectDatabaseSecurity(connectionUrl) {
     connectionTimeoutMillis: 10000, statement_timeout: 5000 });
   try {
     await connection.connect();
+    const tls = connection.connection?.stream?.encrypted === true ||
+      connection.connection?.stream?.authorized === true;
     // Only security flags: no role name, hostname, credentials or customer rows.
     const { rows } = await connection.query(`SELECT r.rolsuper AS superuser,
       r.rolbypassrls AS "bypassRls", r.rolcreatedb AS "createDatabase",
-      r.rolcreaterole AS "createRole", s.ssl AS tls
-      FROM pg_roles r LEFT JOIN pg_stat_ssl s ON s.pid = pg_backend_pid()
+      r.rolcreaterole AS "createRole"
+      FROM pg_roles r
       WHERE r.rolname = current_user`);
-    return rows[0];
+    return rows[0] ? { ...rows[0], tls } : undefined;
   } finally { await connection.end(); }
 }
 
 function assertDatabaseSecurity(flags) {
-  if (!flags || flags.superuser || flags.bypassRls || flags.tls !== true)
-    throw new Error("Database requires a non-superuser application role without BYPASSRLS and verified TLS.");
+  if (!flags || flags.superuser === true || flags.bypassRls === true ||
+      flags.createDatabase === true || flags.createRole === true || flags.tls !== true)
+    throw new Error("Database requires a least-privilege application role with verified TLS.");
 }
 
 function describeDatabaseRuntime(connectionUrl, contractPath, contractJson, ormVersion) {
