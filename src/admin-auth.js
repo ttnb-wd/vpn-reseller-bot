@@ -19,6 +19,8 @@ const {
 const { loadTelegramPaymentProof, PROOF_ERROR_CODES } = require("./admin-proof");
 const { getSalesSummary, currentMonth, permittedMonth } = require("./admin-sales");
 const { createAdminSalesEvents } = require("./admin-sales-events");
+const { createWindowLimiter } = require("./abuse-limits");
+const { securityHeaders, safeHttpError } = require("./http-security");
 
 const COOKIE_NAME = "metro_admin_session";
 const SESSION_MAX_AGE_MS = 30 * 60 * 1000;
@@ -70,7 +72,7 @@ function validateAdminConfig(env = process.env) {
     throw new Error("ADMIN_PASSWORD_HASH must be a valid bcrypt hash with at least 10 rounds.");
   }
   return {
-    email: env.ADMIN_EMAIL.trim(),
+    email: env.ADMIN_EMAIL.trim().toLowerCase(),
     passwordHash: env.ADMIN_PASSWORD_HASH,
     sessionSecret: env.ADMIN_SESSION_SECRET,
     production: env.NODE_ENV === "production",
@@ -157,6 +159,9 @@ function createAdminRouter(config) {
   const sessions = new Map();
   const loginAttempts = new Map();
   let bcryptActive = 0;
+  const allowAdminIp = createWindowLimiter({ windowMs: 60000, max: 180 });
+  const allowAdminWork = createWindowLimiter({ windowMs: 60000, max: 30 });
+  const allowAdminGlobal = createWindowLimiter({ windowMs: 60000, max: 300, maxEntries: 1 });
   const cookieOptions = {
     httpOnly: true, secure: config.production, sameSite: "lax", path: "/admin",
   };
@@ -237,13 +242,12 @@ function createAdminRouter(config) {
   }
 
   function validFormRequest(req) {
+    if (req.get("Sec-Fetch-Site") === "cross-site") return false;
     const originHeader = req.get("Origin");
-    // The signed form token covers browsers that omit Origin. Some browsers
-    // send the literal "null" even on same-origin form navigation; require
-    // their same-origin Fetch Metadata signal as well as the token.
+    // Signed tokens cover browsers that omit Origin; opaque origins fail closed.
     if (!originHeader) return hasValidFormToken(req);
     if (originHeader === "null") {
-      return req.get("Sec-Fetch-Site") === "same-origin" && hasValidFormToken(req);
+      return false;
     }
     const origin = normalizeOrigin(originHeader);
     if (!origin) return false;
@@ -257,11 +261,13 @@ function createAdminRouter(config) {
     return Boolean(host && origin === normalizeOrigin(`${req.protocol}://${host}`));
   }
 
+  router.use(securityHeaders);
   router.use((req, res, next) => {
     res.set("Cache-Control", "private, no-store, max-age=0");
     if (config.production && !req.secure) {
       return res.status(400).type("text").send("Use HTTPS for admin access.");
     }
+    if (!allowAdminIp(req.ip)) { res.set("Retry-After", "60"); return res.sendStatus(429); }
     next();
   });
 
@@ -318,6 +324,13 @@ function createAdminRouter(config) {
 
   // Every route registered below this point requires a valid session.
   router.use(requireAdmin);
+  router.use((req, res, next) => {
+    if (req.path === "/logout") return next();
+    if (!allowAdminGlobal("all") || !allowAdminWork(req.adminSessionId)) {
+      res.set("Retry-After", "60"); return res.sendStatus(429);
+    }
+    next();
+  });
 
   const getClient = config.getClient || getDatabaseClient;
   const dataApi = config.dataApi || {
@@ -544,6 +557,7 @@ function createAdminRouter(config) {
     return res.redirect(303, "/admin/login");
   });
 
+  router.use(safeHttpError);
   return router;
 }
 

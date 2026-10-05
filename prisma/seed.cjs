@@ -10,7 +10,7 @@ async function main() {
 
   const db = postgres({
     contractJson,
-    url: process.env.DATABASE_URL,
+    url: require("../src/db").prepareDatabaseUrl(process.env.DATABASE_URL).toString(),
   });
 
   const runtime = await db.connect();
@@ -60,6 +60,6 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error("❌ Seed failed:", error);
+  console.error("Seed failed:", require("../src/safe-diagnostics").describeHandlerFailure("seed", error));
   process.exit(1);
 });

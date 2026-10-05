@@ -25,7 +25,7 @@ function createNotificationStore({ pool = new Pool({ connectionString: prepareDa
       return result.rows;
     },
     async claim(id, kind) {
-      if (!FIELDS[kind]) throw new Error("Unknown notification kind.");
+      if (!Object.hasOwn(FIELDS, kind)) throw new Error("Unknown notification kind.");
       return transaction(async (connection) => {
         // Row locking serializes competing workers with paid entitlement updates.
         const result = await connection.query(`SELECT s.*, c."telegramId",
@@ -64,8 +64,8 @@ function createNotificationStore({ pool = new Pool({ connectionString: prepareDa
       return result.rows[0].count;
     },
     async sent(claim, messageId) {
+      if (!Object.hasOwn(FIELDS, claim.kind)) throw new Error("Unknown notification kind.");
       const field = FIELDS[claim.kind];
-      if (!field) throw new Error("Unknown notification kind.");
       await transaction(async (connection) => {
         await connection.query('SELECT id FROM public."subscription" WHERE id = $1 FOR UPDATE', [claim.subscription.id]);
         // Persist both the remote receipt and timestamp together. Cycle guard

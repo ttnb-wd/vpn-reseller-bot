@@ -36,8 +36,10 @@ const { createDynamicKeys, createDynamicConfigRouter } = require("./dynamic-conf
 const { createSubscriptionNotifications, renewalNotificationReset } = require("./subscription-notifications");
 const { createNotificationStore } = require("./notification-store");
 const { USAGE_SYNC_INTERVAL_MS } = require("./worker-intervals");
-const { safeDiagnosticCode, sanitizeDiagnosticMessage,
+const { safeDiagnosticCode, safeErrorCode, safeErrorName,
   logHandlerFailure } = require("./safe-diagnostics");
+const { securityHeaders, safeHttpError, configuredPublicOrigin } = require("./http-security");
+const { isPrivateCustomerContext } = require("./telegram-security");
 
 const {
   createOrderAccessKey: createRemoteOrderAccessKey,
@@ -69,6 +71,7 @@ async function deleteAccessKey(id) {
 
 const app = express();
 app.disable("x-powered-by");
+app.use(securityHeaders);
 app.use((req, res, next) => {
   res.set({
     "X-Content-Type-Options": "nosniff",
@@ -462,8 +465,8 @@ function logStartupFailure(error) {
       return;
     }
   }
-  const code = safeDiagnosticCode(error?.code) ||
-    safeDiagnosticCode(error?.cause?.code);
+  const code = safeErrorCode(error?.code) ||
+    safeErrorCode(error?.cause?.code);
   const certificateFailure = startupStage === "Outline API connection" &&
     (code?.startsWith("OUTLINE_CERT_") ||
       /^Outline API certificate (?:fingerprint mismatch|is unavailable)\.$/.test(error?.message || ""));
@@ -472,12 +475,10 @@ function logStartupFailure(error) {
 
   console.error("VPN Bot startup failed:", {
     stage: certificateFailure ? "certificate fingerprint verification" : startupStage,
-    name: safeDiagnosticCode(error?.name),
-    message: sanitizeDiagnosticMessage(error?.message),
+    name: safeErrorName(error?.name),
     code,
     status: safeHttpStatus(response?.status ?? response?.error_code ?? error?.status),
-    outlineCode: safeDiagnosticCode(providerData?.code),
-    outlineMessage: sanitizeDiagnosticMessage(providerData?.message),
+    outlineCode: ["NotFound", "NotFoundError", "Conflict", "IllegalArgument"].includes(providerData?.code) ? providerData.code : undefined,
     outlineApiUrlPresent: Boolean(process.env.OUTLINE_API_URL),
     outlineCertSha256Present: Boolean(process.env.OUTLINE_API_CERT_SHA256),
   });
@@ -1361,6 +1362,7 @@ function trackedCallbacks(callbacks) {
 }
 const miniAppRouter = createMiniAppRouter(trackedCallbacks({
   botToken: process.env.BOT_TOKEN,
+  expectedOrigin: configuredPublicOrigin(process.env.PUBLIC_BASE_URL),
   supportEvents,
   getSupportService: () => miniAppSupportService,
   async getAccount(telegramId, telegramUser) {
@@ -1555,6 +1557,8 @@ async function startBot() {
       processingRecoveryMinutes: PROCESSING_TIMEOUT_MINUTES,
     }),
   }));
+  app.use((_req, res) => res.status(404).type("text").send("Not found."));
+  app.use(safeHttpError);
 
   startupStage = "Outline API connection";
   await testOutlineConnection();
@@ -1659,6 +1663,7 @@ async function activateSingletonServices() {
   const originalStart = bot.start.bind(bot);
   const originalOn = bot.on.bind(bot);
   bot.on = (event, handler) => originalOn(event, ctx => {
+    if (!isPrivateCustomerContext(ctx)) return;
     if (lifecycle.stopping || !coordination.owned) return;
     return lifecycle.track(() => handler(ctx));
   });
@@ -1721,12 +1726,14 @@ async function activateSingletonServices() {
   bot.action = (trigger, handler) => {
     screenActions.push({ trigger, handler });
     return originalAction(trigger, (ctx) => {
+      if (!isPrivateCustomerContext(ctx)) return ctx.answerCbQuery("Open Metro Secure in a private chat.");
       if (lifecycle.stopping || !coordination.owned) return ctx.answerCbQuery("Service restarting");
       const action = typeof trigger === "string" ? trigger : ctx.match?.[0];
       return lifecycle.track(() => withNavigationReply(ctx, screenForAction(action || ""), () => handler(ctx)));
     });
   };
   bot.start = (handler) => originalStart((ctx) => {
+    if (!isPrivateCustomerContext(ctx)) return;
     if (lifecycle.stopping || !coordination.owned) return;
     navigation.reset(ctx);
     return lifecycle.track(() => handler(ctx));
@@ -2648,7 +2655,7 @@ async function activateSingletonServices() {
             Temporal.Now.instant();
 
           console.log(
-            `Approval package: ${pkg.name}`
+            "Approval package loaded."
           );
 
           console.log(
@@ -2712,7 +2719,7 @@ async function activateSingletonServices() {
               };
 
               console.log(
-                `Reusing existing Outline key ${accessKey.id} for order ${order.orderNumber}.`
+                "Reusing existing Outline key for approval."
               );
             } else {
               // ---------------------------------
@@ -2745,7 +2752,7 @@ async function activateSingletonServices() {
               }
 
               console.log(
-                `Outline key created: ${accessKey.id}`
+                "Outline key created."
               );
 
               // ---------------------------------
@@ -2773,7 +2780,7 @@ async function activateSingletonServices() {
                 });
 
               console.log(
-                `Outline key ${accessKey.id} saved to order ${order.orderNumber}.`
+                "Outline key saved to order."
               );
             }
 
@@ -3462,9 +3469,8 @@ async function activateSingletonServices() {
     }
   } catch (error) {
     console.error("Telegram menu button setup failed:", {
-      name: safeDiagnosticCode(error?.name),
-      code: safeDiagnosticCode(error?.code),
-      message: sanitizeDiagnosticMessage(error?.message),
+      name: safeErrorName(error?.name),
+      code: safeErrorCode(error?.code),
     });
   }
   if (lifecycle.stopping || !coordination.owned) return;

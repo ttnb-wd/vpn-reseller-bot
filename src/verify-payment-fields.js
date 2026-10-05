@@ -25,8 +25,8 @@ async function verifyPaymentFields() {
 
     console.log("\nPayment Fields:");
     console.log("Payment Method:", order.paymentMethod);
-    console.log("Payment Reference:", order.paymentReference);
-    console.log("Payment Proof:", order.paymentProof);
+    console.log("Payment Reference Present:", Boolean(order.paymentReference));
+    console.log("Payment Proof Present:", Boolean(order.paymentProof));
     console.log("Paid At:", order.paidAt);
   } finally {
     await database.runtime.close();
@@ -34,6 +34,6 @@ async function verifyPaymentFields() {
 }
 
 verifyPaymentFields().catch((error) => {
-  console.error("Verification failed:", error);
+  console.error("Verification failed:", require("./safe-diagnostics").describeHandlerFailure("payment-fields", error));
   process.exitCode = 1;
 });

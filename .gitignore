@@ -1,4 +1,15 @@
 node_modules
 .env
+.env.*
+!.env.example
+.security-audit/
+*.log
 backups/
 *.session.sql
+
+security-npm-audit.json
+security-test-results.txt
+
+*.md
+*.test.cjs
+src/test-*.js

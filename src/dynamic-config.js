@@ -108,6 +108,7 @@ function createDynamicConfigRouter({ getClient, production = process.env.NODE_EN
   const allow = createWindowLimiter({ windowMs: 60000, max: 60 });
   const globalAllow = createWindowLimiter({ windowMs: 60000, max: 3000, maxEntries: 1 });
   let previousRequestAt;
+  let activeLookups = 0;
   router.get("/:token", async (req, res) => {
     const receivedAt = new Date().toISOString();
     const receivedTime = performance.now();
@@ -140,14 +141,20 @@ function createDynamicConfigRouter({ getClient, production = process.env.NODE_EN
     }
     if (production && !req.secure) return res.status(400).end();
     if (!/^[A-Za-z0-9_-]{43}$/.test(req.params.token)) return res.status(404).end();
+    if (activeLookups >= 32) { res.set("Retry-After", "3"); return res.status(503).end(); }
     const lookupStarted = performance.now();
     timing.dbLookupStartedAt = new Date().toISOString();
     let timer;
     const timeoutError = new Error("lookup timeout");
     try {
+      activeLookups++;
+      // A response timeout does not cancel database work. Keep its slot reserved
+      // until the actual query settles, so repeated timeouts cannot grow a queue.
+      const lookup = Promise.resolve().then(() => getClient().public.Subscription
+        .where({ dynamicTokenHash: tokenHash(req.params.token) }).first())
+        .finally(() => { activeLookups--; });
       const subscription = await Promise.race([
-        Promise.resolve().then(() => getClient().public.Subscription
-          .where({ dynamicTokenHash: tokenHash(req.params.token) }).first()),
+        lookup,
         new Promise((_, reject) => { timer = setTimeout(() => reject(timeoutError), lookupTimeoutMs); }),
       ]);
       timing.dbLookupEndedAt = new Date().toISOString();
@@ -170,6 +177,7 @@ function createDynamicConfigRouter({ getClient, production = process.env.NODE_EN
       clearTimeout(timer);
     }
   });
+  router.use(require("./http-security").safeHttpError);
   return router;
 }
 

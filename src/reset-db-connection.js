@@ -22,7 +22,7 @@ function databaseConnection(databaseUrl, source) {
     password: decodeURIComponent(url.password),
     database: decodeURIComponent(url.pathname.slice(1)),
     connectionTimeoutMillis: 10000,
-    ssl: sslMode === "disable" && local ? false : { rejectUnauthorized: !internal },
+    ssl: sslMode === "disable" && local ? false : { rejectUnauthorized: true },
   };
   const options = url.searchParams.get("options");
   if (options) config.options = options;

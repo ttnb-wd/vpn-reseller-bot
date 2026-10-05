@@ -24,6 +24,8 @@ function validateOutlineConfig() {
   if (parsedUrl.protocol !== "https:") {
     throw new Error("OUTLINE_API_URL must use HTTPS.");
   }
+  if (parsedUrl.username || parsedUrl.password || parsedUrl.search || parsedUrl.hash ||
+      parsedUrl.pathname === "/") throw new Error("Outline management URL must have a secret path and no URL credentials, query or fragment.");
 
   const fingerprint = rawFingerprint.replace(/[:\s]/g, "").toUpperCase();
   if (!/^[0-9A-F]{64}$/.test(fingerprint)) {
@@ -112,13 +114,15 @@ function getOutlineClient() {
     baseURL: config.apiUrl,
     timeout: 10000,
     maxRedirects: 0,
+    proxy: false,
+    maxContentLength: 8 * 1024 * 1024,
     httpsAgent: createOutlineHttpsAgent(),
     headers: { "Content-Type": "application/json" },
   });
 }
 
 function assertRealKeyId(keyId) {
-  if (!keyId || String(keyId).startsWith("mock-")) {
+  if (typeof keyId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(keyId) || keyId.startsWith("mock-")) {
     throw new Error("A real Outline access key ID is required.");
   }
 }

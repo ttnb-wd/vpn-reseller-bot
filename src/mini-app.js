@@ -3,6 +3,8 @@ const express = require("express");
 const path = require("node:path");
 const { createWindowLimiter } = require("./abuse-limits");
 const { MAX_REQUEST_BYTES, parseMultipartProof, UploadError } = require("./payment-proof-upload");
+const { securityHeaders, safeHttpError } = require("./http-security");
+const { scalarFields, supportMessage, supportConversation, paymentMethods } = require("./customer-dto");
 
 const MAX_INIT_AGE_SECONDS = 60 * 60;
 
@@ -33,7 +35,7 @@ function verifyTelegramInitData(initData, botToken, nowSeconds = Math.floor(Date
 const ACCOUNT_FIELDS = ["hasSubscription", "status", "displayName", "plan", "serverLabel",
   "dataUsedGb", "dataLimitGb", "startedAt", "expiresAt", "lastUsageSyncedAt", "canConnect"];
 function customerAccount(account) {
-  const result = Object.fromEntries(ACCOUNT_FIELDS.map((field) => [field, account?.[field] ?? null]));
+  const result = scalarFields(account, ACCOUNT_FIELDS);
   if (result.plan) result.plan = String(result.plan).replace(/ - \d+ Months?$/, "");
   return result;
 }
@@ -65,8 +67,7 @@ function openToken(token, userId, botToken) {
 }
 
 function publicPackage(pkg, userId, botToken, changed = false) {
-  return { name: pkg.name, dataLimitGb: pkg.dataLimitGb, durationDays: pkg.durationDays,
-    priceMmk: pkg.priceMmk, changed,
+  return { ...scalarFields(pkg, ["name", "dataLimitGb", "durationDays", "priceMmk"]), changed,
     selectionToken: sealToken({ kind: "selection", id: pkg.id, version: pkg.version,
       at: Date.now() }, userId, botToken) };
 }
@@ -77,24 +78,33 @@ function publicOrder(order) {
     ? "PAYMENT_SUBMITTED" : order.status;
   const plan = String(order.plan || "VPN package").replace(/ - \d+ Months?$/,
     order.totalDurationDays == null ? "" : ` - ${order.totalDurationDays} Days`);
-  return { orderNumber: order.orderNumber, plan,
+  return scalarFields({ orderNumber: order.orderNumber, plan,
     amountMmk: Number(order.price), dataLimitGb: order.totalDataGb ?? null,
     durationDays: order.totalDurationDays ?? null,
     createdAt: order.createdAt?.toString() || null,
     paymentMethod: order.paymentMethod || null,
-    proofSubmitted: Boolean(order.paymentProof), status };
+    proofSubmitted: Boolean(order.paymentProof), status }, ["orderNumber", "plan", "amountMmk", "dataLimitGb", "durationDays",
+      "createdAt", "paymentMethod", "proofSubmitted", "status"]);
 }
 const validOrderNumber = (value) => typeof value === "string" && /^VPN-[A-Za-z0-9-]{1,80}$/.test(value);
 
 function createMiniAppRouter({ botToken, getAccount, getPackages, getPackage,
   createOrder, getOrder, getOrders, getPaymentMethods, selectPaymentMethod,
-  uploadProof, getConnectUrl, getSupportService, supportEvents }) {
+  uploadProof, getConnectUrl, getSupportService, supportEvents,
+  expectedOrigin, production = process.env.NODE_ENV === "production" }) {
   const router = express.Router();
   const publicDir = path.join(__dirname, "mini-app");
   const allowUploadIp = createWindowLimiter({ windowMs: 10 * 60000, max: 30 });
   const allowUploadCustomer = createWindowLimiter({ windowMs: 10 * 60000, max: 5 });
   const allowSupportRead = createWindowLimiter({ windowMs: 60000, max: 15 });
   const allowSupportSession = createWindowLimiter({ windowMs: 60000, max: 20 });
+  const allowApiIp = createWindowLimiter({ windowMs: 60000, max: 180 });
+  const allowApiGlobal = createWindowLimiter({ windowMs: 60000, max: 3000, maxEntries: 1 });
+  const allowApiCustomer = createWindowLimiter({ windowMs: 60000, max: 120 });
+  const allowMutation = createWindowLimiter({ windowMs: 60000, max: 20 });
+  const mutationPaths = new Set(["/api/order/create", "/api/order/payment-method", "/api/support/send"]);
+  let activeUploads = 0;
+  router.use(securityHeaders);
   router.use((req, res, next) => {
     // Telegram Web may embed Mini Apps in a frame; the main server's DENY
     // header is appropriate for the admin and setup pages, but not here.
@@ -113,6 +123,19 @@ function createMiniAppRouter({ botToken, getAccount, getPackages, getPackage,
     res.set("Cache-Control", "public, max-age=86400");
     res.sendFile(path.join(publicDir, "metro-secure-icon.png"), { cacheControl: false });
   });
+  router.use("/api", (req, res, next) => {
+    if (production && !req.secure) return res.status(400).json({ error: "Use HTTPS." });
+    const origin = req.get("Origin");
+    const trusted = expectedOrigin || (!production ? `${req.protocol}://${req.get("Host")}` : null);
+    if ((origin && origin !== trusted) || req.get("Sec-Fetch-Site") === "cross-site")
+      return res.status(403).json({ error: "Request origin is not allowed." });
+    // Same-origin only: never add wildcard or reflected CORS headers.
+    if (!allowApiGlobal("all") || !allowApiIp(req.ip)) {
+      res.set("Retry-After", "60");
+      return res.status(429).json({ error: "Wait a moment before trying again." });
+    }
+    next();
+  });
   router.get("/api/support/events", (req, res) => {
     const customerId = supportEvents?.consume(req.query.session);
     if (customerId == null) return res.status(401).json({ error: "Reopen Support to try again." });
@@ -125,6 +148,10 @@ function createMiniAppRouter({ botToken, getAccount, getPackages, getPackage,
   const authenticateTelegram = (req, res, next) => {
     const user = verifyTelegramInitData(req.body?.initData, botToken);
     if (!user) return res.status(401).json({ error: "Reopen Metro Secure to try again." });
+    if (!allowApiCustomer(user.id) || ((mutationPaths.has(req.path) || mutationPaths.has(`/api${req.path}`)) && !allowMutation(user.id))) {
+      res.set("Retry-After", "60");
+      return res.status(429).json({ error: "Wait a moment before trying again." });
+    }
     req.telegramUser = user;
     next();
   };
@@ -141,6 +168,9 @@ function createMiniAppRouter({ botToken, getAccount, getPackages, getPackage,
   };
   router.post("/api/order/payment-proof-upload", (req, res, next) => {
     if (!allowUploadIp(req.ip)) return res.status(429).json({ error: "Wait a moment before uploading again." });
+    if (activeUploads >= 8) return res.status(429).json({ error: "Wait a moment before uploading again." });
+    activeUploads++;
+    res.once("close", () => { activeUploads--; });
     if (!/^multipart\/form-data(?:;|$)/i.test(req.headers["content-type"] || ""))
       return res.status(415).json({ error: "Choose a JPG or PNG slip." });
     const timer = setTimeout(() => req.destroy(), 20000);
@@ -260,7 +290,7 @@ function createMiniAppRouter({ botToken, getAccount, getPackages, getPackage,
     } catch { console.error("Mini App order status failed."); res.status(503).json({ error: "Couldn’t load this order. Try again in a moment." }); }
   });
   router.post("/api/payment-methods", async (req, res) => {
-    try { res.json({ methods: await getPaymentMethods() }); }
+    try { res.json({ methods: paymentMethods(await getPaymentMethods()) }); }
     catch { console.error("Mini App payment methods failed."); res.status(503).json({ error: "Couldn’t load payment methods. Try again in a moment." }); }
   });
   router.post("/api/order/payment-method", async (req, res) => {
@@ -280,14 +310,14 @@ function createMiniAppRouter({ botToken, getAccount, getPackages, getPackage,
       const service = getSupportService();
       const target = await service.openOrResumeTicket(req.telegramUser.id);
       if (!target) return res.status(403).json({ error: "Your account is unavailable. Contact Support here." });
-      res.json(await service.listMessages(req.telegramUser.id));
+      res.json(supportConversation(await service.listMessages(req.telegramUser.id)));
     } catch { console.error("Mini App support opening failed.");
       res.status(503).json({ error: "Couldn’t open Support. Try again in a moment." }); }
   });
   router.post("/api/support/messages", async (req, res) => {
     if (!allowSupportRead(req.telegramUser.id))
       return res.status(429).json({ error: "Wait a moment before checking Support again." });
-    try { res.json(await getSupportService().listMessages(req.telegramUser.id)); }
+    try { res.json(supportConversation(await getSupportService().listMessages(req.telegramUser.id))); }
     catch { console.error("Mini App support messages failed.");
       res.status(503).json({ error: "Couldn’t load Support messages. Try again in a moment." }); }
   });
@@ -297,7 +327,9 @@ function createMiniAppRouter({ botToken, getAccount, getPackages, getPackage,
     try {
       const target = await getSupportService().openOrResumeTicket(req.telegramUser.id);
       if (!target) return res.status(403).json({ error: "Your account is unavailable. Contact Support here." });
-      res.json({ session: supportEvents.issue(target.customer.id) });
+      const session = supportEvents.issue(target.customer.id);
+      if (!session) return res.status(429).json({ error: "Wait a moment before reopening Support." });
+      res.json({ session });
     } catch { console.error("Mini App support session failed.");
       res.status(503).json({ error: "Couldn’t open Support. Try again in a moment." }); }
   });
@@ -309,7 +341,7 @@ function createMiniAppRouter({ botToken, getAccount, getPackages, getPackage,
         403: "Your account is unavailable. Contact Support here.",
         429: "You’re sending messages too quickly. Wait a minute and try again.",
       }[result.status] || "Couldn’t send your message. Try again in a moment." });
-      res.json({ ok: true, message: result.message });
+      res.json({ ok: true, message: supportMessage(result.message) });
     } catch { console.error("Mini App support send failed.");
       res.status(503).json({ error: "Couldn’t send your message. Try again in a moment." }); }
   });
@@ -317,12 +349,18 @@ function createMiniAppRouter({ botToken, getAccount, getPackages, getPackage,
     try {
       const url = await getConnectUrl(req.telegramUser.id);
       if (!url) return res.status(409).json({ error: "Your VPN is unavailable. Check My VPN." });
+      const parsed = new URL(url);
+      if (parsed.protocol !== "https:" || parsed.username || parsed.password ||
+          !/^\/connect\/[A-Za-z0-9._-]+$/.test(parsed.pathname) ||
+          (expectedOrigin && parsed.origin !== expectedOrigin) || parsed.hash ||
+          (parsed.search && parsed.search !== "?lang=en")) throw new Error("Invalid connection destination.");
       res.json({ url });
     } catch {
       console.error("Mini App connect failed.");
       res.status(503).json({ error: "Couldn’t open Connect. Try again in a moment." });
     }
   });
+  router.use(safeHttpError);
   return router;
 }
 

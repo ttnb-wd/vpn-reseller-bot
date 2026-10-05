@@ -72,7 +72,7 @@ function createCoordination({ pool = new Pool({ connectionString:
     connection.on('end', failed);
     if (closed || epoch !== generation) { discard(); return false; }
     try {
-      await connection.query(`SET idle_session_timeout = '${Math.floor(leaseMs)}ms'`);
+      await connection.query("SELECT set_config('idle_session_timeout', $1, false)", [`${leaseMs}ms`]);
       const result = await connection.query('SELECT pg_try_advisory_lock(1297302355, 0) AS owned');
       if (!result.rows[0].owned || ended || closed || epoch !== generation) {
         discard(); return false;

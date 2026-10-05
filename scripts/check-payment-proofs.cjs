@@ -4,7 +4,7 @@ const { Client } = require("pg");
 const { loadTelegramPaymentProof } = require("../src/admin-proof");
 
 async function main() {
-  const client = new Client({ connectionString: process.env.DATABASE_URL,
+  const client = new Client({ connectionString: require("../src/db").prepareDatabaseUrl(process.env.DATABASE_URL).toString(),
     connectionTimeoutMillis: 15000, statement_timeout: 15000 });
   try {
     await client.connect();
@@ -15,7 +15,7 @@ async function main() {
     console.log("Payment proof counts:", JSON.stringify(summary.rows));
     const recent = await client.query(`SELECT o."orderNumber", o.status, o."paymentMethod",
       (o."paymentProof" IS NOT NULL) AS "hasProof", o."paidAt", o."createdAt",
-      COALESCE(c.username, c."firstName", 'Customer') AS customer
+      (c.id IS NOT NULL) AS "customerPresent"
       FROM "order" o JOIN "customer" c ON c.id = o."customerId"
       WHERE o."paymentMethod" IS NOT NULL OR o."paymentProof" IS NOT NULL
       ORDER BY o."createdAt" DESC LIMIT 15`);

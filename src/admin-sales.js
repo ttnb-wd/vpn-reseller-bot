@@ -24,7 +24,11 @@ function permittedMonth(month, now = Temporal.Now.instant()) {
 }
 
 function getPool() {
-  if (!pool) pool = new Pool({ connectionString: prepareDatabaseUrl(process.env.DATABASE_URL).toString(), max: 2 });
+  if (!pool) {
+    pool = new Pool({ connectionString: prepareDatabaseUrl(process.env.DATABASE_URL).toString(),
+      max: 2, connectionTimeoutMillis: 10000, statement_timeout: 15000 });
+    pool.on("error", () => console.error("Sales database connection unavailable."));
+  }
   return pool;
 }
 

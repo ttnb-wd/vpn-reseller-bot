@@ -2,6 +2,7 @@ const { Temporal } = require("@js-temporal/polyfill");
 const { Markup } = require("telegraf");
 const { createWindowLimiter } = require("./abuse-limits");
 const { createSupportEvents } = require("./support-events");
+const { redactConnectionText } = require("./customer-dto");
 
 const REPLY_WINDOW_MINUTES = 15;
 const CUSTOMER_ACK = "စာရပါပြီ။\nတတ်နိုင်သမျှ အမြန်ပြန်ဖြေပေးပါမယ်။";
@@ -11,7 +12,7 @@ function ticketNumber(ticket) {
 }
 
 function safeText(value) {
-  return String(value || "").replace(/ss:\/\/\S+/gi, "[VPN key hidden]");
+  return redactConnectionText(value);
 }
 
 function ticketKeyboard(ticket) {

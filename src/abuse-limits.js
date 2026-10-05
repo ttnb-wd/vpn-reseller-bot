@@ -4,7 +4,8 @@ function createWindowLimiter({ windowMs, max, maxEntries = 10000 }) {
     if (key === undefined || key === null) return false;
     if (entries.size >= maxEntries) {
       for (const [id, entry] of entries) if (entry.until <= now) entries.delete(id);
-      if (entries.size >= maxEntries && !entries.has(String(key))) entries.delete(entries.keys().next().value);
+      // Do not let identity cycling reset active request budgets.
+      if (entries.size >= maxEntries && !entries.has(String(key))) return false;
     }
     const id = String(key);
     const entry = entries.get(id);

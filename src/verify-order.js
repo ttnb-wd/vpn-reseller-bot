@@ -36,6 +36,6 @@ async function verifyOrder() {
 
 verifyOrder().catch((error) => {
   console.error("Verification failed:");
-  console.error(error);
+  console.error(require("./safe-diagnostics").describeHandlerFailure("verify-order", error));
   process.exit(1);
 });

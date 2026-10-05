@@ -1,4 +1,5 @@
 const crypto = require("node:crypto");
+const { supportMessage } = require("./customer-dto");
 
 const SESSION_MS = 60_000;
 const HEARTBEAT_MS = 25_000;
@@ -61,7 +62,7 @@ function createSupportEvents(secret = crypto.randomBytes(32), { now = Date.now, 
     } catch { cleanups.get(res)?.(); }
   }
   function publish(customerId, message) {
-    const payload = `event: message\ndata: ${JSON.stringify(message)}\n\n`;
+    const payload = `event: message\ndata: ${JSON.stringify(supportMessage(message))}\n\n`;
     for (const res of subscribers.get(customerId) || []) {
       write(res, payload);
     }

@@ -3,6 +3,19 @@ function safeDiagnosticCode(value) {
     ? value : undefined;
 }
 
+function safeErrorCode(value) {
+  if (typeof value !== "string") return undefined;
+  const fixed = new Set(["EACCES", "ECONNREFUSED", "ECONNRESET", "ECONNABORTED", "ETIMEDOUT", "EPIPE", "ENOTFOUND", "EAI_AGAIN",
+    "ERR_BAD_RESPONSE", "ERR_BAD_REQUEST", "ERR_TLS_CERT_ALTNAME_INVALID", "DEPTH_ZERO_SELF_SIGNED_CERT",
+    "SELF_SIGNED_CERT_IN_CHAIN", "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "CERT_HAS_EXPIRED", "OUTLINE_CERT_UNAVAILABLE", "OUTLINE_CERT_MISMATCH"]);
+  return fixed.has(value) || /^[0-9A-Z]{5}$/.test(value) ||
+    /^(?:CONTRACT|ORM|RUNTIME|DRIVER)\.[A-Z][A-Z0-9_.]{0,47}$/.test(value) ? value : undefined;
+}
+
+function safeErrorName(value) {
+  return ["Error", "TypeError", "RangeError", "URIError", "TelegramError", "AxiosError", "SyntaxError", "StructuredError"].includes(value) ? value : "Error";
+}
+
 function sanitizeDiagnosticMessage(value) {
   if (typeof value !== "string") return undefined;
   let message = value;
@@ -29,7 +42,7 @@ function sanitizeDiagnosticMessage(value) {
 }
 
 function diagnosticCategory(error) {
-  const code = safeDiagnosticCode(error?.code) || safeDiagnosticCode(error?.cause?.code);
+  const code = safeErrorCode(error?.code) || safeErrorCode(error?.cause?.code);
   if (code?.startsWith("CONTRACT.")) return "contract";
   if (code?.startsWith("ORM.") || code?.startsWith("RUNTIME.") ||
       code?.startsWith("DRIVER.") || /^[0-9A-Z]{5}$/.test(code || "")) return "database";
@@ -43,13 +56,13 @@ function describeHandlerFailure(handler, error) {
   return {
     handler,
     category: diagnosticCategory(error),
-    name: safeDiagnosticCode(error?.name),
-    code: safeDiagnosticCode(error?.code) || safeDiagnosticCode(error?.cause?.code),
-    message: sanitizeDiagnosticMessage(error?.message),
+    name: safeErrorName(error?.name),
+    code: safeErrorCode(error?.code) || safeErrorCode(error?.cause?.code),
+    // Free-form provider/parser messages can contain unlabelled customer
+    // secrets, SQL values and request bodies. Log codes and categories only.
     cause: cause ? {
-      name: safeDiagnosticCode(cause.name),
-      code: safeDiagnosticCode(cause.code),
-      message: sanitizeDiagnosticMessage(cause.message),
+      name: safeErrorName(cause.name),
+      code: safeErrorCode(cause.code),
     } : undefined,
   };
 }
@@ -58,5 +71,5 @@ function logHandlerFailure(handler, error) {
   console.error("Telegram handler failed:", describeHandlerFailure(handler, error));
 }
 
-module.exports = { safeDiagnosticCode, sanitizeDiagnosticMessage,
+module.exports = { safeDiagnosticCode, safeErrorCode, safeErrorName, sanitizeDiagnosticMessage,
   describeHandlerFailure, logHandlerFailure };
