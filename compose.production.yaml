@@ -1,0 +1,64 @@
+name: metro-vpn
+services:
+  bot:
+    platform: linux/amd64
+    image: ${METRO_IMAGE:-metro-vpn:prepared}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      platforms:
+        - linux/amd64
+    env_file:
+      - path: ${METRO_ENV_FILE:-/opt/metro-vpn/secrets/metro.env}
+        required: true
+        # Compose >= 2.30: preserve dollar signs in bcrypt and other secrets.
+        format: raw
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      NODE_OPTIONS: --max-old-space-size=96
+      NODE_EXTRA_CA_CERTS: /run/metro-vpn/aiven-ca.pem
+      RENDER: "false"
+    ports:
+      - "127.0.0.1:3000:3000"
+    networks:
+      - metro
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 45s
+    user: "1000:1000"
+    read_only: true
+    volumes:
+      - type: bind
+        source: ${METRO_CA_FILE:-/opt/metro-vpn/secrets/aiven-ca.pem}
+        target: /run/metro-vpn/aiven-ca.pem
+        read_only: true
+        bind:
+          create_host_path: false
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 192m
+    mem_reservation: 128m
+    memswap_limit: 192m
+    cpus: 0.50
+    pids_limit: 128
+    labels:
+      com.centurylinklabs.watchtower.enable: "false"
+    logging:
+      driver: local
+      options:
+        max-size: "5m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "node", "deploy/healthcheck.cjs"]
+      interval: 30s
+      timeout: 5s
+      start_period: 90s
+      retries: 3
+networks:
+  metro:
+    driver: bridge

@@ -8,6 +8,7 @@ globalThis.Temporal = Temporal;
 
 const fs = require("fs");
 const path = require("path");
+const { createDatabasePool } = require('./database-pool');
 
 let sharedClient;
 
@@ -79,8 +80,8 @@ function describeDatabaseRuntime(connectionUrl, contractPath, contractJson, ormV
 async function createDatabase() {
   const connectionUrl = prepareDatabaseUrl(process.env.DATABASE_URL);
   if (process.env.NODE_ENV === "production") assertDatabaseSecurity(await inspectDatabaseSecurity(connectionUrl));
-  const { default: postgresServerless } = await import(
-    "@prisma/orm-postgres/serverless"
+  const { default: postgresRuntime } = await import(
+    "@prisma/orm-postgres/runtime"
   );
 
   const { orm } = await import("@prisma/orm-postgres/orm-client");
@@ -94,7 +95,7 @@ async function createDatabase() {
   const contractJson = JSON.parse(
     fs.readFileSync(contractPath, "utf8")
   );
-  const ormEntry = require.resolve("@prisma/orm-postgres/serverless");
+  const ormEntry = require.resolve("@prisma/orm-postgres/runtime");
   const ormPackage = JSON.parse(fs.readFileSync(
     path.join(path.dirname(ormEntry), "..", "package.json"), "utf8"
   ));
@@ -102,13 +103,14 @@ async function createDatabase() {
     connectionUrl, contractPath, contractJson, ormPackage.version
   ));
 
-  const database = postgresServerless({
+  const database = postgresRuntime({
     contractJson,
   });
 
-  const runtime = await database.connect({
-    url: connectionUrl.toString(),
-  });
+  const pool = createDatabasePool('application', connectionUrl.toString());
+  let runtime;
+  try { runtime = await database.connect({ pg: pool }); }
+  catch (error) { await database.close().catch(() => {}); if (!pool.ending) await pool.end(); throw error; }
 
   const client = orm({
     runtime,
@@ -117,9 +119,25 @@ async function createDatabase() {
 
   sharedClient = client;
 
+  let closing;
+  function close() {
+    if (!closing) closing = (async () => {
+      try { await runtime.close(); }
+      finally {
+        try { await database.close(); }
+        finally {
+          try { if (!pool.ending) await pool.end(); }
+          finally { if (sharedClient === client) sharedClient = undefined; }
+        }
+      }
+    })();
+    return closing;
+  }
+
   return {
     client,
     runtime,
+    close,
     context: database.context,
   };
 }

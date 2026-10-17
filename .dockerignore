@@ -1,0 +1,24 @@
+# Allowlist: credentials, backups, tests, Git, tooling and local dependencies
+# never enter the build context. Keep this aligned with Dockerfile COPY inputs.
+**
+!package.json
+!package-lock.json
+!src/
+!src/*.js
+!src/mini-app/
+!src/mini-app/index.html
+!src/mini-app/app.js
+!src/mini-app/app.css
+!src/mini-app/metro-secure-icon.png
+!prisma/
+!prisma/contract.json
+!assets/
+!assets/images/
+!assets/images/welcome-metro-secure.png
+!assets/images/package-metro-secure.png
+!deploy/
+!deploy/healthcheck.cjs
+src/test-*.js
+src/verify-*.js
+src/production-reset.js
+src/reset-db-connection.js

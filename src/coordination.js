@@ -1,14 +1,12 @@
 const crypto = require('node:crypto');
-const { Pool } = require('pg');
+const { createDatabasePool } = require('./database-pool');
 const { prepareDatabaseUrl } = require('./db');
 const { AsyncLocalStorage } = require('node:async_hooks');
 
 // Session advisory locks belong to a dedicated PostgreSQL connection, never
 // to an ORM request or a pooled connection returned while work is running.
-function createCoordination({ pool = new Pool({ connectionString:
-  prepareDatabaseUrl(process.env.DATABASE_URL).toString(), max: 12,
-  connectionTimeoutMillis: 10000, statement_timeout: 30000, keepAlive: true,
-  keepAliveInitialDelayMillis: 10000 }),
+function createCoordination({ pool = createDatabasePool('coordination',
+  prepareDatabaseUrl(process.env.DATABASE_URL).toString()),
   heartbeatMs = 10000, leaseMs = 60000, schedule = setInterval,
   cancel = clearInterval, onLost = () => {}, log = console } = {}) {
   const owner = crypto.randomUUID();
@@ -22,19 +20,28 @@ function createCoordination({ pool = new Pool({ connectionString:
   async function customer(id, work) {
     if (!Number.isSafeInteger(id) || id <= 0) throw new Error('Invalid customer lock.');
     if (closed || (leaseRequired && !owned)) throw new Error('Singleton ownership unavailable.');
+    const held = customerContext.getStore();
+    if (held) {
+      held.assertOwned();
+      if (held.id !== id) throw new Error('Nested locks for different customers are not supported.');
+      return work(held.assertOwned);
+    }
     const connection = await pool.connect();
-    let lost = false;
+    let lost = false, released = false;
     const fail = () => { lost = true; onLost(); };
     connection.on('error', fail);
     connection.on('end', fail);
     try {
+      // A queued checkout can finish after shutdown/ownership loss.
+      if (closed || (leaseRequired && !owned)) throw new Error('Singleton ownership unavailable.');
       await connection.query('SELECT pg_advisory_lock(1297302355, $1)', [id]);
       const assertOwned = () => {
-        if (lost || (leaseRequired && !owned)) throw new Error('Customer lock lost.');
+        if (lost || released || closed || (leaseRequired && !owned)) throw new Error('Customer lock lost.');
       };
       assertOwned();
-      return await customerContext.run(assertOwned, () => work(assertOwned));
+      return await customerContext.run({ id, assertOwned }, () => work(assertOwned));
     } finally {
+      released = true;
       try { await connection.query('SELECT pg_advisory_unlock(1297302355, $1)', [id]); }
       catch { lost = true; }
       connection.removeListener('error', fail);
@@ -108,7 +115,7 @@ function createCoordination({ pool = new Pool({ connectionString:
   return { owner, customer, acquire, heartbeat, release,
     assertCurrent() {
       if (leaseRequired && !owned) throw new Error('Singleton ownership unavailable.');
-      customerContext.getStore()?.();
+      customerContext.getStore()?.assertOwned();
     },
     get owned() { return owned; }, async close() { closed = true; await release(); await pool.end(); } };
 }
