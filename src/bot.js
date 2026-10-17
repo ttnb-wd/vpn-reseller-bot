@@ -1576,7 +1576,7 @@ async function startBot() {
     () => coordination?.release(),
     () => new Promise(resolve => { if (!server) return resolve(); server.close(resolve); server.closeIdleConnections?.(); }),
     () => notificationStore?.close(),
-    () => database.runtime.close(),
+    () => database.close ? database.close() : database.runtime.close(),
     () => coordination?.close(),
   ], exitCode);
   shutdownProcess = shutdown;

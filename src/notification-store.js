@@ -1,11 +1,11 @@
 const crypto = require("node:crypto");
-const { Pool } = require("pg");
+const { createDatabasePool } = require('./database-pool');
 const { prepareDatabaseUrl } = require("./db");
 const { FIELDS, eligibleKinds } = require("./subscription-notifications");
 const { messagingState } = require("./dynamic-config");
 
-function createNotificationStore({ pool = new Pool({ connectionString: prepareDatabaseUrl(process.env.DATABASE_URL).toString(),
-  max: 3, connectionTimeoutMillis: 10000, statement_timeout: 15000 }) } = {}) {
+function createNotificationStore({ pool = createDatabasePool('notifications',
+  prepareDatabaseUrl(process.env.DATABASE_URL).toString()) } = {}) {
   pool.on("error", () => console.error("Notification database connection unavailable."));
   async function transaction(work) {
     const connection = await pool.connect();

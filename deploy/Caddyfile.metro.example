@@ -1,0 +1,15 @@
+# REFERENCE ONLY. Merge the handler into the existing domain block after approval.
+# Preserve all existing global options, TLS/certificate settings and other sites.
+# Confirm the existing port 3000 is free before adopting this upstream.
+metrosecure.duckdns.org {
+    # No access log directive: paths can contain VPN bearer tokens.
+    # Inspect inherited/global logging too before enabling this handler.
+    reverse_proxy 127.0.0.1:3000 {
+        # Replace client-supplied forwarded identity at this single public edge.
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+        header_up X-Forwarded-Host {host}
+        # Immediate delivery for customer/admin SSE; no response buffering.
+        flush_interval -1
+    }
+}

@@ -103,7 +103,8 @@ function renderLayout(res, title, email, section, formToken, content, script = "
   res.set({
     "Cache-Control": "private, no-store, max-age=0",
     "Pragma": "no-cache",
-    "Referrer-Policy": "no-referrer",
+    // Admin forms need a non-opaque same-origin POST; disclose nothing off-site.
+    "Referrer-Policy": "same-origin",
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
     "X-Robots-Tag": "noindex, nofollow, noarchive",

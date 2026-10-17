@@ -1,0 +1,10 @@
+{
+  "compose_file": "/REPLACE_WITH_EXISTING_ROOT_OWNED_ACTIVE_COMPOSE.json",
+  "compose_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "database_host": "REPLACE_WITH_VERIFIED_CURRENT_AIVEN_HOST",
+  "database": "metro_production",
+  "database_role": "metro_app",
+  "hostname": "metrosecure.duckdns.org",
+  "registry": "ghcr.io/ttnb-wd/vpn-reseller-bot",
+  "container": "metro-vpn-bot-1"
+}

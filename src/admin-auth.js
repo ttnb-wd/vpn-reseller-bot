@@ -90,7 +90,9 @@ function setPageHeaders(res, nonce) {
   res.set({
     "Cache-Control": "private, no-store, max-age=0",
     "Pragma": "no-cache",
-    "Referrer-Policy": "no-referrer",
+    // Keep native same-origin form POSTs from acquiring an opaque Origin: null.
+    // Cross-origin destinations still receive no referrer.
+    "Referrer-Policy": "same-origin",
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
     "Permissions-Policy": "camera=(), microphone=(), geolocation=()",

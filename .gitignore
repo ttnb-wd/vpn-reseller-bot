@@ -13,3 +13,60 @@ security-test-results.txt
 *.md
 *.test.cjs
 src/test-*.js
+
+# Publish only reviewed reusable deployment inputs. Incident reports, operator
+# scripts, provider inventories and generated evidence remain local by default.
+/deploy/*
+!/deploy/Caddyfile.metro.example
+!/deploy/healthcheck.cjs
+!/deploy/legacy-forwarder.cjs
+!/deploy/legacy-forwarder.test.cjs
+!/deploy/link-continuity.test.cjs
+!/deploy/metro.env.example
+!/deploy/prepare-build-context.cjs
+!/deploy/runtime-files.json
+!/deploy/synthetic-local-preload.cjs
+
+# Regression coverage for the deployed admin and bounded-pool changes.
+!src/admin-auth.test.cjs
+!src/database-pool.test.cjs
+!src/coordination.test.cjs
+
+# Publish the isolated regression suite; provider-backed tests default to skip.
+!src/*.test.cjs
+!/deploy/ci-deploy.py
+!/deploy/ci-deploy.test.py
+!/deploy/ci-host-config.example.json
+!/deploy/ci-recover.service
+!/deploy/CI_CD_SETUP.md
+deploy/metro.env
+.migration-validation/
+migration-validation-phase2/
+*.dpapi
+*.metrobackup
+*.metrobackup.partial
+*.metrobackup.sha256
+
+# Credentials, private certificates, database exports and generated bundles.
+*.key
+*.pem
+*.p12
+*.pfx
+*.ppk
+id_rsa*
+id_ed25519*
+*.pgpass
+.pgpass
+.pg_service.conf
+*.dump
+*.backup
+*.sql.gz
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+__pycache__/
+*.py[cod]
+.ssh/
+.vscode/
+*.env

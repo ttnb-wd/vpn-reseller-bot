@@ -1,0 +1,138 @@
+# INERT PREPARATION: GitHub does not load *.yml.disabled. Do not rename until approved.
+name: Metro production
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# Serialize entire main workflows; never cancel an in-flight deployment.
+concurrency:
+  group: metro-production-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Pinned secret scanner (no license or service required)
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(python3 -c 'import json; print(json.load(open("ci/tools.json"))["gitleaksVersion"])')
+          expected=$(python3 -c 'import json; print(json.load(open("ci/tools.json"))["gitleaksLinuxSha256"])')
+          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${version}/gitleaks_${version}_linux_x64.tar.gz" \
+            --output "$RUNNER_TEMP/gitleaks.tar.gz"
+          printf '%s  %s\n' "$expected" "$RUNNER_TEMP/gitleaks.tar.gz" | sha256sum --check --status
+          tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP" gitleaks
+          "$RUNNER_TEMP/gitleaks" dir . --config ci/gitleaks.toml --redact=100 --no-banner
+          "$RUNNER_TEMP/gitleaks" git . --config ci/gitleaks.toml --redact=100 --no-banner
+      - name: Validate workflow syntax with a verified pinned linter
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(python3 -c 'import json; print(json.load(open("ci/tools.json"))["actionlintVersion"])')
+          expected=$(python3 -c 'import json; print(json.load(open("ci/tools.json"))["actionlintLinuxSha256"])')
+          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+            "https://github.com/rhysd/actionlint/releases/download/v${version}/actionlint_${version}_linux_amd64.tar.gz" \
+            --output "$RUNNER_TEMP/actionlint.tar.gz"
+          printf '%s  %s\n' "$expected" "$RUNNER_TEMP/actionlint.tar.gz" | sha256sum --check --status
+          tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
+          workflow=.github/workflows/metro-production.yml
+          if [[ -f "$workflow.disabled" ]]; then workflow="$workflow.disabled"; fi
+          "$RUNNER_TEMP/actionlint" "$workflow"
+      - name: Prevent implicit schema deployments
+        if: github.event_name == 'push'
+        env:
+          BEFORE: ${{ github.event.before }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$BEFORE" =~ ^[0-9a-f]{40}$ && "$BEFORE" != 0000000000000000000000000000000000000000 ]]
+          test -z "$(git diff --name-only "$BEFORE" HEAD -- prisma migrations prisma.config.ts)"
+      - name: Install runtime dependencies without lifecycle hooks
+        shell: bash
+        run: |
+          set -euo pipefail
+          node_image=$(python3 -c 'import json; print(json.load(open("ci/tools.json"))["node"])')
+          docker run --rm --mount "type=bind,source=$PWD,target=/app" --workdir /app \
+            "$node_image" npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+      - name: Unit tests in a disconnected Linux container
+        shell: bash
+        run: |
+          set -euo pipefail
+          node_image=$(python3 -c 'import json; print(json.load(open("ci/tools.json"))["node"])')
+          docker run --rm --network none --memory 512m --memory-swap 512m --pids-limit 128 \
+            --read-only --cap-drop ALL --security-opt no-new-privileges:true \
+            --tmpfs /tmp:rw,nosuid,noexec,size=32m \
+            --mount "type=bind,source=$PWD,target=/app,readonly" --workdir /app \
+            "$node_image" node ci/run-tests.cjs
+          PYTHONDONTWRITEBYTECODE=1 python3 deploy/ci-deploy.test.py
+          python3 ci/check-pipeline.py
+
+  publish:
+    needs: verify
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.METRO_PUBLISH_ENABLED == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.image.outputs.image }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Build on GitHub runner and test the immutable image
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build --platform linux/amd64 --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --label "org.opencontainers.image.source=https://github.com/ttnb-wd/vpn-reseller-bot" \
+            --tag "ghcr.io/ttnb-wd/vpn-reseller-bot:$GITHUB_SHA" .
+          node ci/image-smoke.cjs "ghcr.io/ttnb-wd/vpn-reseller-bot:$GITHUB_SHA"
+      - name: Publish and resolve digest
+        id: image
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DOCKER_CONFIG: ${{ runner.temp }}/metro-docker
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'docker logout ghcr.io >/dev/null 2>&1 || true; rm -rf "$DOCKER_CONFIG"' EXIT
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          docker push "ghcr.io/ttnb-wd/vpn-reseller-bot:$GITHUB_SHA"
+          image=$(docker image inspect "ghcr.io/ttnb-wd/vpn-reseller-bot:$GITHUB_SHA" --format '{{index .RepoDigests 0}}')
+          [[ "$image" =~ ^ghcr\.io/ttnb-wd/vpn-reseller-bot@sha256:[0-9a-f]{64}$ ]]
+          printf 'image=%s\n' "$image" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    needs: publish
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.METRO_DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    environment: production
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Request forced-command image replacement and await sanitized result
+        env:
+          METRO_IMAGE: ${{ needs.publish.outputs.image }}
+          METRO_SSH_KEY: ${{ secrets.METRO_SSH_KEY }}
+          METRO_KNOWN_HOSTS: ${{ secrets.METRO_KNOWN_HOSTS }}
+          METRO_SSH_HOST: ${{ vars.METRO_SSH_HOST }}
+          METRO_SSH_USER: metro-deploy
+        run: python3 ci/ssh-deploy.py

@@ -1,0 +1,8 @@
+title = "Metro VPN source checks"
+[extend]
+useDefault = true
+
+# Only generated/local directories are excluded. Never exempt all test files.
+[[allowlists]]
+description = "Local artifacts never included in the proposed source export"
+paths = ['''(^|/)node_modules/''', '''(^|/)\.git/''', '''(^|/)\.migration-validation/''', '''(^|/)migration-validation-phase2/''']
