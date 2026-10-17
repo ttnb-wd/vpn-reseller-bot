@@ -1,4 +1,5 @@
 [
+  "assets/google283a6adcc2431f3c.html",
   "assets/images/package-metro-secure.png",
   "assets/images/welcome-metro-secure.png",
   "deploy/healthcheck.cjs",
@@ -36,6 +37,7 @@
   "src/outline.js",
   "src/payment-config.js",
   "src/payment-proof-upload.js",
+  "src/render-hosting.js",
   "src/safe-diagnostics.js",
   "src/singleton-startup.js",
   "src/startup-health.js",

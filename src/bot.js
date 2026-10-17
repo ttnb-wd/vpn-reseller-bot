@@ -12,6 +12,7 @@ const { writeEntitlementAllowance } = require("./entitlement-write");
 const { validateProductionEnvironment, createReadiness } = require("./startup-health");
 const { createLifecycle } = require("./lifecycle");
 const { createSingletonStartup, createSingletonHttpGate } = require("./singleton-startup");
+const { createRenderHosting } = require("./render-hosting");
 const lifecycle = createLifecycle({ exit: code => process.exit(code) });
 let coordination, recoveryTimer, recoveryRun, shutdownProcess, singletonStartup;
 let botHealthy = false, envValidated = false;
@@ -106,6 +107,8 @@ app.get("/ready", async (_req, res) => {
   const ready = await isReady();
   res.status(ready ? 200 : 503).json({ ready });
 });
+app.use(createRenderHosting({ render: process.env.RENDER === "true",
+  baseUrl: process.env.PUBLIC_BASE_URL, legacyHostname: process.env.LEGACY_PUBLIC_HOSTNAME }));
 app.use((_req, res, next) => lifecycle.stopping ? res.sendStatus(503) : next());
 app.use(createSingletonHttpGate(() => envValidated &&
   (botHealthy && Boolean(coordination?.owned) && !lifecycle.stopping)));

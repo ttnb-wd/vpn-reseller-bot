@@ -1,5 +1,4 @@
-# INERT PREPARATION: GitHub does not load *.yml.disabled. Do not rename until approved.
-name: Metro production
+name: Metro Render production checks
 on:
   push:
     branches: [main]
@@ -11,7 +10,7 @@ permissions:
 
 # Serialize entire main workflows; never cancel an in-flight deployment.
 concurrency:
-  group: metro-production-${{ github.ref }}
+  group: metro-render-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -79,60 +78,22 @@ jobs:
           PYTHONDONTWRITEBYTECODE=1 python3 deploy/ci-deploy.test.py
           python3 ci/check-pipeline.py
 
-  publish:
+  render-candidate:
     needs: verify
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.METRO_PUBLISH_ENABLED == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
       contents: read
-      packages: write
-    outputs:
-      image: ${{ steps.image.outputs.image }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           persist-credentials: false
-      - name: Build on GitHub runner and test the immutable image
+      - name: Build and smoke-test Render-compatible production files
         shell: bash
         run: |
           set -euo pipefail
-          docker build --platform linux/amd64 --label "org.opencontainers.image.revision=$GITHUB_SHA" \
-            --label "org.opencontainers.image.source=https://github.com/ttnb-wd/vpn-reseller-bot" \
-            --tag "ghcr.io/ttnb-wd/vpn-reseller-bot:$GITHUB_SHA" .
+          docker build --platform linux/amd64 --tag "ghcr.io/ttnb-wd/vpn-reseller-bot:$GITHUB_SHA" .
           node ci/image-smoke.cjs "ghcr.io/ttnb-wd/vpn-reseller-bot:$GITHUB_SHA"
-      - name: Publish and resolve digest
-        id: image
-        env:
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          DOCKER_CONFIG: ${{ runner.temp }}/metro-docker
-        shell: bash
-        run: |
-          set -euo pipefail
-          trap 'docker logout ghcr.io >/dev/null 2>&1 || true; rm -rf "$DOCKER_CONFIG"' EXIT
-          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
-          docker push "ghcr.io/ttnb-wd/vpn-reseller-bot:$GITHUB_SHA"
-          image=$(docker image inspect "ghcr.io/ttnb-wd/vpn-reseller-bot:$GITHUB_SHA" --format '{{index .RepoDigests 0}}')
-          [[ "$image" =~ ^ghcr\.io/ttnb-wd/vpn-reseller-bot@sha256:[0-9a-f]{64}$ ]]
-          printf 'image=%s\n' "$image" >> "$GITHUB_OUTPUT"
 
-  deploy:
-    needs: publish
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.METRO_DEPLOY_ENABLED == 'true'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 18
-    environment: production
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-        with:
-          persist-credentials: false
-      - name: Request forced-command image replacement and await sanitized result
-        env:
-          METRO_IMAGE: ${{ needs.publish.outputs.image }}
-          METRO_SSH_KEY: ${{ secrets.METRO_SSH_KEY }}
-          METRO_KNOWN_HOSTS: ${{ secrets.METRO_KNOWN_HOSTS }}
-          METRO_SSH_HOST: ${{ vars.METRO_SSH_HOST }}
-          METRO_SSH_USER: metro-deploy
-        run: python3 ci/ssh-deploy.py
+# Existing Render service uses After CI Checks Pass only after cutover approval.
+# No VPS deployment, registry publication, deploy hook or production secret is used.

@@ -21,6 +21,7 @@ assets/**
 assets/images/**
 !assets/images/welcome-metro-secure.png
 !assets/images/package-metro-secure.png
+!assets/google283a6adcc2431f3c.html
 !deploy/
 deploy/**
 !deploy/healthcheck.cjs
